@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16
+    container_name: xbt-db
+    environment:
+      POSTGRES_DB: xbt
+      POSTGRES_USER: xbt
+      POSTGRES_PASSWORD: xbt
+      TZ: Asia/Shanghai
+    volumes:
+      - ./Server/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - xbt_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xbt -d xbt"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ./Server
+      dockerfile: Dockerfile
+    container_name: xbt-server
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "3030:3030"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./Web
+      dockerfile: Dockerfile
+    container_name: xbt-web
+    depends_on:
+      - server
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  xbt_pgdata:
