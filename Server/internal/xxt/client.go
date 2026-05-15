@@ -198,6 +198,41 @@ func (c *Client) ensureSession(mobile, password string) (*Session, error) {
 	return c.sessions[mobile], nil
 }
 
+func (c *Client) CookieHeader(mobile, password, rawURL string) (string, error) {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	targets := []string{
+		rawURL,
+		"https://sw.qmx.chaoxing.com/",
+		"https://i.chaoxing.com/",
+		"https://passport2.chaoxing.com/",
+	}
+	seen := make(map[string]struct{})
+	parts := make([]string, 0)
+	for _, target := range targets {
+		if strings.TrimSpace(target) == "" {
+			continue
+		}
+		parsed, err := url.Parse(target)
+		if err != nil {
+			continue
+		}
+		for _, ck := range s.Jar.Cookies(parsed) {
+			if ck.Name == "" {
+				continue
+			}
+			if _, ok := seen[ck.Name]; ok {
+				continue
+			}
+			seen[ck.Name] = struct{}{}
+			parts = append(parts, ck.Name+"="+ck.Value)
+		}
+	}
+	return strings.Join(parts, "; "), nil
+}
+
 func (c *Client) GetCourses(mobile, password string) ([]Course, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {

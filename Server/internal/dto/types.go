@@ -46,6 +46,25 @@ type SignShareExecuteRequest struct {
 	Special map[string]interface{} `json:"special_params"`
 }
 
+type QMXRoomCheckCredentialRequest struct {
+	QMXURL string `json:"qmx_url"`
+	XToken string `json:"x_token"`
+	Cookie string `json:"cookie"`
+	Raw    string `json:"raw"`
+}
+
+type QMXRoomCheckPreviewRequest struct {
+	QMXRoomCheckCredentialRequest
+}
+
+type QMXRoomCheckExecuteRequest struct {
+	QMXRoomCheckCredentialRequest
+	LocationIndex int     `json:"location_index"`
+	Longitude     float64 `json:"longitude"`
+	Latitude      float64 `json:"latitude"`
+	LocationName  string  `json:"location_name"`
+}
+
 type AddWhitelistRequest struct {
 	Mobile string `json:"mobile" binding:"required"`
 }

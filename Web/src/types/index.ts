@@ -162,3 +162,43 @@ export interface AdminClassGroupSyncResponse {
   copied_relations: number;
   mode: AdminClassGroupSyncMode;
 }
+
+export interface QMXRoomCheckLocation {
+  name: string;
+  lng: number;
+  lat: number;
+  range: number;
+  distance?: number;
+}
+
+export interface QMXRoomCheckRequirements {
+  photo_required: boolean;
+  face_required: boolean;
+  bluetooth_required: boolean;
+  special_sdk: boolean;
+}
+
+export interface QMXRoomCheckPreview {
+  batch_name: string;
+  check_date: string;
+  late_date: string;
+  start_time: string;
+  end_time: string;
+  late_end_time: string;
+  locations: QMXRoomCheckLocation[];
+  requirements: QMXRoomCheckRequirements;
+  unsupported: string[];
+}
+
+export interface QMXRoomCheckExecuteResponse {
+  success: boolean;
+  code: number | string;
+  message: string;
+  batch_name: string;
+  check_date: string;
+  check_time: string;
+  location_name: string;
+  longitude: number;
+  latitude: number;
+  unsupported?: string[];
+}

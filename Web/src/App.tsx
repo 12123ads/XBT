@@ -9,6 +9,7 @@ import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
 import AdminPanel from './pages/AdminPanel';
 import SharedSign from './pages/SharedSign';
+import RoomCheck from './pages/RoomCheck';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -66,6 +67,7 @@ function App() {
               <Route path="/admin/whitelist" element={<Whitelist />} />
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
+              <Route path="/room-check" element={<RoomCheck />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

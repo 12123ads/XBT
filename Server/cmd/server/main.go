@@ -9,6 +9,7 @@ import (
 	"xbt2/server/internal/db"
 	"xbt2/server/internal/handler"
 	"xbt2/server/internal/middleware"
+	"xbt2/server/internal/qmx"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
 )
@@ -32,6 +33,7 @@ func main() {
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
+	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmx.New(cfg.AllowInsecureTLS), database, xxtClient, credentialCrypto)
 
 	r := gin.Default()
 
@@ -56,6 +58,8 @@ func main() {
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
 			authed.POST("/sign/shares", signHandler.CreateShare)
+			authed.POST("/qmx/room-check/preview", qmxRoomCheckHandler.Preview)
+			authed.POST("/qmx/room-check/execute", qmxRoomCheckHandler.Execute)
 
 			admin := authed.Group("/admin")
 			admin.Use(middleware.AdminOnly())
