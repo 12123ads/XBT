@@ -30,10 +30,68 @@ type SignCheckRequest struct {
 	UserIDs    []int64 `json:"user_ids"`
 }
 
+type SignShareCreateRequest struct {
+	ActivityID    int64  `json:"activity_id" binding:"required"`
+	CourseID      int64  `json:"course_id" binding:"required"`
+	ClassID       int64  `json:"class_id" binding:"required"`
+	SignType      int    `json:"sign_type"`
+	IfRefreshEWM  bool   `json:"if_refresh_ewm"`
+	ActivityName  string `json:"activity_name"`
+	CourseName    string `json:"course_name"`
+	CourseTeacher string `json:"course_teacher"`
+	EndTime       int64  `json:"end_time" binding:"required"`
+}
+
+type SignShareExecuteRequest struct {
+	Special map[string]interface{} `json:"special_params"`
+}
+
 type AddWhitelistRequest struct {
 	Mobile string `json:"mobile" binding:"required"`
 }
 
 type BatchWhitelistRequest struct {
 	Mobiles string `json:"mobiles" binding:"required"`
+}
+
+type AdminCreateAccountRequest struct {
+	Mobile   string `json:"mobile" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+type CourseRef struct {
+	CourseID int64 `json:"course_id" binding:"required"`
+	ClassID  int64 `json:"class_id" binding:"required"`
+}
+
+type AdminUpdateCourseSelectionRequest struct {
+	Courses []CourseRef `json:"courses" binding:"required"`
+}
+
+type AdminAddUserCourseRequest struct {
+	CourseID   int64  `json:"course_id" binding:"required"`
+	ClassID    int64  `json:"class_id" binding:"required"`
+	Name       string `json:"name"`
+	Teacher    string `json:"teacher"`
+	Icon       string `json:"icon"`
+	IsSelected *bool  `json:"is_selected"`
+}
+
+type AdminCopyCourseSelectionRequest struct {
+	SourceUID  int64   `json:"source_uid" binding:"required"`
+	TargetUIDs []int64 `json:"target_uids" binding:"required"`
+}
+
+type AdminClassGroupRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+type AdminClassGroupMembersRequest struct {
+	UserUIDs []int64 `json:"user_uids"`
+}
+
+type AdminClassGroupCopySelectionRequest struct {
+	SourceUID int64  `json:"source_uid" binding:"required"`
+	Mode      string `json:"mode" binding:"required"`
 }

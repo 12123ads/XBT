@@ -52,7 +52,25 @@ CREATE TABLE IF NOT EXISTS user_courses (
   CONSTRAINT uq_user_courses_user_course_class UNIQUE (user_uid, course_id, class_id)
 );
 
--- 5) 签到活动缓存表
+-- 5) 班级分组表
+CREATE TABLE IF NOT EXISTS class_groups (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 6) 班级分组成员表；一个账号只能属于一个班级
+CREATE TABLE IF NOT EXISTS class_group_members (
+  id BIGSERIAL PRIMARY KEY,
+  group_id BIGINT NOT NULL,
+  user_uid BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 7) 签到活动缓存表
 CREATE TABLE IF NOT EXISTS sign_activities (
   id BIGSERIAL PRIMARY KEY,
   activity_id BIGINT NOT NULL UNIQUE,
@@ -64,7 +82,26 @@ CREATE TABLE IF NOT EXISTS sign_activities (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 6) 签到记录表
+-- 8) 签到分享链接表
+CREATE TABLE IF NOT EXISTS sign_shares (
+  id BIGSERIAL PRIMARY KEY,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  creator_uid BIGINT NOT NULL,
+  activity_id BIGINT NOT NULL,
+  course_id BIGINT NOT NULL,
+  class_id BIGINT NOT NULL,
+  sign_type INTEGER NOT NULL,
+  if_refresh_ewm BOOLEAN NOT NULL DEFAULT FALSE,
+  activity_name VARCHAR(255) NOT NULL,
+  course_name VARCHAR(255) NOT NULL,
+  course_teacher VARCHAR(255) NOT NULL DEFAULT '',
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 9) 签到记录表
 CREATE TABLE IF NOT EXISTS sign_records (
   id BIGSERIAL PRIMARY KEY,
   user_uid BIGINT NOT NULL,
@@ -79,6 +116,11 @@ CREATE TABLE IF NOT EXISTS sign_records (
 -- 常用查询索引
 CREATE INDEX IF NOT EXISTS idx_user_courses_user_uid ON user_courses (user_uid);
 CREATE INDEX IF NOT EXISTS idx_user_courses_course_class ON user_courses (course_id, class_id);
+CREATE INDEX IF NOT EXISTS idx_class_group_members_group_id ON class_group_members (group_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_class_group_members_user_uid ON class_group_members (user_uid);
+CREATE INDEX IF NOT EXISTS idx_sign_shares_creator_uid ON sign_shares (creator_uid);
+CREATE INDEX IF NOT EXISTS idx_sign_shares_activity_id ON sign_shares (activity_id);
+CREATE INDEX IF NOT EXISTS idx_sign_shares_expires_at ON sign_shares (expires_at);
 CREATE INDEX IF NOT EXISTS idx_sign_records_activity_id ON sign_records (activity_id);
 CREATE INDEX IF NOT EXISTS idx_sign_records_user_uid ON sign_records (user_uid);
 CREATE INDEX IF NOT EXISTS idx_whitelists_permission ON whitelists (permission);

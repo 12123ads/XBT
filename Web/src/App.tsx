@@ -7,6 +7,8 @@ import SignDetail from './pages/SignDetail';
 import Whitelist from './pages/Whitelist';
 import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
+import AdminPanel from './pages/AdminPanel';
+import SharedSign from './pages/SharedSign';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -55,10 +57,12 @@ function App() {
         <div className="max-w-[480px] mx-auto h-full bg-white shadow-xl relative flex flex-col overflow-hidden min-h-0">
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/share/sign/:token" element={<SharedSign />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/" element={<Lobby />} />
               <Route path="/courses" element={<Courses />} />
               <Route path="/sign/:id" element={<SignDetail />} />
+              <Route path="/admin/panel" element={<AdminPanel />} />
               <Route path="/admin/whitelist" element={<Whitelist />} />
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />

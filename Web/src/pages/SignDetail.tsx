@@ -12,12 +12,15 @@ import {
   BookOpen,
   User,
   Fingerprint,
-  RectangleEllipsis
+  RectangleEllipsis,
+  Share2,
+  Copy
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
 import { useAuthStore } from '../store/auth';
-import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem } from '../types';
+import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignShareCreateResponse } from '../types';
+import { getBrowserLocation } from '../utils/geolocation';
 import config from '../../config.yaml';
 
 // Import refactored components
@@ -29,6 +32,10 @@ import { NormalInput } from '../components/sign/NormalInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
 
 const LOCATION_PRESETS = config.sign?.location_presets || [];
+
+const getErrorMessage = (error: unknown, fallback: string) => {
+  return error instanceof Error ? error.message : fallback;
+};
 
 const SignDetail = () => {
   const location = useLocation();
@@ -48,6 +55,10 @@ const SignDetail = () => {
   const [lng, setLng] = useState('');
   const [locationStr, setLocationStr] = useState('');
   const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [isCreatingShare, setIsCreatingShare] = useState(false);
+  const [shareLink, setShareLink] = useState('');
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   
   const [showProgress, setShowProgress] = useState(false);
   const [signStatuses, setSignStatuses] = useState<Record<number, Partial<SignStatusMessage>>>({});
@@ -143,6 +154,69 @@ const SignDetail = () => {
   const selectAll = () => {
     if (!classmates) return;
     setSelectedUids(selectedUids.length === classmates.length ? [] : classmates.map(c => c.uid));
+  };
+
+  const applyLocation = (nextLat: string, nextLng: string, nextDescription: string) => {
+    setLat(nextLat);
+    setLng(nextLng);
+    setLocationStr(nextDescription);
+  };
+
+  const handleUseBrowserLocation = async () => {
+    if (isLocating) return;
+    setIsLocating(true);
+    try {
+      const current = await getBrowserLocation();
+      applyLocation(current.lat, current.lng, current.description);
+      setIsLocationPickerOpen(false);
+      toast.success(`已获取当前位置，精度约 ${current.accuracy} 米`);
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, '获取当前位置失败'));
+    } finally {
+      setIsLocating(false);
+    }
+  };
+
+  const buildShareUrl = (token: string) => `${window.location.origin}${window.location.pathname}#/share/sign/${token}`;
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleCreateShare = async () => {
+    if (!activity || isCreatingShare) return;
+    if (Date.now() > activity.end_time) {
+      toast.error('该签到已结束，无法生成分享链接');
+      return;
+    }
+    setIsCreatingShare(true);
+    try {
+      const response = await client.post<ApiResponse<SignShareCreateResponse>>('/sign/shares', {
+        activity_id: activity.active_id,
+        course_id: activity.course_id,
+        class_id: activity.class_id,
+        sign_type: activity.sign_type,
+        if_refresh_ewm: activity.if_refresh_ewm,
+        activity_name: activity.activity_name,
+        course_name: course?.course_name || activity.course_name,
+        course_teacher: course?.course_teacher || activity.course_teacher,
+        end_time: activity.end_time,
+      });
+      const nextLink = buildShareUrl(response.data.data.token);
+      setShareLink(nextLink);
+      setIsShareDialogOpen(true);
+      const copied = await copyText(nextLink);
+      toast.success(copied ? '分享链接已复制' : '分享链接已生成，请手动复制');
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, '生成分享链接失败'));
+    } finally {
+      setIsCreatingShare(false);
+    }
   };
 
   const handleExecute = async () => {
@@ -339,6 +413,15 @@ const SignDetail = () => {
           <h2 className="font-bold text-slate-900 truncate">{getSignTypeName()}</h2>
           <p className="text-[10px] font-medium text-slate-400 truncate tracking-wide">{activity.course_name}</p>
         </div>
+        <button
+          type="button"
+          onClick={handleCreateShare}
+          disabled={isCreatingShare || isEnded}
+          className="relative z-10 p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-40"
+          title="生成分享链接"
+        >
+          {isCreatingShare ? <Loader2 size={20} className="animate-spin" /> : <Share2 size={20} />}
+        </button>
         <div className="absolute -right-8 -bottom-4 text-blue-600/10 pointer-events-none transform rotate-12">
           {getSignIcon(120)}
         </div>
@@ -374,7 +457,15 @@ const SignDetail = () => {
           <div className="p-5 pb-4">
             {activity.sign_type === 3 && <GestureInput value={signCode} onChange={setSignCode} />}
             {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
-            {activity.sign_type === 4 && <LocationInput name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''} description={locationStr} onOpen={() => setIsLocationPickerOpen(true)} />}
+            {activity.sign_type === 4 && (
+              <LocationInput
+                name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
+                description={locationStr}
+                onOpen={() => setIsLocationPickerOpen(true)}
+                onLocate={handleUseBrowserLocation}
+                isLocating={isLocating}
+              />
+            )}
             {activity.sign_type === 2 && <QrInput />}
             {activity.sign_type === 0 && <NormalInput />}
           </div>
@@ -431,15 +522,53 @@ const SignDetail = () => {
       </div>
 
       <AnimatePresence>
+        {isShareDialogOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsShareDialogOpen(false)}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8" />
+              <div className="flex items-start gap-4 mb-5">
+                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                  <Share2 size={22} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-xl font-black text-slate-900">签到分享链接</h3>
+                  <p className="text-xs font-bold text-slate-500 mt-1">对方无需登录，完成全部签到后链接会失效。</p>
+                </div>
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-3 border border-slate-100">
+                <input value={shareLink} readOnly className="w-full bg-transparent text-xs font-mono text-slate-600 outline-none" onFocus={(e) => e.currentTarget.select()} />
+              </div>
+              <button type="button" onClick={async () => { const copied = await copyText(shareLink); toast.success(copied ? '已复制分享链接' : '复制失败，请手动复制'); }} className="w-full mt-5 py-3.5 rounded-xl bg-blue-600 text-white text-sm font-black shadow-lg shadow-blue-100 flex items-center justify-center gap-2">
+                <Copy size={18} />
+                复制链接
+              </button>
+              <button type="button" onClick={() => setIsShareDialogOpen(false)} className="w-full mt-3 py-3 text-slate-400 text-sm font-bold">关闭</button>
+            </motion.div>
+          </motion.div>
+        )}
         {isLocationPickerOpen && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsLocationPickerOpen(false)}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
               <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
               <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">{LOCATION_PRESETS.map((p: any, i: number) => {
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">
+                <motion.div
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleUseBrowserLocation}
+                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !LOCATION_PRESETS.some((p: any) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
+                >
+                  <div className="flex-1 min-w-0 pr-4">
+                    <div className="font-bold text-slate-800 mb-0.5 text-sm">使用浏览器当前位置</div>
+                    <div className="text-[10px] text-slate-400 font-medium truncate">
+                      {isLocating ? '正在请求定位权限并转换为 BD-09' : '从系统定位服务读取并转换为 BD-09'}
+                    </div>
+                  </div>
+                  {isLocating ? <Loader2 size={20} className="text-blue-600 shrink-0 animate-spin" /> : <MapPin size={20} className="text-blue-600 shrink-0" />}
+                </motion.div>
+                {LOCATION_PRESETS.map((p: any, i: number) => {
                 const isSelected = p.lat === lat && p.lng === lng;
                 return (
-                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { setLat(p.lat); setLng(p.lng); setLocationStr(p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
+                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { applyLocation(p.lat, p.lng, p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
                     <div className="flex-1 min-w-0 pr-4"><div className="font-bold text-slate-800 mb-0.5 text-sm">{p.name}</div><div className="text-[10px] text-slate-400 font-medium truncate">{p.description}</div></div>
                     {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
                   </motion.div>

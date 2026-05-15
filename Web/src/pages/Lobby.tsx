@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import {
   User as UserIcon,
+  Users,
   Settings,
   ShieldCheck,
   RefreshCw,
@@ -229,14 +230,24 @@ const Lobby = () => {
               <RefreshIndicator spinning={isLoading} />
             </motion.button>
             {user && user.permission >= 2 && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => navigate('/admin/whitelist')}
-                className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
-                title="白名单管理"
-              >
-                <ShieldCheck size={20} />
-              </motion.button>
+              <>
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => navigate('/admin/panel')}
+                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  title="管理面板"
+                >
+                  <Users size={20} />
+                </motion.button>
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => navigate('/admin/whitelist')}
+                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  title="白名单管理"
+                >
+                  <ShieldCheck size={20} />
+                </motion.button>
+              </>
             )}
           </div>
         </div>

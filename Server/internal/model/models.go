@@ -44,6 +44,22 @@ type UserCourse struct {
 	UpdatedAt  time.Time `json:"-"`
 }
 
+type ClassGroup struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"size:128;not null" json:"name"`
+	Description string    `gorm:"size:512" json:"description"`
+	CreatedAt   time.Time `json:"-"`
+	UpdatedAt   time.Time `json:"-"`
+}
+
+type ClassGroupMember struct {
+	ID        uint      `gorm:"primaryKey" json:"-"`
+	GroupID   uint      `gorm:"not null;index" json:"group_id"`
+	UserUID   int64     `gorm:"not null;uniqueIndex" json:"user_uid"`
+	CreatedAt time.Time `json:"-"`
+	UpdatedAt time.Time `json:"-"`
+}
+
 type SignActivity struct {
 	ID           uint      `gorm:"primaryKey" json:"-"`
 	ActivityID   int64     `gorm:"unique;not null" json:"activity_id"`
@@ -53,6 +69,24 @@ type SignActivity struct {
 	IfRefreshEWM bool      `gorm:"not null;default:false" json:"if_refresh_ewm"`
 	CreatedAt    time.Time `json:"-"`
 	UpdatedAt    time.Time `json:"-"`
+}
+
+type SignShare struct {
+	ID            uint       `gorm:"primaryKey" json:"-"`
+	TokenHash     string     `gorm:"size:64;uniqueIndex;not null" json:"-"`
+	CreatorUID    int64      `gorm:"not null;index" json:"creator_uid"`
+	ActivityID    int64      `gorm:"not null;index" json:"activity_id"`
+	CourseID      int64      `gorm:"not null" json:"course_id"`
+	ClassID       int64      `gorm:"not null" json:"class_id"`
+	SignType      int        `gorm:"not null" json:"sign_type"`
+	IfRefreshEWM  bool       `gorm:"not null;default:false" json:"if_refresh_ewm"`
+	ActivityName  string     `gorm:"size:255;not null" json:"activity_name"`
+	CourseName    string     `gorm:"size:255;not null" json:"course_name"`
+	CourseTeacher string     `gorm:"size:255" json:"course_teacher"`
+	ExpiresAt     time.Time  `gorm:"not null;index" json:"expires_at"`
+	UsedAt        *time.Time `json:"used_at"`
+	CreatedAt     time.Time  `json:"-"`
+	UpdatedAt     time.Time  `json:"-"`
 }
 
 type SignRecord struct {

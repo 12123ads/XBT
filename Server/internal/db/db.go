@@ -34,7 +34,10 @@ func New(cfg config.Config) (*gorm.DB, error) {
 		&model.Whitelist{},
 		&model.Course{},
 		&model.UserCourse{},
+		&model.ClassGroup{},
+		&model.ClassGroupMember{},
 		&model.SignActivity{},
+		&model.SignShare{},
 		&model.SignRecord{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate failed: %w", err)

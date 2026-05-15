@@ -8,16 +8,11 @@ import client from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { ProgressCard } from '../components/sign/ProgressCard';
 import type { ApiResponse, SignStatusMessage, Classmate, User } from '../types';
+import { parseChaoxingQrText, type QrData } from '../utils/qr';
 import scanCursor from '../assets/scan_cursor.png';
 import config from '../../config.yaml';
 
 const LOCATION_PRESETS = config.sign?.location_presets || [];
-
-interface QrData {
-  enc: string;
-  c: string;
-  timestamp: number;
-}
 
 type NativeCameraBridge = {
   isReady?: () => boolean;
@@ -504,21 +499,6 @@ const FullScanner = () => {
     };
   }, [isNativeBridgeMode]);
 
-  const parseQrText = (text: string): QrData | null => {
-    if (!text.includes("mobilelearn.chaoxing.com")) return null;
-    try {
-      const url = new URL(text);
-      const enc = url.searchParams.get('enc');
-      const c = url.searchParams.get('c');
-      if (enc) return { enc, c: c || '', timestamp: Date.now() };
-    } catch (e) {
-      const encMatch = text.match(/[?&]enc=([^&]+)/);
-      const cMatch = text.match(/[?&]c=([^&]+)/);
-      if (encMatch) return { enc: encMatch[1], c: cMatch ? cMatch[1] : '', timestamp: Date.now() };
-    }
-    return null;
-  };
-
   const handleExecute = async (initialQr: QrData) => {
     if (isExecutingRef.current) return;
     setIsExecuting(true);
@@ -615,7 +595,7 @@ const FullScanner = () => {
     const now = Date.now();
     if (isExecuting || isExecutingRef.current || (now - lastScanTimeRef.current < 2000)) return;
 
-    const qr = parseQrText(decodedText);
+    const qr = parseChaoxingQrText(decodedText);
     if (qr) {
       lastScanTimeRef.current = now;
       if (!latestQrDataRef.current || latestQrDataRef.current.enc !== qr.enc) setLatestQrData(qr);

@@ -342,8 +342,72 @@ GET /api/sign/classmates?course_id=222&class_id=111
   - `latitude` (required)
   - `longitude` (required)
   - `description` (required)
+  - 位置预设约定使用百度 `BD-09` 坐标系；字段格式仍为十进制度字符串。
+  - 浏览器定位来源为 `WGS-84`，前端会离线转换为百度 `BD-09` 后提交。
 - 签到码签到(`5`):
   - `sign_code` (required)
+
+### 5.5 签到分享接口
+
+签到分享用于生成免登录链接。分享页不会返回或展示账号列表；执行目标由后端按分享者在当前课程班级下可代签范围动态计算。
+
+#### 5.5.1 创建分享链接
+- Method: `POST`
+- Path: `/api/sign/shares`
+- Auth: 是
+
+请求体：
+
+```json
+{
+  "activity_id": 123456,
+  "course_id": 222,
+  "class_id": 111,
+  "sign_type": 5,
+  "if_refresh_ewm": false,
+  "activity_name": "签到",
+  "course_name": "高等数学",
+  "course_teacher": "李老师",
+  "end_time": 1760000000000
+}
+```
+
+响应体 `data`:
+
+```json
+{
+  "token": "raw-share-token",
+  "expires_at": 1760000000000
+}
+```
+
+#### 5.5.2 获取分享活动信息
+- Method: `GET`
+- Path: `/api/sign/shares/:token`
+- Auth: 否
+
+响应体 `data` 只包含活动和签到类型信息，不包含账号信息。
+
+#### 5.5.3 执行分享签到
+- Method: `POST`
+- Path: `/api/sign/shares/:token/execute`
+- Auth: 否
+
+请求体：
+
+```json
+{
+  "special_params": {
+    "sign_code": "1234"
+  }
+}
+```
+
+说明：
+- 普通签到可传空 `special_params`。
+- 二维码签到传 `enc/c`。
+- 位置签到传 `latitude/longitude/description`，坐标使用百度 `BD-09`。
+- 当目标范围全部成功或已签到后，分享链接会标记为已使用并失效；部分失败时可在活动结束前继续重试。
 
 ---
 
@@ -447,6 +511,207 @@ DELETE /api/admin/whitelist/users/12
 
 说明：
 - 管理员账号不允许删除。
+
+### 6.5 管理面板账号与课程接口（管理员）
+
+管理面板用于集中添加账号、同步账号课程、维护某个账号参与代签的课程，并把同一组选中课程一键套用给其他账号。
+
+#### 6.5.1 获取已保存账号
+- Method: `GET`
+- Path: `/api/admin/accounts`
+- Auth: 是（管理员）
+
+响应体 `data`:
+
+```json
+[
+  {
+    "uid": 343479151,
+    "name": "张三",
+    "mobile_masked": "138****0000",
+    "avatar": "https://...",
+    "permission": 1,
+    "last_login_at": 1760000000000,
+    "course_count": 12,
+    "selected_count": 3
+  }
+]
+```
+
+#### 6.5.2 添加账号并同步课程
+- Method: `POST`
+- Path: `/api/admin/accounts`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "mobile": "13800000000",
+  "password": "your_password"
+}
+```
+
+说明：
+- 后端会登录学习通校验账号密码，并保存加密后的凭据。
+- 新账号会自动加入普通用户白名单；若该手机号已是管理员，不会降级。
+- 添加成功后会尝试同步课程，失败时仍返回账号信息与 `sync_message`。
+
+#### 6.5.3 获取指定账号课程
+- Method: `GET`
+- Path: `/api/admin/accounts/:uid/courses`
+- Auth: 是（管理员）
+
+#### 6.5.4 同步指定账号课程
+- Method: `POST`
+- Path: `/api/admin/accounts/:uid/courses/sync`
+- Auth: 是（管理员）
+
+#### 6.5.5 手动给指定账号添加课程
+- Method: `POST`
+- Path: `/api/admin/accounts/:uid/courses`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "course_id": 222,
+  "class_id": 111,
+  "name": "高等数学",
+  "teacher": "李老师",
+  "icon": "https://...",
+  "is_selected": true
+}
+```
+
+#### 6.5.6 更新指定账号的代签课程选择
+- Method: `PUT`
+- Path: `/api/admin/accounts/:uid/courses/selection`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "courses": [
+    { "course_id": 222, "class_id": 111 }
+  ]
+}
+```
+
+#### 6.5.7 一键套用课程
+- Method: `POST`
+- Path: `/api/admin/courses/copy-selection`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "source_uid": 343479151,
+  "target_uids": [10001, 10002]
+}
+```
+
+说明：
+- 后端会读取 `source_uid` 当前已选课程。
+- 对每个目标账号创建或更新相同的 `user_courses` 关系，并设为 `is_selected=true`。
+
+### 6.6 班级分组与班级课程同步（管理员）
+
+班级分组用于把账号按班级归档，并以班级为单位同步代签课程设置。这里的“班级”是后台管理分组，不是学习通课程里的 `class_id`。
+
+#### 6.6.1 获取班级分组
+- Method: `GET`
+- Path: `/api/admin/class-groups`
+- Auth: 是（管理员）
+
+响应体 `data`:
+
+```json
+[
+  {
+    "id": 1,
+    "name": "计科 2301",
+    "description": "一班",
+    "member_count": 2,
+    "member_uids": [343479151, 343479152]
+  }
+]
+```
+
+#### 6.6.2 创建班级分组
+- Method: `POST`
+- Path: `/api/admin/class-groups`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "name": "计科 2301",
+  "description": "一班"
+}
+```
+
+#### 6.6.3 更新班级分组
+- Method: `PUT`
+- Path: `/api/admin/class-groups/:id`
+- Auth: 是（管理员）
+
+请求体同创建接口。
+
+#### 6.6.4 删除班级分组
+- Method: `DELETE`
+- Path: `/api/admin/class-groups/:id`
+- Auth: 是（管理员）
+
+说明：只删除班级分组和成员关系，不删除账号、课程或签到记录。
+
+#### 6.6.5 替换班级成员
+- Method: `PUT`
+- Path: `/api/admin/class-groups/:id/members`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "user_uids": [343479151, 343479152]
+}
+```
+
+说明：一个账号只能属于一个班级；如果账号已在其他班级，会移动到当前班级。
+
+#### 6.6.6 按班级同步课程
+- Method: `POST`
+- Path: `/api/admin/class-groups/:id/courses/copy-selection`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "source_uid": 343479151,
+  "mode": "replace"
+}
+```
+
+`mode` 可选值：
+- `replace`: 先清空目标成员已选代签课程，再套用源账号已选课程。
+- `append`: 只追加源账号已选课程，不取消目标成员原有选择。
+
+响应体 `data`:
+
+```json
+{
+  "target_count": 3,
+  "course_count": 10,
+  "copied_relations": 30,
+  "mode": "replace"
+}
+```
 
 ---
 

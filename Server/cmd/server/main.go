@@ -31,6 +31,7 @@ func main() {
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
 	whitelistHandler := handler.NewWhitelistHandler(database)
+	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
 
 	r := gin.Default()
 
@@ -40,6 +41,8 @@ func main() {
 			c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"service": "xbt2-server"}})
 		})
 		api.POST("/auth/login", authHandler.Login)
+		api.GET("/sign/shares/:token", signHandler.GetShare)
+		api.POST("/sign/shares/:token/execute", signHandler.ExecuteShare)
 
 		authed := api.Group("")
 		authed.Use(middleware.Auth(jwtSvc))
@@ -52,6 +55,7 @@ func main() {
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
+			authed.POST("/sign/shares", signHandler.CreateShare)
 
 			admin := authed.Group("/admin")
 			admin.Use(middleware.AdminOnly())
@@ -60,6 +64,21 @@ func main() {
 				admin.POST("/whitelist/users", whitelistHandler.CreateUser)
 				admin.POST("/whitelist/users/import", whitelistHandler.BatchImportUsers)
 				admin.DELETE("/whitelist/users/:id", whitelistHandler.DeleteUser)
+
+				admin.GET("/accounts", adminAccountHandler.ListAccounts)
+				admin.POST("/accounts", adminAccountHandler.CreateAccount)
+				admin.GET("/accounts/:uid/courses", adminAccountHandler.ListUserCourses)
+				admin.POST("/accounts/:uid/courses", adminAccountHandler.AddUserCourse)
+				admin.POST("/accounts/:uid/courses/sync", adminAccountHandler.SyncUserCourses)
+				admin.PUT("/accounts/:uid/courses/selection", adminAccountHandler.UpdateUserCourseSelection)
+				admin.POST("/courses/copy-selection", adminAccountHandler.CopySelectedCourses)
+
+				admin.GET("/class-groups", adminAccountHandler.ListClassGroups)
+				admin.POST("/class-groups", adminAccountHandler.CreateClassGroup)
+				admin.PUT("/class-groups/:id", adminAccountHandler.UpdateClassGroup)
+				admin.DELETE("/class-groups/:id", adminAccountHandler.DeleteClassGroup)
+				admin.PUT("/class-groups/:id/members", adminAccountHandler.UpdateClassGroupMembers)
+				admin.POST("/class-groups/:id/courses/copy-selection", adminAccountHandler.CopyClassGroupSelectedCourses)
 			}
 		}
 	}
