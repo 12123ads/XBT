@@ -76,7 +76,7 @@ curl -I http://127.0.0.1:5173
 编辑 `/etc/caddy/Caddyfile`，新增：
 
 ```caddy
-xbt.rxzh.cc {
+your-domain.example {
     reverse_proxy 127.0.0.1:5173
 }
 ```
@@ -91,8 +91,8 @@ sudo systemctl reload caddy
 验证：
 
 ```bash
-curl -I https://xbt.rxzh.cc
-curl https://xbt.rxzh.cc/api/health
+curl -I https://your-domain.example
+curl https://your-domain.example/api/health
 ```
 
 ---
@@ -241,7 +241,7 @@ Android 壳内加载的前端地址在以下文件：
 修改字段：
 
 ```xml
-<string name="target_url">https://xbt.rxzh.cc/</string>
+<string name="target_url">https://your-domain.example/</string>
 ```
 
 如果项目里还没有 `strings.xml`（只有 `strings_example.xml`），先复制：
