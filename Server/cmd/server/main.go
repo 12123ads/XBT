@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"strings"
 
@@ -33,7 +34,10 @@ func main() {
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
-	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmx.New(cfg.AllowInsecureTLS), database, xxtClient, credentialCrypto)
+	qmxClient := qmx.New(cfg.AllowInsecureTLS)
+	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmxClient, database, xxtClient, credentialCrypto)
+	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto)
+	qmxAutoSignHandler := handler.NewAdminQMXAutoSignHandler(database, qmxAutoSignSvc)
 
 	r := gin.Default()
 
@@ -84,10 +88,18 @@ func main() {
 				admin.DELETE("/class-groups/:id", adminAccountHandler.DeleteClassGroup)
 				admin.PUT("/class-groups/:id/members", adminAccountHandler.UpdateClassGroupMembers)
 				admin.POST("/class-groups/:id/courses/copy-selection", adminAccountHandler.CopyClassGroupSelectedCourses)
+
+				admin.GET("/qmx-auto-sign", qmxAutoSignHandler.Overview)
+				admin.PUT("/qmx-auto-sign/settings", qmxAutoSignHandler.UpdateSettings)
+				admin.POST("/qmx-auto-sign/accounts/:uid/locations/preview", qmxAutoSignHandler.PreviewLocations)
+				admin.PUT("/qmx-auto-sign/accounts/:uid", qmxAutoSignHandler.UpdateAccount)
+				admin.POST("/qmx-auto-sign/accounts/:uid/run", qmxAutoSignHandler.RunAccount)
+				admin.GET("/qmx-auto-sign/records", qmxAutoSignHandler.Records)
 			}
 		}
 	}
 
+	qmxAutoSignSvc.StartScheduler(context.Background())
 	log.Printf("xbt2 server listening on %s (app_env=%s, gin_mode=%s)", cfg.HTTPAddr, cfg.AppEnv, gin.Mode())
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("server start failed: %v", err)

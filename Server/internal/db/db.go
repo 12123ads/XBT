@@ -39,6 +39,9 @@ func New(cfg config.Config) (*gorm.DB, error) {
 		&model.SignActivity{},
 		&model.SignShare{},
 		&model.SignRecord{},
+		&model.QMXAutoSignSetting{},
+		&model.QMXAutoSignAccount{},
+		&model.QMXAutoSignRecord{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate failed: %w", err)
 	}

@@ -68,10 +68,11 @@ type Requirements struct {
 
 type ExecuteInput struct {
 	CredentialInput
-	LocationIndex int
-	Longitude     float64
-	Latitude      float64
-	LocationName  string
+	LocationIndex        int
+	Longitude            float64
+	Latitude             float64
+	LocationName         string
+	RequireLocationMatch bool
 }
 
 type ExecuteResult struct {
@@ -164,12 +165,19 @@ func (c *Client) Execute(input ExecuteInput) (ExecuteResult, error) {
 		return ExecuteResult{}, err
 	}
 	if len(preview.Unsupported) > 0 {
-		return ExecuteResult{Unsupported: preview.Unsupported}, fmt.Errorf("unsupported room check requirements: %s", strings.Join(preview.Unsupported, ", "))
+		return ExecuteResult{
+			BatchName:   preview.BatchName,
+			CheckDate:   preview.CheckDate,
+			Unsupported: preview.Unsupported,
+		}, fmt.Errorf("unsupported room check requirements: %s", strings.Join(preview.Unsupported, ", "))
 	}
 
 	loc, err := selectLocation(preview.Locations, input)
 	if err != nil {
-		return ExecuteResult{}, err
+		return ExecuteResult{
+			BatchName: preview.BatchName,
+			CheckDate: preview.CheckDate,
+		}, err
 	}
 	checkTime := time.Now().Format("2006-01-02 15:04:05")
 	payload := map[string]string{
@@ -450,15 +458,15 @@ func selectLocation(locations []Location, input ExecuteInput) (Location, error) 
 	if len(locations) == 0 {
 		return Location{}, errors.New("no allowed QMX locations")
 	}
-	if input.LocationIndex >= 0 && input.LocationIndex < len(locations) {
-		return locations[input.LocationIndex], nil
-	}
 	if input.LocationName != "" {
 		for _, loc := range locations {
 			if loc.Name == input.LocationName {
 				return loc, nil
 			}
 		}
+	}
+	if input.LocationIndex >= 0 && input.LocationIndex < len(locations) {
+		return locations[input.LocationIndex], nil
 	}
 	if input.Longitude != 0 && input.Latitude != 0 {
 		best := locations[0]
@@ -474,6 +482,9 @@ func selectLocation(locations []Location, input ExecuteInput) (Location, error) 
 			return Location{}, fmt.Errorf("current location is %.0fm from nearest allowed point, outside %dm range", best.Distance, best.Range)
 		}
 		return best, nil
+	}
+	if input.RequireLocationMatch {
+		return Location{}, errors.New("saved QMX location is not available, please choose again")
 	}
 	return locations[0], nil
 }

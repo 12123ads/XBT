@@ -117,3 +117,20 @@ type AdminClassGroupCopySelectionRequest struct {
 	SourceUID int64  `json:"source_uid" binding:"required"`
 	Mode      string `json:"mode" binding:"required"`
 }
+
+type AdminQMXAutoSignSettingsRequest struct {
+	Enabled *bool `json:"enabled" binding:"required"`
+}
+
+type AdminQMXAutoSignLocationRequest struct {
+	LocationName  string  `json:"location_name" binding:"required"`
+	LocationIndex int     `json:"location_index"`
+	Longitude     float64 `json:"longitude"`
+	Latitude      float64 `json:"latitude"`
+	Range         int     `json:"range"`
+}
+
+type AdminQMXAutoSignAccountRequest struct {
+	Enabled  *bool                            `json:"enabled" binding:"required"`
+	Location *AdminQMXAutoSignLocationRequest `json:"location"`
+}

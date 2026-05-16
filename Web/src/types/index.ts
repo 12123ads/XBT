@@ -228,3 +228,61 @@ export interface AdminSignRecordPage {
   total: number;
   total_pages: number;
 }
+
+export interface AdminQMXAutoSignSettings {
+  enabled: boolean;
+  timezone: string;
+  run_at: string;
+  next_run_at: number;
+}
+
+export interface AdminQMXAutoSignConfig {
+  user_uid: number;
+  enabled: boolean;
+  location_name: string;
+  location_index: number;
+  longitude: number;
+  latitude: number;
+  range: number;
+}
+
+export interface AdminQMXAutoSignRecord {
+  id: number;
+  user_uid: number;
+  name: string;
+  mobile_masked: string;
+  trigger: 'scheduled' | 'manual' | string;
+  success: boolean;
+  code: string;
+  message: string;
+  batch_name: string;
+  check_date: string;
+  check_time: string;
+  location_name: string;
+  longitude: number;
+  latitude: number;
+  executed_at: number;
+}
+
+export interface AdminQMXAutoSignAccount {
+  uid: number;
+  name: string;
+  mobile_masked: string;
+  avatar: string;
+  permission: number;
+  config: AdminQMXAutoSignConfig;
+  last_record: AdminQMXAutoSignRecord | null;
+}
+
+export interface AdminQMXAutoSignOverview {
+  settings: AdminQMXAutoSignSettings;
+  accounts: AdminQMXAutoSignAccount[];
+}
+
+export interface AdminQMXAutoSignRecordPage {
+  items: AdminQMXAutoSignRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
