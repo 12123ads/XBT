@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS sign_records (
   user_uid BIGINT NOT NULL,
   activity_id BIGINT NOT NULL,
   source_uid BIGINT NOT NULL,
+  course_id BIGINT DEFAULT 0,
+  class_id BIGINT DEFAULT 0,
+  sign_type INTEGER DEFAULT 0,
+  activity_name VARCHAR(255) DEFAULT '',
+  course_name VARCHAR(255) DEFAULT '',
+  course_teacher VARCHAR(255) DEFAULT '',
   sign_time_ms BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -123,6 +129,8 @@ CREATE INDEX IF NOT EXISTS idx_sign_shares_activity_id ON sign_shares (activity_
 CREATE INDEX IF NOT EXISTS idx_sign_shares_expires_at ON sign_shares (expires_at);
 CREATE INDEX IF NOT EXISTS idx_sign_records_activity_id ON sign_records (activity_id);
 CREATE INDEX IF NOT EXISTS idx_sign_records_user_uid ON sign_records (user_uid);
+CREATE INDEX IF NOT EXISTS idx_sign_records_source_uid ON sign_records (source_uid);
+CREATE INDEX IF NOT EXISTS idx_sign_records_sign_time_ms ON sign_records (sign_time_ms);
 CREATE INDEX IF NOT EXISTS idx_whitelists_permission ON whitelists (permission);
 
 COMMIT;

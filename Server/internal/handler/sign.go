@@ -316,13 +316,16 @@ func (h *SignHandler) Execute(c *gin.Context) {
 		req.Special = map[string]interface{}{}
 	}
 	res := h.signService.ExecuteOne(uid, service.ExecuteSignRequest{
-		ActivityID:   req.ActivityID,
-		TargetUID:    targetUID,
-		SignType:     req.SignType,
-		CourseID:     req.CourseID,
-		ClassID:      req.ClassID,
-		IfRefreshEWM: req.IfRefreshEWM,
-		Special:      req.Special,
+		ActivityID:    req.ActivityID,
+		TargetUID:     targetUID,
+		SignType:      req.SignType,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  req.IfRefreshEWM,
+		ActivityName:  req.ActivityName,
+		CourseName:    req.CourseName,
+		CourseTeacher: req.CourseTeacher,
+		Special:       req.Special,
 	})
 	common.Success(c, res)
 }

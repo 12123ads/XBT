@@ -23,13 +23,16 @@ func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto) *S
 }
 
 type ExecuteSignRequest struct {
-	ActivityID   int64
-	TargetUID    int64
-	SignType     int
-	CourseID     int64
-	ClassID      int64
-	IfRefreshEWM bool
-	Special      map[string]interface{}
+	ActivityID    int64
+	TargetUID     int64
+	SignType      int
+	CourseID      int64
+	ClassID       int64
+	IfRefreshEWM  bool
+	ActivityName  string
+	CourseName    string
+	CourseTeacher string
+	Special       map[string]interface{}
 }
 
 type SignCheckItem struct {
@@ -105,7 +108,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 	result = strings.TrimSpace(result)
 	if result != "success" {
 		if strings.Contains(result, "您已签到过了") {
-			rec := model.SignRecord{UserUID: req.TargetUID, ActivityID: req.ActivityID, SourceUID: -1, SignTimeMS: time.Now().UnixMilli()}
+			rec := s.signRecordFromRequest(req, -1)
 			_ = s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec).Error
 			return SignExecuteResult{
 				UserID:           req.TargetUID,
@@ -119,12 +122,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(result)}
 	}
 
-	rec := model.SignRecord{
-		UserUID:    req.TargetUID,
-		ActivityID: req.ActivityID,
-		SourceUID:  operatorUID,
-		SignTimeMS: time.Now().UnixMilli(),
-	}
+	rec := s.signRecordFromRequest(req, operatorUID)
 	if err := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec).Error; err != nil {
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "保存签到结果失败，请重试"}
 	}
@@ -140,6 +138,21 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		RecordSource:     operatorUID,
 		RecordSourceName: sourceName,
 		Message:          "签到成功",
+	}
+}
+
+func (s *SignService) signRecordFromRequest(req ExecuteSignRequest, sourceUID int64) model.SignRecord {
+	return model.SignRecord{
+		UserUID:       req.TargetUID,
+		ActivityID:    req.ActivityID,
+		SourceUID:     sourceUID,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		SignType:      req.SignType,
+		ActivityName:  strings.TrimSpace(req.ActivityName),
+		CourseName:    strings.TrimSpace(req.CourseName),
+		CourseTeacher: strings.TrimSpace(req.CourseTeacher),
+		SignTimeMS:    time.Now().UnixMilli(),
 	}
 }
 

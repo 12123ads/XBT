@@ -30,29 +30,75 @@ import type {
   AdminClassGroupSyncResponse,
   AdminCreateAccountResponse,
   AdminManagedCourse,
+  AdminSignRecord,
+  AdminSignRecordPage,
   ApiResponse,
 } from '../types';
 
 type CourseRef = Pick<AdminManagedCourse, 'course_id' | 'class_id'>;
+type RecordFilters = {
+  keyword: string;
+  userUid: string;
+  sourceUid: string;
+  signType: string;
+  startTime: string;
+  endTime: string;
+};
 
 const courseKey = (course: CourseRef) => `${course.course_id}:${course.class_id}`;
 const emptyGroupForm = { name: '', description: '' };
+const emptyRecordFilters: RecordFilters = {
+  keyword: '',
+  userUid: '',
+  sourceUid: '',
+  signType: '',
+  startTime: '',
+  endTime: '',
+};
+const RECORD_PAGE_SIZE = 10;
 
 const getErrorMessage = (error: unknown, fallback: string) => {
   return error instanceof Error ? error.message : fallback;
+};
+
+const signTypeLabel = (type: number) => {
+  switch (type) {
+    case 2: return '二维码';
+    case 3: return '手势';
+    case 4: return '位置';
+    case 5: return '签到码';
+    default: return '普通';
+  }
+};
+
+const formatRecordTime = (timeMs: number) => {
+  if (!timeMs) return '未知时间';
+  return new Date(timeMs).toLocaleString('zh-CN', { hour12: false });
+};
+
+const dateTimeLocalToMs = (value: string) => {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
 };
 
 const AdminPanel = () => {
   const navigate = useNavigate();
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [classGroups, setClassGroups] = useState<AdminClassGroup[]>([]);
+  const [signRecords, setSignRecords] = useState<AdminSignRecord[]>([]);
   const [selectedUid, setSelectedUid] = useState<number | null>(null);
   const [courses, setCourses] = useState<AdminManagedCourse[]>([]);
   const [selectedCourseKeys, setSelectedCourseKeys] = useState<string[]>([]);
   const [search, setSearch] = useState('');
+  const [recordFilters, setRecordFilters] = useState<RecordFilters>(emptyRecordFilters);
+  const [recordPage, setRecordPage] = useState(1);
+  const [recordTotal, setRecordTotal] = useState(0);
+  const [recordTotalPages, setRecordTotalPages] = useState(0);
 
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(true);
   const [isLoadingGroups, setIsLoadingGroups] = useState(true);
+  const [isLoadingRecords, setIsLoadingRecords] = useState(true);
   const [isLoadingCourses, setIsLoadingCourses] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -140,10 +186,43 @@ const AdminPanel = () => {
     }
   }, []);
 
+  const loadSignRecords = useCallback(async () => {
+    setIsLoadingRecords(true);
+    try {
+      const params: Record<string, string | number> = {
+        page: recordPage,
+        page_size: RECORD_PAGE_SIZE,
+      };
+      const keyword = recordFilters.keyword.trim();
+      if (keyword) params.keyword = keyword;
+      if (recordFilters.userUid) params.user_uid = recordFilters.userUid;
+      if (recordFilters.sourceUid) params.source_uid = recordFilters.sourceUid;
+      if (recordFilters.signType) params.sign_type = recordFilters.signType;
+      const startTime = dateTimeLocalToMs(recordFilters.startTime);
+      const endTime = dateTimeLocalToMs(recordFilters.endTime);
+      if (startTime) params.start_time = startTime;
+      if (endTime) params.end_time = endTime;
+
+      const response = await client.get<ApiResponse<AdminSignRecordPage>>('/admin/sign-records', { params });
+      const data = response.data.data;
+      setSignRecords(data.items || []);
+      setRecordTotal(data.total || 0);
+      setRecordTotalPages(data.total_pages || 0);
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, '获取签到记录失败'));
+    } finally {
+      setIsLoadingRecords(false);
+    }
+  }, [recordFilters, recordPage]);
+
   useEffect(() => {
     void loadAccounts();
     void loadClassGroups();
   }, [loadAccounts, loadClassGroups]);
+
+  useEffect(() => {
+    void loadSignRecords();
+  }, [loadSignRecords]);
 
   useEffect(() => {
     if (selectedUid) {
@@ -153,6 +232,16 @@ const AdminPanel = () => {
       setSelectedCourseKeys([]);
     }
   }, [loadCourses, selectedUid]);
+
+  const updateRecordFilter = (key: keyof RecordFilters, value: string) => {
+    setRecordFilters((current) => ({ ...current, [key]: value }));
+    setRecordPage(1);
+  };
+
+  const resetRecordFilters = () => {
+    setRecordFilters(emptyRecordFilters);
+    setRecordPage(1);
+  };
 
   const buildSelectedRefs = () => {
     return courses
@@ -586,6 +675,159 @@ const AdminPanel = () => {
               ))}
             </div>
           )}
+        </section>
+
+        <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 size={18} className="text-blue-600" />
+                <h3 className="font-black text-slate-900">签到记录</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                只展示 XBT 已记录的成功或已签到结果，共 {recordTotal} 条。
+              </p>
+            </div>
+            <button
+              onClick={() => void loadSignRecords()}
+              disabled={isLoadingRecords}
+              className="h-9 px-3 rounded-xl bg-slate-100 text-slate-700 text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={isLoadingRecords ? 'animate-smooth-spin' : ''} />
+              刷新
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div className="relative col-span-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+              <input
+                value={recordFilters.keyword}
+                onChange={(event) => updateRecordFilter('keyword', event.target.value)}
+                placeholder="搜索课程 / 活动 / 姓名 / ID"
+                className="w-full pl-9 pr-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <select
+              value={recordFilters.userUid}
+              onChange={(event) => updateRecordFilter('userUid', event.target.value)}
+              className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">全部账号</option>
+              {accounts.map((account) => (
+                <option key={account.uid} value={account.uid}>{account.name || account.uid}</option>
+              ))}
+            </select>
+            <select
+              value={recordFilters.sourceUid}
+              onChange={(event) => updateRecordFilter('sourceUid', event.target.value)}
+              className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">全部来源</option>
+              <option value="-1">学习通已签到</option>
+              {accounts.map((account) => (
+                <option key={account.uid} value={account.uid}>{account.name || account.uid}</option>
+              ))}
+            </select>
+            <select
+              value={recordFilters.signType}
+              onChange={(event) => updateRecordFilter('signType', event.target.value)}
+              className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">全部类型</option>
+              <option value="0">普通</option>
+              <option value="2">二维码</option>
+              <option value="3">手势</option>
+              <option value="4">位置</option>
+              <option value="5">签到码</option>
+            </select>
+            <button
+              onClick={resetRecordFilters}
+              className="px-3 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black"
+            >
+              重置筛选
+            </button>
+            <input
+              value={recordFilters.startTime}
+              onChange={(event) => updateRecordFilter('startTime', event.target.value)}
+              type="datetime-local"
+              className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              value={recordFilters.endTime}
+              onChange={(event) => updateRecordFilter('endTime', event.target.value)}
+              type="datetime-local"
+              className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {isLoadingRecords ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((item) => <div key={item} className="h-20 rounded-2xl bg-slate-50 animate-pulse" />)}
+            </div>
+          ) : signRecords.length === 0 ? (
+            <div className="py-8 text-center rounded-2xl bg-slate-50 text-sm text-slate-400">
+              暂无符合条件的签到记录。
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {signRecords.map((record) => {
+                const sourceText = record.source_uid === -1
+                  ? '学习通签到'
+                  : record.source_uid === record.user_uid
+                    ? '本人签到'
+                    : `${record.source_name}代签`;
+                return (
+                  <div key={record.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-black text-slate-900 truncate">{record.course_name}</p>
+                        <p className="mt-0.5 text-xs text-slate-500 truncate">
+                          {record.activity_name} · {signTypeLabel(record.sign_type)}
+                        </p>
+                      </div>
+                      <div className="shrink-0 px-2.5 py-1 rounded-full bg-green-100 text-green-700 text-[11px] font-black">
+                        已签到
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+                      <div className="min-w-0">
+                        <span className="font-bold text-slate-700">账号：</span>
+                        <span className="truncate">{record.user_name} · {record.user_mobile_masked || `UID ${record.user_uid}`}</span>
+                      </div>
+                      <div className="min-w-0 text-right">
+                        <span className="font-bold text-slate-700">来源：</span>
+                        <span>{sourceText}</span>
+                      </div>
+                      <div className="col-span-2 font-mono text-slate-400">
+                        {formatRecordTime(record.sign_time_ms)} · course {record.course_id || '-'} / class {record.class_id || '-'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center justify-between">
+            <button
+              onClick={() => setRecordPage((current) => Math.max(1, current - 1))}
+              disabled={recordPage <= 1 || isLoadingRecords}
+              className="h-9 px-3 rounded-xl bg-slate-100 text-slate-700 text-xs font-black disabled:opacity-40"
+            >
+              上一页
+            </button>
+            <span className="text-xs font-bold text-slate-400">
+              第 {recordPage} / {Math.max(recordTotalPages, 1)} 页
+            </span>
+            <button
+              onClick={() => setRecordPage((current) => current + 1)}
+              disabled={recordTotalPages === 0 || recordPage >= recordTotalPages || isLoadingRecords}
+              className="h-9 px-3 rounded-xl bg-slate-100 text-slate-700 text-xs font-black disabled:opacity-40"
+            >
+              下一页
+            </button>
+          </div>
         </section>
 
         <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm overflow-hidden">

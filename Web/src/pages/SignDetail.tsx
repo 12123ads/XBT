@@ -304,6 +304,9 @@ const SignDetail = () => {
             const execResp = await client.post<ApiResponse<any>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
               course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
+              activity_name: activity.activity_name,
+              course_name: course?.course_name || activity.course_name,
+              course_teacher: course?.course_teacher || activity.course_teacher,
               special_params
             }, {
               signal: abortControllerRef.current?.signal
