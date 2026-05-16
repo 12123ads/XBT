@@ -143,13 +143,16 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 	failedCount := 0
 	for _, targetUID := range targetUIDs {
 		res := h.signService.ExecuteOne(share.CreatorUID, service.ExecuteSignRequest{
-			ActivityID:   share.ActivityID,
-			TargetUID:    targetUID,
-			SignType:     share.SignType,
-			CourseID:     share.CourseID,
-			ClassID:      share.ClassID,
-			IfRefreshEWM: share.IfRefreshEWM,
-			Special:      req.Special,
+			ActivityID:    share.ActivityID,
+			TargetUID:     targetUID,
+			SignType:      share.SignType,
+			CourseID:      share.CourseID,
+			ClassID:       share.ClassID,
+			IfRefreshEWM:  share.IfRefreshEWM,
+			ActivityName:  share.ActivityName,
+			CourseName:    share.CourseName,
+			CourseTeacher: share.CourseTeacher,
+			Special:       req.Special,
 		})
 		if res.Success || res.AlreadySigned {
 			if res.AlreadySigned {

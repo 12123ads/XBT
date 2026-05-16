@@ -713,6 +713,60 @@ DELETE /api/admin/whitelist/users/12
 }
 ```
 
+### 6.7 签到记录查询（管理员）
+
+#### 6.7.1 获取签到记录
+- Method: `GET`
+- Path: `/api/admin/sign-records`
+- Auth: 是（管理员）
+
+查询参数：
+- `page`: 页码，默认 `1`
+- `page_size`: 每页数量，默认 `20`，最大 `100`
+- `keyword`: 课程名、教师、活动名、账号名或 ID 关键词
+- `user_uid`: 目标账号 UID
+- `source_uid`: 签到来源 UID，`-1` 表示学习通已签到
+- `activity_id`: 签到活动 ID
+- `course_id`: 课程 ID
+- `class_id`: 学习通班级 ID
+- `sign_type`: 签到类型，`0` 普通、`2` 二维码、`3` 手势、`4` 位置、`5` 签到码
+- `start_time`: 签到开始时间，毫秒时间戳
+- `end_time`: 签到结束时间，毫秒时间戳
+
+响应体 `data`:
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "user_uid": 343479151,
+      "user_name": "张三",
+      "user_mobile_masked": "138****0000",
+      "source_uid": 343479152,
+      "source_name": "李四",
+      "source_mobile_masked": "139****0000",
+      "activity_id": 987654321,
+      "activity_name": "位置签到",
+      "course_id": 222,
+      "class_id": 111,
+      "course_name": "高等数学",
+      "course_teacher": "李老师",
+      "sign_type": 4,
+      "sign_time_ms": 1760000500000
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1,
+  "total_pages": 1
+}
+```
+
+说明：
+- 该接口只查询 XBT 本地 `sign_records` 中的成功或已确认已签到记录，不实时查询学习通。
+- 历史旧记录可能缺少课程或活动快照，接口会返回 `未知课程` 或 `未知活动`。
+
 ---
 
 ## 7. 错误码与常见错误

@@ -71,6 +71,7 @@ func main() {
 
 				admin.GET("/accounts", adminAccountHandler.ListAccounts)
 				admin.POST("/accounts", adminAccountHandler.CreateAccount)
+				admin.GET("/sign-records", adminAccountHandler.ListSignRecords)
 				admin.GET("/accounts/:uid/courses", adminAccountHandler.ListUserCourses)
 				admin.POST("/accounts/:uid/courses", adminAccountHandler.AddUserCourse)
 				admin.POST("/accounts/:uid/courses/sync", adminAccountHandler.SyncUserCourses)

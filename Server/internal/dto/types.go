@@ -15,14 +15,17 @@ type UpdateCourseSelectionRequest struct {
 }
 
 type SignExecuteRequest struct {
-	ActivityID   int64                  `json:"activity_id" binding:"required"`
-	TargetUID    int64                  `json:"target_uid"`
-	UserIDs      []int64                `json:"user_ids"` // backward compatibility, first element is used if target_uid is empty
-	SignType     int                    `json:"sign_type"`
-	CourseID     int64                  `json:"course_id" binding:"required"`
-	ClassID      int64                  `json:"class_id" binding:"required"`
-	IfRefreshEWM bool                   `json:"if_refresh_ewm"`
-	Special      map[string]interface{} `json:"special_params"`
+	ActivityID    int64                  `json:"activity_id" binding:"required"`
+	TargetUID     int64                  `json:"target_uid"`
+	UserIDs       []int64                `json:"user_ids"` // backward compatibility, first element is used if target_uid is empty
+	SignType      int                    `json:"sign_type"`
+	CourseID      int64                  `json:"course_id" binding:"required"`
+	ClassID       int64                  `json:"class_id" binding:"required"`
+	IfRefreshEWM  bool                   `json:"if_refresh_ewm"`
+	ActivityName  string                 `json:"activity_name"`
+	CourseName    string                 `json:"course_name"`
+	CourseTeacher string                 `json:"course_teacher"`
+	Special       map[string]interface{} `json:"special_params"`
 }
 
 type SignCheckRequest struct {

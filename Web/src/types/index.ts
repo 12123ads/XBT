@@ -202,3 +202,29 @@ export interface QMXRoomCheckExecuteResponse {
   latitude: number;
   unsupported?: string[];
 }
+
+export interface AdminSignRecord {
+  id: number;
+  user_uid: number;
+  user_name: string;
+  user_mobile_masked: string;
+  source_uid: number;
+  source_name: string;
+  source_mobile_masked: string;
+  activity_id: number;
+  activity_name: string;
+  course_id: number;
+  class_id: number;
+  course_name: string;
+  course_teacher: string;
+  sign_type: number;
+  sign_time_ms: number;
+}
+
+export interface AdminSignRecordPage {
+  items: AdminSignRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}

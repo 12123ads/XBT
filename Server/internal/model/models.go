@@ -90,11 +90,17 @@ type SignShare struct {
 }
 
 type SignRecord struct {
-	ID         uint      `gorm:"primaryKey" json:"-"`
-	UserUID    int64     `gorm:"not null;uniqueIndex:idx_user_activity" json:"user_uid"`
-	ActivityID int64     `gorm:"not null;uniqueIndex:idx_user_activity" json:"activity_id"`
-	SourceUID  int64     `gorm:"not null" json:"source_uid"`
-	SignTimeMS int64     `gorm:"not null" json:"sign_time_ms"`
-	CreatedAt  time.Time `json:"-"`
-	UpdatedAt  time.Time `json:"-"`
+	ID            uint      `gorm:"primaryKey" json:"-"`
+	UserUID       int64     `gorm:"not null;uniqueIndex:idx_user_activity" json:"user_uid"`
+	ActivityID    int64     `gorm:"not null;uniqueIndex:idx_user_activity" json:"activity_id"`
+	SourceUID     int64     `gorm:"not null;index" json:"source_uid"`
+	CourseID      int64     `json:"course_id"`
+	ClassID       int64     `json:"class_id"`
+	SignType      int       `json:"sign_type"`
+	ActivityName  string    `gorm:"size:255" json:"activity_name"`
+	CourseName    string    `gorm:"size:255" json:"course_name"`
+	CourseTeacher string    `gorm:"size:255" json:"course_teacher"`
+	SignTimeMS    int64     `gorm:"not null;index" json:"sign_time_ms"`
+	CreatedAt     time.Time `json:"-"`
+	UpdatedAt     time.Time `json:"-"`
 }
