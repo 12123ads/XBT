@@ -129,7 +129,7 @@ const AdminSignRecords = () => {
         </button>
       )}
     >
-      <div className="flex-1 min-h-0 overflow-hidden p-4 pb-[calc(16px+var(--sab))] flex flex-col gap-3">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(16px+var(--sab))] space-y-3 custom-scrollbar">
         <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm p-4 shrink-0">
           <div className="grid grid-cols-2 gap-2">
             <div className="relative col-span-2">
@@ -191,7 +191,7 @@ const AdminSignRecords = () => {
           </div>
         </section>
 
-        <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm p-4 flex-1 min-h-0 flex flex-col">
+        <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm p-4">
           <div className="flex items-center justify-between mb-3 shrink-0">
             <div className="flex items-center gap-2">
               <CheckCircle2 size={18} className="text-blue-600" />
@@ -209,7 +209,7 @@ const AdminSignRecords = () => {
               暂无符合条件的签到记录。
             </div>
           ) : (
-            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+            <div className="space-y-2">
               {records.map((record) => (
                 <div key={record.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
                   <div className="flex items-start justify-between gap-3">
