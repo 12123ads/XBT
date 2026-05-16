@@ -250,7 +250,7 @@ const AdminAccounts = () => {
         </button>
       )}
     >
-      <div className="flex-1 min-h-0 overflow-hidden p-4 pb-[calc(16px+var(--sab))] flex flex-col gap-4">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(16px+var(--sab))] space-y-4 custom-scrollbar">
         <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm p-4 shrink-0">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -312,7 +312,7 @@ const AdminAccounts = () => {
           )}
         </section>
 
-        <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm overflow-hidden flex-1 min-h-0 flex flex-col">
+        <section className="bg-white rounded-[1.75rem] border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 border-b border-slate-100 shrink-0">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -361,7 +361,7 @@ const AdminAccounts = () => {
             </div>
           </div>
 
-          <div className="p-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+          <div className="p-4">
             <div className="flex items-center justify-between px-1 text-xs mb-3">
               <span className="font-bold text-slate-500">已选 {selectedCourseKeys.length} 门</span>
               {courses.length > 0 && (

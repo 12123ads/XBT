@@ -52,10 +52,10 @@ const AdminPanel = () => {
       <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(32px+var(--sab))] custom-scrollbar">
         <div className="rounded-[2rem] bg-slate-900 p-5 text-white shadow-sm mb-4 overflow-hidden relative">
           <BookOpen size={72} className="absolute -right-4 -bottom-4 text-white/10" />
-          <p className="text-xs font-bold text-blue-200">Admin Console</p>
-          <h3 className="mt-2 text-2xl font-black">把管理拆开，别让一个页面变成长卷轴。</h3>
+          <p className="text-xs font-bold text-blue-200">Admin Workspace</p>
+          <h3 className="mt-2 text-2xl font-black">把常用管理拆成清晰的工作区</h3>
           <p className="mt-3 text-sm text-slate-300 leading-relaxed">
-            账号、班级和记录现在分别进入二级页面，数据多时只滚动当前模块。
+            账号课程、班级分组、签到记录和白名单各自独立，数据再多也能专注处理当前任务。
           </p>
         </div>
 
