@@ -108,8 +108,6 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 	result = strings.TrimSpace(result)
 	if result != "success" {
 		if strings.Contains(result, "您已签到过了") {
-			rec := s.signRecordFromRequest(req, -1)
-			_ = s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec).Error
 			return SignExecuteResult{
 				UserID:           req.TargetUID,
 				Success:          true,

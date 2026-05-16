@@ -205,12 +205,6 @@ export interface QMXRoomCheckExecuteResponse {
 
 export interface AdminSignRecord {
   id: number;
-  user_uid: number;
-  user_name: string;
-  user_mobile_masked: string;
-  source_uid: number;
-  source_name: string;
-  source_mobile_masked: string;
   activity_id: number;
   activity_name: string;
   course_id: number;
@@ -219,6 +213,12 @@ export interface AdminSignRecord {
   course_teacher: string;
   sign_type: number;
   sign_time_ms: number;
+  first_sign_time_ms: number;
+  last_sign_time_ms: number;
+  target_count: number;
+  target_names: string;
+  source_count: number;
+  source_names: string;
 }
 
 export interface AdminSignRecordPage {

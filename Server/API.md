@@ -725,7 +725,7 @@ DELETE /api/admin/whitelist/users/12
 - `page_size`: 每页数量，默认 `20`，最大 `100`
 - `keyword`: 课程名、教师、活动名、账号名或 ID 关键词
 - `user_uid`: 目标账号 UID
-- `source_uid`: 签到来源 UID，`-1` 表示学习通已签到
+- `source_uid`: XBT 签到来源 UID
 - `activity_id`: 签到活动 ID
 - `course_id`: 课程 ID
 - `class_id`: 学习通班级 ID
@@ -740,12 +740,6 @@ DELETE /api/admin/whitelist/users/12
   "items": [
     {
       "id": 1,
-      "user_uid": 343479151,
-      "user_name": "张三",
-      "user_mobile_masked": "138****0000",
-      "source_uid": 343479152,
-      "source_name": "李四",
-      "source_mobile_masked": "139****0000",
       "activity_id": 987654321,
       "activity_name": "位置签到",
       "course_id": 222,
@@ -753,7 +747,13 @@ DELETE /api/admin/whitelist/users/12
       "course_name": "高等数学",
       "course_teacher": "李老师",
       "sign_type": 4,
-      "sign_time_ms": 1760000500000
+      "sign_time_ms": 1760000500000,
+      "first_sign_time_ms": 1760000498000,
+      "last_sign_time_ms": 1760000500000,
+      "target_count": 3,
+      "target_names": "张三、王五、赵六",
+      "source_count": 1,
+      "source_names": "李四"
     }
   ],
   "page": 1,
@@ -764,7 +764,8 @@ DELETE /api/admin/whitelist/users/12
 ```
 
 说明：
-- 该接口只查询 XBT 本地 `sign_records` 中的成功或已确认已签到记录，不实时查询学习通。
+- 该接口只查询 XBT 本地执行成功的签到记录，不实时查询学习通，也不展示学习通已签到记录。
+- 同一 `activity_id/course_id/class_id/sign_type` 会合并为一条记录，`target_count` 表示本次合并后的目标人数。
 - 历史旧记录可能缺少课程或活动快照，接口会返回 `未知课程` 或 `未知活动`。
 
 ---
