@@ -16,21 +16,20 @@ const (
 )
 
 type adminSignRecordRow struct {
-	ID            uint
-	UserUID       int64
-	UserName      string
-	UserMobile    string
-	SourceUID     int64
-	SourceName    string
-	SourceMobile  string
-	ActivityID    int64
-	CourseID      int64
-	ClassID       int64
-	SignType      int
-	ActivityName  string
-	CourseName    string
-	CourseTeacher string
-	SignTimeMS    int64
+	ID              uint
+	ActivityID      int64
+	CourseID        int64
+	ClassID         int64
+	SignType        int
+	ActivityName    string
+	CourseName      string
+	CourseTeacher   string
+	FirstSignTimeMS int64
+	LastSignTimeMS  int64
+	TargetCount     int64
+	TargetNames     string
+	SourceCount     int64
+	SourceNames     string
 }
 
 func (h *AdminAccountHandler) ListSignRecords(c *gin.Context) {
@@ -39,43 +38,31 @@ func (h *AdminAccountHandler) ListSignRecords(c *gin.Context) {
 		return
 	}
 
-	base := h.db.Table("sign_records sr").
-		Joins("left join users tu on sr.user_uid = tu.uid").
-		Joins("left join users su on sr.source_uid = su.uid").
-		Joins("left join courses co on sr.course_id = co.course_id and sr.class_id = co.class_id")
-
-	var err error
-	base, err = applyAdminSignRecordFilters(c, base)
+	base, err := h.adminSignRecordBase(c)
 	if err != nil {
 		common.Fail(c, 400, err.Error())
 		return
 	}
 
+	groupQuery := base.Select(adminSignRecordGroupSelect()).
+		Group("sr.activity_id, sr.course_id, sr.class_id, sr.sign_type")
+
 	var total int64
-	if err := base.Count(&total).Error; err != nil {
+	if err := h.db.Table("(?) AS grouped_sign_records", groupQuery).Count(&total).Error; err != nil {
 		common.Fail(c, 500, "count sign records failed")
 		return
 	}
 
+	base, err = h.adminSignRecordBase(c)
+	if err != nil {
+		common.Fail(c, 400, err.Error())
+		return
+	}
+
 	var rows []adminSignRecordRow
-	err = base.Select(`
-		sr.id,
-		sr.user_uid,
-		tu.name as user_name,
-		tu.mobile as user_mobile,
-		sr.source_uid,
-		su.name as source_name,
-		su.mobile as source_mobile,
-		sr.activity_id,
-		sr.course_id,
-		sr.class_id,
-		sr.sign_type,
-		COALESCE(NULLIF(sr.activity_name, ''), '') as activity_name,
-		COALESCE(NULLIF(sr.course_name, ''), co.name, '') as course_name,
-		COALESCE(NULLIF(sr.course_teacher, ''), co.teacher, '') as course_teacher,
-		sr.sign_time_ms
-	`).
-		Order("sr.sign_time_ms desc, sr.id desc").
+	err = base.Select(adminSignRecordGroupSelect()).
+		Group("sr.activity_id, sr.course_id, sr.class_id, sr.sign_type").
+		Order("MAX(sr.sign_time_ms) desc, MIN(sr.id) desc").
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Scan(&rows).Error
@@ -100,6 +87,34 @@ func (h *AdminAccountHandler) ListSignRecords(c *gin.Context) {
 		"total":       total,
 		"total_pages": totalPages,
 	})
+}
+
+func (h *AdminAccountHandler) adminSignRecordBase(c *gin.Context) (*gorm.DB, error) {
+	query := h.db.Table("sign_records sr").
+		Joins("left join users tu on sr.user_uid = tu.uid").
+		Joins("left join users su on sr.source_uid = su.uid").
+		Joins("left join courses co on sr.course_id = co.course_id and sr.class_id = co.class_id").
+		Where("sr.source_uid <> ?", -1)
+	return applyAdminSignRecordFilters(c, query)
+}
+
+func adminSignRecordGroupSelect() string {
+	return `
+		MIN(sr.id) as id,
+		sr.activity_id,
+		sr.course_id,
+		sr.class_id,
+		sr.sign_type,
+		COALESCE(MAX(NULLIF(sr.activity_name, '')), '') as activity_name,
+		COALESCE(MAX(COALESCE(NULLIF(sr.course_name, ''), co.name, '')), '') as course_name,
+		COALESCE(MAX(COALESCE(NULLIF(sr.course_teacher, ''), co.teacher, '')), '') as course_teacher,
+		MIN(sr.sign_time_ms) as first_sign_time_ms,
+		MAX(sr.sign_time_ms) as last_sign_time_ms,
+		COUNT(*) as target_count,
+		COALESCE(STRING_AGG(DISTINCT COALESCE(NULLIF(tu.name, ''), 'UID ' || sr.user_uid::text), '、'), '') as target_names,
+		COUNT(DISTINCT sr.source_uid) as source_count,
+		COALESCE(STRING_AGG(DISTINCT COALESCE(NULLIF(su.name, ''), CASE WHEN sr.source_uid = sr.user_uid THEN COALESCE(NULLIF(tu.name, ''), 'UID ' || sr.source_uid::text) ELSE 'UID ' || sr.source_uid::text END), '、'), '') as source_names
+	`
 }
 
 func applyAdminSignRecordFilters(c *gin.Context, query *gorm.DB) (*gorm.DB, error) {
@@ -196,20 +211,6 @@ func applyAdminSignRecordFilters(c *gin.Context, query *gorm.DB) (*gorm.DB, erro
 }
 
 func adminSignRecordView(row adminSignRecordRow) gin.H {
-	userName := strings.TrimSpace(row.UserName)
-	if userName == "" {
-		userName = fmt.Sprintf("UID %d", row.UserUID)
-	}
-
-	sourceName := strings.TrimSpace(row.SourceName)
-	if row.SourceUID == -1 {
-		sourceName = "学习通"
-	} else if sourceName == "" && row.SourceUID == row.UserUID {
-		sourceName = userName
-	} else if sourceName == "" {
-		sourceName = "未知用户"
-	}
-
 	activityName := strings.TrimSpace(row.ActivityName)
 	if activityName == "" {
 		activityName = "未知活动"
@@ -218,23 +219,31 @@ func adminSignRecordView(row adminSignRecordRow) gin.H {
 	if courseName == "" {
 		courseName = "未知课程"
 	}
+	targetNames := strings.TrimSpace(row.TargetNames)
+	if targetNames == "" {
+		targetNames = fmt.Sprintf("%d 个账号", row.TargetCount)
+	}
+	sourceNames := strings.TrimSpace(row.SourceNames)
+	if sourceNames == "" {
+		sourceNames = "未知用户"
+	}
 
 	return gin.H{
-		"id":                   row.ID,
-		"user_uid":             row.UserUID,
-		"user_name":            userName,
-		"user_mobile_masked":   common.MaskMobile(row.UserMobile),
-		"source_uid":           row.SourceUID,
-		"source_name":          sourceName,
-		"source_mobile_masked": common.MaskMobile(row.SourceMobile),
-		"activity_id":          row.ActivityID,
-		"activity_name":        activityName,
-		"course_id":            row.CourseID,
-		"class_id":             row.ClassID,
-		"course_name":          courseName,
-		"course_teacher":       strings.TrimSpace(row.CourseTeacher),
-		"sign_type":            row.SignType,
-		"sign_time_ms":         row.SignTimeMS,
+		"id":                 row.ID,
+		"activity_id":        row.ActivityID,
+		"activity_name":      activityName,
+		"course_id":          row.CourseID,
+		"class_id":           row.ClassID,
+		"course_name":        courseName,
+		"course_teacher":     strings.TrimSpace(row.CourseTeacher),
+		"sign_type":          row.SignType,
+		"sign_time_ms":       row.LastSignTimeMS,
+		"first_sign_time_ms": row.FirstSignTimeMS,
+		"last_sign_time_ms":  row.LastSignTimeMS,
+		"target_count":       row.TargetCount,
+		"target_names":       targetNames,
+		"source_count":       row.SourceCount,
+		"source_names":       sourceNames,
 	}
 }
 

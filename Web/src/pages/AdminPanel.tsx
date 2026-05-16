@@ -685,7 +685,7 @@ const AdminPanel = () => {
                 <h3 className="font-black text-slate-900">签到记录</h3>
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                只展示 XBT 已记录的成功或已签到结果，共 {recordTotal} 条。
+                只展示 XBT 执行成功的签到记录；同一课程同次签到会合并，共 {recordTotal} 组。
               </p>
             </div>
             <button
@@ -724,7 +724,6 @@ const AdminPanel = () => {
               className="w-full px-3 py-3 rounded-2xl bg-slate-50 border border-slate-100 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">全部来源</option>
-              <option value="-1">学习通已签到</option>
               {accounts.map((account) => (
                 <option key={account.uid} value={account.uid}>{account.name || account.uid}</option>
               ))}
@@ -772,11 +771,6 @@ const AdminPanel = () => {
           ) : (
             <div className="space-y-2">
               {signRecords.map((record) => {
-                const sourceText = record.source_uid === -1
-                  ? '学习通签到'
-                  : record.source_uid === record.user_uid
-                    ? '本人签到'
-                    : `${record.source_name}代签`;
                 return (
                   <div key={record.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -787,17 +781,17 @@ const AdminPanel = () => {
                         </p>
                       </div>
                       <div className="shrink-0 px-2.5 py-1 rounded-full bg-green-100 text-green-700 text-[11px] font-black">
-                        已签到
+                        {record.target_count} 人
                       </div>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
-                      <div className="min-w-0">
-                        <span className="font-bold text-slate-700">账号：</span>
-                        <span className="truncate">{record.user_name} · {record.user_mobile_masked || `UID ${record.user_uid}`}</span>
+                      <div className="min-w-0 col-span-2">
+                        <span className="font-bold text-slate-700">目标：</span>
+                        <span title={record.target_names}>{record.target_names}</span>
                       </div>
-                      <div className="min-w-0 text-right">
+                      <div className="min-w-0 col-span-2">
                         <span className="font-bold text-slate-700">来源：</span>
-                        <span>{sourceText}</span>
+                        <span title={record.source_names}>{record.source_names}</span>
                       </div>
                       <div className="col-span-2 font-mono text-slate-400">
                         {formatRecordTime(record.sign_time_ms)} · course {record.course_id || '-'} / class {record.class_id || '-'}
