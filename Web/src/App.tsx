@@ -8,6 +8,9 @@ import Whitelist from './pages/Whitelist';
 import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
 import AdminPanel from './pages/AdminPanel';
+import AdminAccounts from './pages/AdminAccounts';
+import AdminClassGroups from './pages/AdminClassGroups';
+import AdminSignRecords from './pages/AdminSignRecords';
 import SharedSign from './pages/SharedSign';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
@@ -63,6 +66,9 @@ function App() {
               <Route path="/courses" element={<Courses />} />
               <Route path="/sign/:id" element={<SignDetail />} />
               <Route path="/admin/panel" element={<AdminPanel />} />
+              <Route path="/admin/accounts" element={<AdminAccounts />} />
+              <Route path="/admin/class-groups" element={<AdminClassGroups />} />
+              <Route path="/admin/sign-records" element={<AdminSignRecords />} />
               <Route path="/admin/whitelist" element={<Whitelist />} />
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
