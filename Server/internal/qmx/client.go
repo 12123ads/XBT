@@ -22,7 +22,7 @@ const (
 	apiBase       = "https://sw.qmx.chaoxing.com"
 	qmxReferer    = "https://sw.qmx.chaoxing.com/mobile/?v=68cc80a69"
 	desKey        = "QRCODENC"
-	checkType     = "1"
+	checkType     = "0"
 	normalInRange = "2"
 )
 
