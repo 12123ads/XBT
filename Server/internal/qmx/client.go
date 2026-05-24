@@ -23,7 +23,6 @@ const (
 	qmxReferer    = "https://sw.qmx.chaoxing.com/mobile/?v=68cc80a69"
 	desKey        = "QRCODENC"
 	checkType     = "0"
-	normalInRange = "2"
 )
 
 type Client struct {
@@ -44,6 +43,7 @@ type Preview struct {
 	StartTime    string       `json:"start_time"`
 	EndTime      string       `json:"end_time"`
 	LateEndTime  string       `json:"late_end_time"`
+	Cqfs         string       `json:"cqfs"`
 	Locations    []Location   `json:"locations"`
 	Requirements Requirements `json:"requirements"`
 	Unsupported  []string     `json:"unsupported"`
@@ -109,6 +109,7 @@ type studentInfoData struct {
 type batch struct {
 	ID            string          `json:"id"`
 	Pcmc          string          `json:"pcmc"`
+	Cqfs          string          `json:"cqfs"`
 	Qdwz          json.RawMessage `json:"qdwz"`
 	Cqkssj        string          `json:"cqkssj"`
 	Cqjssj        string          `json:"cqjssj"`
@@ -180,18 +181,20 @@ func (c *Client) Execute(input ExecuteInput) (ExecuteResult, error) {
 		}, err
 	}
 	checkTime := time.Now().Format("2006-01-02 15:04:05")
+	cqfs := info.Batch.Cqfs
+	if cqfs == "" {
+		cqfs = checkType
+	}
 	payload := map[string]string{
-		"jg":     normalInRange,
-		"sj":     checkTime,
-		"rq":     info.Cqrq,
-		"pcId":   info.Batch.ID,
-		"ldId":   info.Batch.LdID,
-		"cwId":   info.Batch.CwID,
-		"xsId":   info.Batch.XsID,
-		"cqfs":   checkType,
-		"tp":     "",
-		"dkwz":   loc.Name,
-		"lysbmc": "",
+	"jg":   "1",
+	"sj":   checkTime,
+	"rq":   info.Cqrq,
+	"pcId": info.Batch.ID,
+	"ldId": info.Batch.LdID,
+	"cwId": info.Batch.CwID,
+	"xsId": info.Batch.XsID,
+	"cqfs": cqfs,
+	"dkwz": loc.Name,
 	}
 	plain, err := json.Marshal(payload)
 	if err != nil {
@@ -405,8 +408,7 @@ func buildPreview(info studentInfoData, raw apiResponse) (Preview, error) {
 		LateDate:     info.Wgrq,
 		StartTime:    info.Batch.Cqkssj,
 		EndTime:      info.Batch.Cqjssj,
-		LateEndTime:  info.Batch.Wgjssj,
-		Locations:    locations,
+		LateEndTime:  info.Batch.Wgjssj,		Cqfs:         info.Batch.Cqfs,		Locations:    locations,
 		Requirements: reqs,
 		Unsupported:  unsupported,
 		RawCode:      raw.Code,
