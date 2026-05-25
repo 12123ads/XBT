@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"strings"
 	"sync"
@@ -198,12 +199,12 @@ func (s *QMXAutoSignService) RunAccount(uid int64, trigger string) (model.QMXAut
 		}
 		return record, err
 	}
-
+	drLng, drLat := s.driftCoordinate(account)
 	result, err := s.client.Execute(qmx.ExecuteInput{
 		CredentialInput:      input,
 		LocationIndex:        account.LocationIndex,
-		LocationName:         account.LocationName,
-		RequireLocationMatch: true,
+		LocationName:         account.LocationName,	Longitude:            drLng,
+	Latitude:             drLat,		RequireLocationMatch: true,
 	})
 	record, saveErr := s.saveResultRecord(uid, trigger, result, err)
 	if saveErr != nil {
@@ -303,9 +304,38 @@ func stringifyQMXCode(code any) string {
 }
 
 func truncateForDB(s string, max int) string {
-	runes := []rune(s)
+runes := []rune(s)
 	if len(runes) <= max {
 		return s
 	}
 	return string(runes[:max])
+}
+
+func (s *QMXAutoSignService) driftCoordinate(account model.QMXAutoSignAccount) (float64, float64) {
+preset := s.matchPreset(account)
+	if preset == nil {
+		return account.Longitude, account.Latitude
+	}
+	driftRange := preset.Range
+	if driftRange <= 0 {
+	driftRange = 400
+	}
+	angle := rand.Float64() * 2 * math.Pi
+	radius := math.Sqrt(rand.Float64()) * float64(driftRange)
+	dLat := radius * math.Cos(angle) / 111320.0
+	dLng := radius * math.Sin(angle) / (111320.0 * math.Cos(preset.Lat*math.Pi/180.0))
+	return preset.Lng + dLng, preset.Lat + dLat
+}
+
+func (s *QMXAutoSignService) matchPreset(account model.QMXAutoSignAccount) *config.QMXLocationPreset {
+	for i := range s.cfgPresets {
+		p := &s.cfgPresets[i]
+		if p.Name == account.LocationName {
+			return p
+	}
+	}
+	if account.LocationIndex >= 0 && account.LocationIndex < len(s.cfgPresets) {
+		return &s.cfgPresets[account.LocationIndex]
+	}
+	return nil
 }
