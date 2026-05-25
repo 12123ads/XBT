@@ -7,16 +7,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type QMXLocationPreset struct {
+	Name  string  `yaml:"name" json:"name"`
+	Lng   float64 `yaml:"lng" json:"lng"`
+	Lat   float64 `yaml:"lat" json:"lat"`
+	Range int     `yaml:"range" json:"range"`
+}
+
 type Config struct {
-	AppEnv            string `yaml:"app_env"`
-	HTTPAddr          string `yaml:"http_addr"`
-	JWTSecret         string `yaml:"jwt_secret"`
-	CredentialSecret  string `yaml:"credential_secret"`
-	AllowInsecureTLS  bool   `yaml:"allow_insecure_tls"`
-	ChaoxingAESKey    string `yaml:"chaoxing_aes_key"`
-	ChaoxingUserAgent string `yaml:"chaoxing_user_agent"`
-	ActivityListLimit int    `yaml:"activity_list_limit"`
-	PostgresDSN       string `yaml:"postgres_dsn"`
+	AppEnv              string               `yaml:"app_env"`
+	HTTPAddr            string               `yaml:"http_addr"`
+	JWTSecret           string               `yaml:"jwt_secret"`
+	CredentialSecret    string               `yaml:"credential_secret"`
+	AllowInsecureTLS    bool                 `yaml:"allow_insecure_tls"`
+	ChaoxingAESKey      string               `yaml:"chaoxing_aes_key"`
+	ChaoxingUserAgent   string               `yaml:"chaoxing_user_agent"`
+	ActivityListLimit   int                  `yaml:"activity_list_limit"`
+	PostgresDSN         string               `yaml:"postgres_dsn"`
+	QMXLocationPresets  []QMXLocationPreset  `yaml:"qmx_location_presets"`
 }
 
 func Load() Config {

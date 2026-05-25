@@ -57,7 +57,7 @@ func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 	common.Success(c, gin.H{
 	"settings":             h.settingsView(settings),
 	"accounts":             accounts,
-	"qmx_location_presets": service.QMXLocationPresets,
+	"qmx_location_presets": h.service.Presets(),
 	})
 }
 

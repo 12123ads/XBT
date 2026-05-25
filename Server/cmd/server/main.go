@@ -36,7 +36,7 @@ func main() {
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
 	qmxClient := qmx.New(cfg.AllowInsecureTLS)
 	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmxClient, database, xxtClient, credentialCrypto)
-	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto)
+	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto, cfg.QMXLocationPresets)
 	qmxAutoSignHandler := handler.NewAdminQMXAutoSignHandler(database, qmxAutoSignSvc)
 
 	r := gin.Default()
