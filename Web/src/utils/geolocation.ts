@@ -112,7 +112,7 @@ export const getBrowserLocation = () => {
           lat: toFixedCoord(bd09.lat),
           lng: toFixedCoord(bd09.lng),
           accuracy: roundedAccuracy,
-          description: `浏览器定位（百度 BD-09，精度约 ${roundedAccuracy} 米）`,
+          description: "中国山东省日照市东港区秦楼街道",
         });
       },
       (error) => reject(new Error(getGeolocationErrorMessage(error))),
