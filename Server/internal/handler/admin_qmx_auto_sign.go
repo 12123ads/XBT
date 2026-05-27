@@ -376,3 +376,67 @@ func parsePositiveQuery(c *gin.Context, key string, fallback int) int {
 func hasConfiguredQMXLocation(account model.QMXAutoSignAccount) bool {
 	return strings.TrimSpace(account.LocationName) != "" && account.LocationIndex >= 0
 }
+
+func (h *AdminQMXAutoSignHandler) GetOwnSettings(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	account, err := h.loadOrInitAccount(uid)
+	if err != nil {
+	common.Fail(c, 500, "query QMX auto sign settings failed")
+		return
+	}
+	var lastRecord *model.QMXAutoSignRecord
+	r, err := h.lastRecord(uid)
+	if err == nil {
+	lastRecord = r
+	}
+	common.Success(c, gin.H{
+	"config":      h.accountConfigView(account),
+	"last_record": h.recordViewPtr(lastRecord),
+	"presets":     h.service.Presets(),
+	})
+}
+
+func (h *AdminQMXAutoSignHandler) UpdateOwnSettings(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	var req dto.AdminQMXAutoSignAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+	common.Fail(c, 400, "invalid request")
+		return
+	}
+	account, err := h.loadOrInitAccount(uid)
+	if err != nil {
+	common.Fail(c, 500, "load account failed")
+		return
+	}
+	account.Enabled = *req.Enabled
+	if req.Location != nil {
+	account.LocationName  = req.LocationName
+	account.LocationIndex = req.LocationIndex
+	account.Longitude     = req.Location.Longitude
+	account.Latitude      = req.Location.Latitude
+	account.Range         = req.Location.Range
+	}
+	if err := h.db.Save(&account).Error; err != nil {
+	common.Fail(c, 500, "save QMX auto sign settings failed")
+		return
+	}
+	common.Success(c, h.accountConfigView(account))
+}
+
+func (h *AdminQMXAutoSignHandler) recordViewPtr(record *model.QMXAutoSignRecord) gin.H {
+	if record == nil {
+		return nil
+	}
+	view := h.recordView(*record, nil)
+	return view
+}
+
+func (h *AdminQMXAutoSignHandler) PreviewOwnLocations(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	preview, err := h.service.PreviewLocations(uid)
+	if err != nil {
+	common.Fail(c, 400, err.Error())
+		return
+	}
+	common.Success(c, preview)
+}

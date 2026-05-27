@@ -64,9 +64,8 @@ func main() {
 			authed.POST("/sign/shares", signHandler.CreateShare)
 			authed.POST("/qmx/room-check/preview", qmxRoomCheckHandler.Preview)
 			authed.POST("/qmx/room-check/execute", qmxRoomCheckHandler.Execute)
-
-			admin := authed.Group("/admin")
-			admin.Use(middleware.AdminOnly())
+		authed.GET("/qmx/auto-sign/settings", qmxAutoSignHandler.GetOwnSettings)
+		authed.PUT("/qmx/auto-sign/settings", qmxAutoSignHandler.UpdateOwnSettings)	authed.POST("/qmx/auto-sign/locations/preview", qmxAutoSignHandler.PreviewOwnLocations)			admin.Use(middleware.AdminOnly())
 			{
 				admin.GET("/whitelist/users", whitelistHandler.ListUsers)
 				admin.POST("/whitelist/users", whitelistHandler.CreateUser)
