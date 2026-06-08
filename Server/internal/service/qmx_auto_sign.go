@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"xbt2/server/internal/config"
 	"xbt2/server/internal/model"
 	"xbt2/server/internal/qmx"
@@ -156,7 +157,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		return nil
 	}
 
-	runID := newQMXAutoSignRunID(QMXAutoSignTriggerScheduled)
+	runID := s.scheduledQMXAutoSignRunID(time.Now())
 	sem := make(chan struct{}, qmxAutoSignMaxConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -178,6 +179,15 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 				return
 			case <-time.After(delay):
 			}
+			exists, err := s.qmxAutoSignRecordExists(runID, uid)
+			if err != nil {
+				log.Printf("QMX auto sign account %d skipped: query scheduled record failed: %v", uid, err)
+				return
+			}
+			if exists {
+				log.Printf("QMX auto sign account %d skipped: scheduled record already exists for %s", uid, runID)
+				return
+			}
 			record, err := s.runAccount(uid, QMXAutoSignTriggerScheduled, true, runID)
 			if record.ID > 0 {
 				mu.Lock()
@@ -190,9 +200,10 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		}(account.UserUID)
 	}
 	wg.Wait()
-	if savedRecords > 0 {
-		s.notifyQMXAutoSignRun(runID)
+	if savedRecords == 0 {
+		log.Printf("QMX auto sign scheduled run %s saved no new records", runID)
 	}
+	s.notifyQMXAutoSignScheduledRun(runID)
 	return nil
 }
 
@@ -335,12 +346,64 @@ func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger, runID string, 
 	return record, s.db.Create(&record).Error
 }
 
+func (s *QMXAutoSignService) scheduledQMXAutoSignRunID(now time.Time) string {
+	return QMXAutoSignTriggerScheduled + "-" + now.In(s.loc).Format("20060102")
+}
+
 func newQMXAutoSignRunID(trigger string) string {
 	var randomBytes [6]byte
 	if _, err := crand.Read(randomBytes[:]); err == nil {
 		return fmt.Sprintf("%s-%d-%s", normalizeQMXAutoSignTrigger(trigger), time.Now().UnixMilli(), hex.EncodeToString(randomBytes[:]))
 	}
 	return fmt.Sprintf("%s-%d", normalizeQMXAutoSignTrigger(trigger), time.Now().UnixNano())
+}
+
+func (s *QMXAutoSignService) qmxAutoSignRecordExists(runID string, uid int64) (bool, error) {
+	var count int64
+	if err := s.db.Model(&model.QMXAutoSignRecord{}).
+		Where("run_id = ? AND user_uid = ?", strings.TrimSpace(runID), uid).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *QMXAutoSignService) notifyQMXAutoSignScheduledRun(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || !s.qmxWebhook.Enabled() {
+		return
+	}
+
+	go func() {
+		notified, err := s.qmxAutoSignRunAlreadyNotified(runID)
+		if err != nil {
+			log.Printf("QMX auto sign webhook state failed: %v", err)
+			return
+		}
+		if notified {
+			log.Printf("QMX auto sign webhook skipped: %s has already been notified", runID)
+			return
+		}
+
+		content, err := s.qmxAutoSignRunMarkdown(runID)
+		if err != nil {
+			log.Printf("QMX auto sign webhook summary failed: %v", err)
+			return
+		}
+		if strings.TrimSpace(content) == "" {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), enterpriseWechatWebhookTimeout)
+		defer cancel()
+		if err := s.qmxWebhook.SendMarkdown(ctx, content); err != nil {
+			log.Printf("QMX auto sign webhook failed: %v", err)
+			return
+		}
+		if err := s.markQMXAutoSignRunNotified(runID, QMXAutoSignTriggerScheduled); err != nil {
+			log.Printf("QMX auto sign webhook state save failed: %v", err)
+		}
+	}()
 }
 
 func (s *QMXAutoSignService) notifyQMXAutoSignRun(runID string) {
@@ -365,6 +428,35 @@ func (s *QMXAutoSignService) notifyQMXAutoSignRun(runID string) {
 			log.Printf("QMX auto sign webhook failed: %v", err)
 		}
 	}()
+}
+
+func (s *QMXAutoSignService) qmxAutoSignRunAlreadyNotified(runID string) (bool, error) {
+	var state model.QMXAutoSignRunState
+	err := s.db.Where("run_id = ?", strings.TrimSpace(runID)).Take(&state).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return state.NotifiedAt != nil, nil
+}
+
+func (s *QMXAutoSignService) markQMXAutoSignRunNotified(runID, trigger string) error {
+	now := time.Now()
+	normalizedTrigger := normalizeQMXAutoSignTrigger(trigger)
+	state := model.QMXAutoSignRunState{
+		RunID:      strings.TrimSpace(runID),
+		Trigger:    normalizedTrigger,
+		NotifiedAt: &now,
+	}
+	return s.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "run_id"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"trigger":     normalizedTrigger,
+			"notified_at": &now,
+		}),
+	}).Create(&state).Error
 }
 
 func (s *QMXAutoSignService) qmxAutoSignRunMarkdown(runID string) (string, error) {
@@ -411,7 +503,7 @@ func (s *QMXAutoSignService) qmxAutoSignRunMarkdown(runID string) (string, error
 	}
 
 	lines := []string{
-		fmt.Sprintf("### QMX 自动签到%s", status),
+		qmxAutoSignRunTitle(runID, trigger, status),
 		fmt.Sprintf(">触发：%s", qmxAutoSignTriggerLabel(trigger)),
 		fmt.Sprintf(">结果：成功 %d / 失败 %d / 总计 %d", successCount, failureCount, len(records)),
 		fmt.Sprintf(">账号：%s", joinWebhookValues(accountNames, 12)),
@@ -432,6 +524,16 @@ func (s *QMXAutoSignService) qmxAutoSignRunMarkdown(runID string) (string, error
 		lines = append(lines, fmt.Sprintf(">失败摘要：%s", joinWebhookValues(failureLines, 6)))
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func qmxAutoSignRunTitle(runID, trigger, status string) string {
+	if normalizeQMXAutoSignTrigger(trigger) == QMXAutoSignTriggerScheduled {
+		rawDate := strings.TrimPrefix(strings.TrimSpace(runID), QMXAutoSignTriggerScheduled+"-")
+		if t, err := time.Parse("20060102", rawDate); err == nil {
+			return fmt.Sprintf("### QMX 自动签到 %s（%s）", t.Format("2006-01-02"), status)
+		}
+	}
+	return fmt.Sprintf("### QMX 自动签到%s", status)
 }
 
 func (s *QMXAutoSignService) qmxAutoSignUserMap(records []model.QMXAutoSignRecord) (map[int64]model.User, error) {

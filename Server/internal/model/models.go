@@ -153,3 +153,12 @@ type QMXAutoSignRecord struct {
 	CreatedAt    time.Time `json:"-"`
 	UpdatedAt    time.Time `json:"-"`
 }
+
+type QMXAutoSignRunState struct {
+	ID         uint       `gorm:"primaryKey" json:"-"`
+	RunID      string     `gorm:"size:64;uniqueIndex;not null" json:"run_id"`
+	Trigger    string     `gorm:"size:32;not null;index" json:"trigger"`
+	NotifiedAt *time.Time `gorm:"index" json:"notified_at"`
+	CreatedAt  time.Time  `json:"-"`
+	UpdatedAt  time.Time  `json:"-"`
+}
