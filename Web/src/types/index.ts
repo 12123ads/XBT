@@ -317,6 +317,12 @@ export interface QMXLocationPreset {
   range: number;
 }
 
+export interface AdminRuntimeSettings {
+  course_sign_webhook_url: string;
+  qmx_auto_sign_webhook_url: string;
+  qmx_location_presets: QMXLocationPreset[];
+}
+
 export interface OwnQMXAutoSignConfig {
   user_uid: number;
   enabled: boolean;

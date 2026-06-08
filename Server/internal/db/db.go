@@ -36,6 +36,7 @@ func New(cfg config.Config) (*gorm.DB, error) {
 		&model.UserCourse{},
 		&model.ClassGroup{},
 		&model.ClassGroupMember{},
+		&model.AppSetting{},
 		&model.SignActivity{},
 		&model.SignShare{},
 		&model.SignRecord{},

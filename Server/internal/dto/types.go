@@ -118,6 +118,19 @@ type AdminClassGroupCopySelectionRequest struct {
 	Mode      string `json:"mode" binding:"required"`
 }
 
+type AdminQMXLocationPresetRequest struct {
+	Name  string  `json:"name"`
+	Lng   float64 `json:"lng"`
+	Lat   float64 `json:"lat"`
+	Range int     `json:"range"`
+}
+
+type AdminRuntimeSettingsRequest struct {
+	CourseSignWebhookURL  string                          `json:"course_sign_webhook_url"`
+	QMXAutoSignWebhookURL string                          `json:"qmx_auto_sign_webhook_url"`
+	QMXLocationPresets    []AdminQMXLocationPresetRequest `json:"qmx_location_presets"`
+}
+
 type AdminQMXAutoSignSettingsRequest struct {
 	Enabled *bool `json:"enabled" binding:"required"`
 }

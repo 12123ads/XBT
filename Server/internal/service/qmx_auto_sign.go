@@ -30,13 +30,14 @@ const (
 )
 
 type QMXAutoSignService struct {
-	db         *gorm.DB
-	client     *qmx.Client
-	xxt        *xxt.Client
-	cc         *CredentialCrypto
-	loc        *time.Location
-	cfgPresets []config.QMXLocationPreset
-	qmxWebhook *EnterpriseWechatWebhookNotifier
+	db              *gorm.DB
+	client          *qmx.Client
+	xxt             *xxt.Client
+	cc              *CredentialCrypto
+	loc             *time.Location
+	cfgPresets      []config.QMXLocationPreset
+	presetsProvider func() []config.QMXLocationPreset
+	qmxWebhook      *EnterpriseWechatWebhookNotifier
 }
 
 func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset, qmxWebhook *EnterpriseWechatWebhookNotifier) *QMXAutoSignService {
@@ -48,7 +49,14 @@ func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Clien
 }
 
 func (s *QMXAutoSignService) Presets() []config.QMXLocationPreset {
+	if s.presetsProvider != nil {
+		return s.presetsProvider()
+	}
 	return s.cfgPresets
+}
+
+func (s *QMXAutoSignService) SetPresetsProvider(provider func() []config.QMXLocationPreset) {
+	s.presetsProvider = provider
 }
 
 func (s *QMXAutoSignService) EnsureSettings() (model.QMXAutoSignSetting, error) {
@@ -539,14 +547,15 @@ func (s *QMXAutoSignService) matchPreset(account model.QMXAutoSignAccount) *conf
 	if account.LocationIndex >= 0 {
 		return nil
 	}
-	for i := range s.cfgPresets {
-		p := &s.cfgPresets[i]
+	presets := s.Presets()
+	for i := range presets {
+		p := &presets[i]
 		if p.Name == account.LocationName {
 			return p
 		}
 	}
-	for i := range s.cfgPresets {
-		p := &s.cfgPresets[i]
+	for i := range presets {
+		p := &presets[i]
 		if p.Lng == account.Longitude && p.Lat == account.Latitude {
 			return p
 		}

@@ -60,6 +60,14 @@ type ClassGroupMember struct {
 	UpdatedAt time.Time `json:"-"`
 }
 
+type AppSetting struct {
+	ID         uint      `gorm:"primaryKey" json:"-"`
+	SettingKey string    `gorm:"column:setting_key;size:128;uniqueIndex;not null" json:"setting_key"`
+	Value      string    `gorm:"type:text;not null" json:"value"`
+	CreatedAt  time.Time `json:"-"`
+	UpdatedAt  time.Time `json:"-"`
+}
+
 type SignActivity struct {
 	ID           uint      `gorm:"primaryKey" json:"-"`
 	ActivityID   int64     `gorm:"unique;not null" json:"activity_id"`

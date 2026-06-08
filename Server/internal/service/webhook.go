@@ -15,8 +15,9 @@ import (
 const enterpriseWechatWebhookTimeout = 5 * time.Second
 
 type EnterpriseWechatWebhookNotifier struct {
-	url    string
-	client *http.Client
+	url         string
+	urlProvider func() string
+	client      *http.Client
 }
 
 func NewEnterpriseWechatWebhookNotifier(url string) *EnterpriseWechatWebhookNotifier {
@@ -28,8 +29,17 @@ func NewEnterpriseWechatWebhookNotifier(url string) *EnterpriseWechatWebhookNoti
 	}
 }
 
+func NewEnterpriseWechatWebhookNotifierProvider(urlProvider func() string) *EnterpriseWechatWebhookNotifier {
+	return &EnterpriseWechatWebhookNotifier{
+		urlProvider: urlProvider,
+		client: &http.Client{
+			Timeout: enterpriseWechatWebhookTimeout,
+		},
+	}
+}
+
 func (n *EnterpriseWechatWebhookNotifier) Enabled() bool {
-	return n != nil && strings.TrimSpace(n.url) != ""
+	return n != nil && n.urlValue() != ""
 }
 
 func (n *EnterpriseWechatWebhookNotifier) SendMarkdownAsync(label, content string) {
@@ -52,7 +62,8 @@ func (n *EnterpriseWechatWebhookNotifier) SendMarkdownAsync(label, content strin
 }
 
 func (n *EnterpriseWechatWebhookNotifier) SendMarkdown(ctx context.Context, content string) error {
-	if !n.Enabled() {
+	url := n.urlValue()
+	if url == "" {
 		return nil
 	}
 	payload := map[string]interface{}{
@@ -66,7 +77,7 @@ func (n *EnterpriseWechatWebhookNotifier) SendMarkdown(ctx context.Context, cont
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -83,6 +94,16 @@ func (n *EnterpriseWechatWebhookNotifier) SendMarkdown(ctx context.Context, cont
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return nil
+}
+
+func (n *EnterpriseWechatWebhookNotifier) urlValue() string {
+	if n == nil {
+		return ""
+	}
+	if n.urlProvider != nil {
+		return strings.TrimSpace(n.urlProvider())
+	}
+	return strings.TrimSpace(n.url)
 }
 
 func webhookText(value string, fallback string) string {

@@ -23,6 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("db init failed: %v", err)
 	}
+	runtimeSettingsSvc := service.NewRuntimeSettingsService(database, cfg)
 
 	jwtSvc := service.NewJWTService(cfg.JWTSecret)
 	credentialCrypto := service.NewCredentialCrypto(cfg.CredentialSecret)
@@ -30,15 +31,17 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
-	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifier(cfg.CourseSignWebhookURL)
+	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
+	adminSettingsHandler := handler.NewAdminSettingsHandler(runtimeSettingsSvc)
 	qmxClient := qmx.New(cfg.AllowInsecureTLS)
 	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmxClient, database, xxtClient, credentialCrypto)
-	qmxAutoSignWebhook := service.NewEnterpriseWechatWebhookNotifier(cfg.QMXAutoSignWebhookURL)
+	qmxAutoSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.QMXAutoSignWebhookURL)
 	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto, cfg.QMXLocationPresets, qmxAutoSignWebhook)
+	qmxAutoSignSvc.SetPresetsProvider(runtimeSettingsSvc.QMXLocationPresets)
 	qmxAutoSignHandler := handler.NewAdminQMXAutoSignHandler(database, qmxAutoSignSvc)
 
 	r := gin.Default()
@@ -82,6 +85,8 @@ func main() {
 				admin.GET("/accounts", adminAccountHandler.ListAccounts)
 				admin.POST("/accounts", adminAccountHandler.CreateAccount)
 				admin.GET("/sign-records", adminAccountHandler.ListSignRecords)
+				admin.GET("/settings", adminSettingsHandler.Get)
+				admin.PUT("/settings", adminSettingsHandler.Update)
 				admin.GET("/accounts/:uid/courses", adminAccountHandler.ListUserCourses)
 				admin.POST("/accounts/:uid/courses", adminAccountHandler.AddUserCourse)
 				admin.POST("/accounts/:uid/courses/sync", adminAccountHandler.SyncUserCourses)
