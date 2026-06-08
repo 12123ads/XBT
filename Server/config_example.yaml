@@ -22,5 +22,8 @@ chaoxing_user_agent: "Dalvik/2.1.0 (Linux; U; Android 14; Redmi K20 Pro Build/UK
 # 每门课程返回给前端的活动上限（默认 5）
 activity_list_limit: 5
 
+# 课程签到成功企业微信群机器人 webhook（留空则不推送）
+course_sign_webhook_url: ""
+
 # postgres 数据库连接字符串
 postgres_dsn: "host=example.com port=5432 user=admin password=114514 dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"

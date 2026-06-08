@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	AppEnv            string `yaml:"app_env"`
-	HTTPAddr          string `yaml:"http_addr"`
-	JWTSecret         string `yaml:"jwt_secret"`
-	CredentialSecret  string `yaml:"credential_secret"`
-	AllowInsecureTLS  bool   `yaml:"allow_insecure_tls"`
-	ChaoxingAESKey    string `yaml:"chaoxing_aes_key"`
-	ChaoxingUserAgent string `yaml:"chaoxing_user_agent"`
-	ActivityListLimit int    `yaml:"activity_list_limit"`
-	PostgresDSN       string `yaml:"postgres_dsn"`
+	AppEnv               string `yaml:"app_env"`
+	HTTPAddr             string `yaml:"http_addr"`
+	JWTSecret            string `yaml:"jwt_secret"`
+	CredentialSecret     string `yaml:"credential_secret"`
+	AllowInsecureTLS     bool   `yaml:"allow_insecure_tls"`
+	ChaoxingAESKey       string `yaml:"chaoxing_aes_key"`
+	ChaoxingUserAgent    string `yaml:"chaoxing_user_agent"`
+	ActivityListLimit    int    `yaml:"activity_list_limit"`
+	CourseSignWebhookURL string `yaml:"course_sign_webhook_url"`
+	PostgresDSN          string `yaml:"postgres_dsn"`
 }
 
 func Load() Config {

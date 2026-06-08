@@ -28,7 +28,8 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
-	signSvc := service.NewSignService(database, xxtClient, credentialCrypto)
+	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifier(cfg.CourseSignWebhookURL)
+	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)

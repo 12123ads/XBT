@@ -13,13 +13,14 @@ import (
 )
 
 type SignService struct {
-	db  *gorm.DB
-	xxt *xxt.Client
-	cc  *CredentialCrypto
+	db            *gorm.DB
+	xxt           *xxt.Client
+	cc            *CredentialCrypto
+	courseWebhook *EnterpriseWechatWebhookNotifier
 }
 
-func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto) *SignService {
-	return &SignService{db: db, xxt: xxtClient, cc: cc}
+func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
+	return &SignService{db: db, xxt: xxtClient, cc: cc, courseWebhook: courseWebhook}
 }
 
 type ExecuteSignRequest struct {
@@ -121,13 +122,17 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 	}
 
 	rec := s.signRecordFromRequest(req, operatorUID)
-	if err := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec).Error; err != nil {
+	dbResult := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec)
+	if dbResult.Error != nil {
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "保存签到结果失败，请重试"}
 	}
 
 	sourceName := s.getSourceName(operatorUID)
 	if strings.TrimSpace(sourceName) == "" {
 		sourceName = "未知用户"
+	}
+	if dbResult.RowsAffected > 0 {
+		s.notifyCourseSignSuccess(rec, target, sourceName)
 	}
 	return SignExecuteResult{
 		UserID:           req.TargetUID,
@@ -136,6 +141,47 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		RecordSource:     operatorUID,
 		RecordSourceName: sourceName,
 		Message:          "签到成功",
+	}
+}
+
+func (s *SignService) notifyCourseSignSuccess(rec model.SignRecord, target model.User, sourceName string) {
+	if !s.courseWebhook.Enabled() {
+		return
+	}
+	targetName := webhookText(target.Name, fmt.Sprintf("UID %d", rec.UserUID))
+	sourceName = webhookText(sourceName, fmt.Sprintf("UID %d", rec.SourceUID))
+	courseName := webhookText(rec.CourseName, "未知课程")
+	activityName := webhookText(rec.ActivityName, "未知活动")
+	signedAt := time.UnixMilli(rec.SignTimeMS).Format("2006-01-02 15:04:05")
+
+	content := strings.Join([]string{
+		"### 课程签到成功",
+		fmt.Sprintf(">课程：%s", courseName),
+		fmt.Sprintf(">活动：%s", activityName),
+		fmt.Sprintf(">签到用户：%s（UID %d）", targetName, rec.UserUID),
+		fmt.Sprintf(">执行人：%s（UID %d）", sourceName, rec.SourceUID),
+		fmt.Sprintf(">签到类型：%s", signTypeLabel(rec.SignType)),
+		fmt.Sprintf(">时间：%s", signedAt),
+		fmt.Sprintf(">活动 ID：%d", rec.ActivityID),
+		fmt.Sprintf(">课程/班级：%d / %d", rec.CourseID, rec.ClassID),
+	}, "\n")
+	s.courseWebhook.SendMarkdownAsync("course sign", content)
+}
+
+func signTypeLabel(signType int) string {
+	switch signType {
+	case xxt.SignNormal:
+		return "普通签到"
+	case xxt.SignQRCode:
+		return "二维码签到"
+	case xxt.SignGesture:
+		return "手势签到"
+	case xxt.SignLocation:
+		return "位置签到"
+	case xxt.SignCode:
+		return "签到码签到"
+	default:
+		return fmt.Sprintf("未知类型 %d", signType)
 	}
 }
 
