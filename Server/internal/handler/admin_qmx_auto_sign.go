@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,24 @@ import (
 )
 
 const qmxAutoSignRecordPageSizeMax = 100
+
+type adminQMXAutoSignRecordGroupRow struct {
+	ID              uint
+	RunID           string
+	Trigger         string
+	Success         bool
+	TotalCount      int64
+	SuccessCount    int64
+	FailureCount    int64
+	AccountNames    string
+	SuccessNames    string
+	FailureNames    string
+	BatchNames      string
+	LocationNames   string
+	Messages        string
+	FirstExecutedAt time.Time
+	LastExecutedAt  time.Time
+}
 
 type AdminQMXAutoSignHandler struct {
 	db      *gorm.DB
@@ -165,40 +184,30 @@ func (h *AdminQMXAutoSignHandler) Records(c *gin.Context) {
 		pageSize = qmxAutoSignRecordPageSizeMax
 	}
 
-	query := h.db.Model(&model.QMXAutoSignRecord{})
-	if trigger := strings.TrimSpace(c.Query("trigger")); trigger != "" {
-		query = query.Where("trigger = ?", trigger)
-	}
-	if uid := strings.TrimSpace(c.Query("user_uid")); uid != "" {
-		if parsed, err := strconv.ParseInt(uid, 10, 64); err == nil && parsed > 0 {
-			query = query.Where("user_uid = ?", parsed)
-		}
-	}
-
+	base := h.qmxAutoSignRecordGroupBase(c)
+	groupQuery := base.Select(qmxAutoSignRecordGroupSelect()).
+		Group(qmxAutoSignRecordRunIDExpr() + ", qar.trigger")
 	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	if err := h.db.Table("(?) AS grouped_qmx_auto_sign_records", groupQuery).Count(&total).Error; err != nil {
 		common.Fail(c, 500, "query QMX auto sign records failed")
 		return
 	}
 
-	var records []model.QMXAutoSignRecord
-	if err := query.Order("executed_at desc, id desc").
+	base = h.qmxAutoSignRecordGroupBase(c)
+	var rows []adminQMXAutoSignRecordGroupRow
+	if err := base.Select(qmxAutoSignRecordGroupSelect()).
+		Group(qmxAutoSignRecordRunIDExpr() + ", qar.trigger").
+		Order("MAX(qar.executed_at) desc, MIN(qar.id) desc").
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
-		Find(&records).Error; err != nil {
+		Scan(&rows).Error; err != nil {
 		common.Fail(c, 500, "query QMX auto sign records failed")
 		return
 	}
 
-	users, err := h.userMap(records)
-	if err != nil {
-		common.Fail(c, 500, "query accounts failed")
-		return
-	}
-
-	items := make([]gin.H, 0, len(records))
-	for _, record := range records {
-		items = append(items, h.recordView(record, users))
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, adminQMXAutoSignRecordGroupView(row))
 	}
 
 	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
@@ -209,6 +218,79 @@ func (h *AdminQMXAutoSignHandler) Records(c *gin.Context) {
 		"total":       total,
 		"total_pages": totalPages,
 	})
+}
+
+func (h *AdminQMXAutoSignHandler) qmxAutoSignRecordGroupBase(c *gin.Context) *gorm.DB {
+	query := h.db.Table("qmx_auto_sign_records qar").
+		Joins("left join users u on qar.user_uid = u.uid")
+	if trigger := strings.TrimSpace(c.Query("trigger")); trigger != "" {
+		query = query.Where("qar.trigger = ?", trigger)
+	}
+	if uid := strings.TrimSpace(c.Query("user_uid")); uid != "" {
+		if parsed, err := strconv.ParseInt(uid, 10, 64); err == nil && parsed > 0 {
+			query = query.Where("qar.user_uid = ?", parsed)
+		}
+	}
+	return query
+}
+
+func qmxAutoSignRecordRunIDExpr() string {
+	return "COALESCE(NULLIF(qar.run_id, ''), 'legacy-' || qar.id::text)"
+}
+
+func qmxAutoSignRecordGroupSelect() string {
+	runIDExpr := qmxAutoSignRecordRunIDExpr()
+	return fmt.Sprintf(`
+		MIN(qar.id) as id,
+		%s as run_id,
+		qar.trigger,
+		BOOL_AND(qar.success) as success,
+		COUNT(*) as total_count,
+		SUM(CASE WHEN qar.success THEN 1 ELSE 0 END) as success_count,
+		SUM(CASE WHEN qar.success THEN 0 ELSE 1 END) as failure_count,
+		COALESCE(STRING_AGG(DISTINCT COALESCE(NULLIF(u.name, ''), 'UID ' || qar.user_uid::text), '、'), '') as account_names,
+		COALESCE(STRING_AGG(DISTINCT CASE WHEN qar.success THEN COALESCE(NULLIF(u.name, ''), 'UID ' || qar.user_uid::text) END, '、'), '') as success_names,
+		COALESCE(STRING_AGG(DISTINCT CASE WHEN NOT qar.success THEN COALESCE(NULLIF(u.name, ''), 'UID ' || qar.user_uid::text) END, '、'), '') as failure_names,
+		COALESCE(STRING_AGG(DISTINCT NULLIF(qar.batch_name, ''), '、'), '') as batch_names,
+		COALESCE(STRING_AGG(DISTINCT NULLIF(qar.location_name, ''), '、'), '') as location_names,
+		COALESCE(STRING_AGG(DISTINCT NULLIF(qar.message, ''), '；'), '') as messages,
+		MIN(qar.executed_at) as first_executed_at,
+		MAX(qar.executed_at) as last_executed_at
+	`, runIDExpr)
+}
+
+func adminQMXAutoSignRecordGroupView(row adminQMXAutoSignRecordGroupRow) gin.H {
+	messages := strings.TrimSpace(row.Messages)
+	if messages == "" {
+		if row.Success {
+			messages = "success"
+		} else {
+			messages = "failed"
+		}
+	}
+	batchNames := strings.TrimSpace(row.BatchNames)
+	locationNames := strings.TrimSpace(row.LocationNames)
+	return gin.H{
+		"id":                row.ID,
+		"run_id":            row.RunID,
+		"trigger":           row.Trigger,
+		"success":           row.Success,
+		"total_count":       row.TotalCount,
+		"success_count":     row.SuccessCount,
+		"failure_count":     row.FailureCount,
+		"account_names":     strings.TrimSpace(row.AccountNames),
+		"success_names":     strings.TrimSpace(row.SuccessNames),
+		"failure_names":     strings.TrimSpace(row.FailureNames),
+		"batch_names":       batchNames,
+		"location_names":    locationNames,
+		"messages":          messages,
+		"first_executed_at": row.FirstExecutedAt.UnixMilli(),
+		"last_executed_at":  row.LastExecutedAt.UnixMilli(),
+		"executed_at":       row.LastExecutedAt.UnixMilli(),
+		"batch_name":        batchNames,
+		"location_name":     locationNames,
+		"message":           messages,
+	}
 }
 
 func (h *AdminQMXAutoSignHandler) GetOwnSettings(c *gin.Context) {
@@ -356,6 +438,7 @@ func (h *AdminQMXAutoSignHandler) recordView(record model.QMXAutoSignRecord, use
 	}
 	return gin.H{
 		"id":            record.ID,
+		"run_id":        record.RunID,
 		"user_uid":      record.UserUID,
 		"name":          name,
 		"mobile_masked": mobileMasked,

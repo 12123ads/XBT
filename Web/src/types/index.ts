@@ -248,6 +248,7 @@ export interface AdminQMXAutoSignConfig {
 
 export interface AdminQMXAutoSignRecord {
   id: number;
+  run_id: string;
   user_uid: number;
   name: string;
   mobile_masked: string;
@@ -262,6 +263,28 @@ export interface AdminQMXAutoSignRecord {
   longitude: number;
   latitude: number;
   executed_at: number;
+}
+
+export interface AdminQMXAutoSignRecordGroup {
+  id: number;
+  run_id: string;
+  trigger: 'scheduled' | 'manual' | string;
+  success: boolean;
+  total_count: number;
+  success_count: number;
+  failure_count: number;
+  account_names: string;
+  success_names: string;
+  failure_names: string;
+  batch_names: string;
+  location_names: string;
+  messages: string;
+  first_executed_at: number;
+  last_executed_at: number;
+  executed_at: number;
+  batch_name?: string;
+  location_name?: string;
+  message?: string;
 }
 
 export interface AdminQMXAutoSignAccount {
@@ -280,7 +303,7 @@ export interface AdminQMXAutoSignOverview {
 }
 
 export interface AdminQMXAutoSignRecordPage {
-  items: AdminQMXAutoSignRecord[];
+  items: AdminQMXAutoSignRecordGroup[];
   page: number;
   page_size: number;
   total: number;

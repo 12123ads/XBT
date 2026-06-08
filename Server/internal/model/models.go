@@ -129,6 +129,7 @@ type QMXAutoSignAccount struct {
 
 type QMXAutoSignRecord struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
+	RunID        string    `gorm:"size:64;index" json:"run_id"`
 	UserUID      int64     `gorm:"not null;index" json:"user_uid"`
 	Trigger      string    `gorm:"size:32;not null;index" json:"trigger"`
 	Success      bool      `gorm:"not null;index" json:"success"`

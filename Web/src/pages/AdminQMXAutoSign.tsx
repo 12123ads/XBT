@@ -9,6 +9,7 @@ import type {
   AdminQMXAutoSignAccount,
   AdminQMXAutoSignOverview,
   AdminQMXAutoSignRecord,
+  AdminQMXAutoSignRecordGroup,
   AdminQMXAutoSignRecordPage,
   ApiResponse,
   QMXRoomCheckLocation,
@@ -39,9 +40,14 @@ const triggerLabel = (trigger: string) => (
   trigger === 'scheduled' ? '定时' : '手动'
 );
 
+const displayText = (value?: string, fallback = '-') => {
+  const text = value?.trim();
+  return text || fallback;
+};
+
 const AdminQMXAutoSign = () => {
   const [overview, setOverview] = useState<AdminQMXAutoSignOverview | null>(null);
-  const [records, setRecords] = useState<AdminQMXAutoSignRecord[]>([]);
+  const [records, setRecords] = useState<AdminQMXAutoSignRecordGroup[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
@@ -347,25 +353,30 @@ const AdminQMXAutoSign = () => {
           ) : (
             <div className="space-y-2">
               {records.map((record) => (
-                <div key={record.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
+                <div key={record.run_id || record.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-black text-slate-900 truncate">
-                        {record.name || `UID ${record.user_uid}`}
+                        {triggerLabel(record.trigger)}执行 · {record.total_count || 1} 个账号
                       </p>
                       <p className="text-[11px] text-slate-400">
-                        {triggerLabel(record.trigger)} · {formatTime(record.executed_at)}
+                        {formatTime(record.first_executed_at)} - {formatTime(record.last_executed_at)}
                       </p>
                     </div>
                     <span className={`px-2 py-1 rounded-full text-[10px] font-black shrink-0 ${
                       record.success ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
                     }`}>
-                      {record.success ? '成功' : '失败'}
+                      成功 {record.success_count || 0} / 失败 {record.failure_count || 0}
                     </span>
                   </div>
-                  <p className="mt-2 text-xs text-slate-600 leading-relaxed">{record.message || '-'}</p>
+                  <p className="mt-2 text-xs text-slate-600 leading-relaxed">
+                    {record.failure_count > 0 ? displayText(record.messages, '暂无失败摘要') : displayText(record.success_names || record.account_names, '暂无账号')}
+                  </p>
                   <p className="mt-1 text-[11px] text-slate-400 truncate">
-                    {record.batch_name || '未知批次'} · {record.location_name || '未提交定位点'}
+                    {displayText(record.batch_names, '未知批次')} · {displayText(record.location_names, '未提交定位点')}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400 truncate">
+                    {displayText(record.account_names, '暂无账号')}
                   </p>
                 </div>
               ))}

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -34,14 +36,15 @@ type QMXAutoSignService struct {
 	cc         *CredentialCrypto
 	loc        *time.Location
 	cfgPresets []config.QMXLocationPreset
+	qmxWebhook *EnterpriseWechatWebhookNotifier
 }
 
-func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset) *QMXAutoSignService {
+func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset, qmxWebhook *EnterpriseWechatWebhookNotifier) *QMXAutoSignService {
 	loc, err := time.LoadLocation(qmxAutoSignTimezone)
 	if err != nil {
 		loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
 	}
-	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets}
+	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook}
 }
 
 func (s *QMXAutoSignService) Presets() []config.QMXLocationPreset {
@@ -145,8 +148,11 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		return nil
 	}
 
+	runID := newQMXAutoSignRunID(QMXAutoSignTriggerScheduled)
 	sem := make(chan struct{}, qmxAutoSignMaxConcurrency)
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	savedRecords := 0
 	for _, account := range accounts {
 		select {
 		case <-ctx.Done():
@@ -164,12 +170,21 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 				return
 			case <-time.After(delay):
 			}
-			if _, err := s.RunAccount(uid, QMXAutoSignTriggerScheduled); err != nil {
+			record, err := s.runAccount(uid, QMXAutoSignTriggerScheduled, true, runID)
+			if record.ID > 0 {
+				mu.Lock()
+				savedRecords++
+				mu.Unlock()
+			}
+			if err != nil {
 				log.Printf("QMX auto sign account %d failed: %v", uid, err)
 			}
 		}(account.UserUID)
 	}
 	wg.Wait()
+	if savedRecords > 0 {
+		s.notifyQMXAutoSignRun(runID)
+	}
 	return nil
 }
 
@@ -182,17 +197,27 @@ func (s *QMXAutoSignService) PreviewLocations(uid int64) (qmx.Preview, error) {
 }
 
 func (s *QMXAutoSignService) RunAccount(uid int64, trigger string) (model.QMXAutoSignRecord, error) {
-	return s.runAccount(uid, trigger, true)
+	runID := newQMXAutoSignRunID(trigger)
+	record, err := s.runAccount(uid, trigger, true, runID)
+	if record.ID > 0 {
+		s.notifyQMXAutoSignRun(runID)
+	}
+	return record, err
 }
 
 func (s *QMXAutoSignService) RunSavedAccount(uid int64, trigger string) (model.QMXAutoSignRecord, error) {
-	return s.runAccount(uid, trigger, false)
+	runID := newQMXAutoSignRunID(trigger)
+	record, err := s.runAccount(uid, trigger, false, runID)
+	if record.ID > 0 {
+		s.notifyQMXAutoSignRun(runID)
+	}
+	return record, err
 }
 
-func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnabled bool) (model.QMXAutoSignRecord, error) {
+func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnabled bool, runID string) (model.QMXAutoSignRecord, error) {
 	account, err := s.configuredAccount(uid, requireEnabled)
 	if err != nil {
-		record, saveErr := s.saveFailureRecord(uid, trigger, err.Error())
+		record, saveErr := s.saveFailureRecord(uid, trigger, runID, err.Error())
 		if saveErr != nil {
 			return record, saveErr
 		}
@@ -201,7 +226,7 @@ func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnable
 
 	input, err := s.credentialInput(uid)
 	if err != nil {
-		record, saveErr := s.saveFailureRecord(uid, trigger, err.Error())
+		record, saveErr := s.saveFailureRecord(uid, trigger, runID, err.Error())
 		if saveErr != nil {
 			return record, saveErr
 		}
@@ -217,7 +242,7 @@ func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnable
 		RequireLocationMatch: true,
 		UseProvidedLocation:  account.LocationIndex < 0,
 	})
-	record, saveErr := s.saveResultRecord(uid, trigger, result, err)
+	record, saveErr := s.saveResultRecord(uid, trigger, runID, result, err)
 	if saveErr != nil {
 		return record, saveErr
 	}
@@ -264,11 +289,11 @@ func (s *QMXAutoSignService) credentialInput(uid int64) (qmx.CredentialInput, er
 	return qmx.CredentialInput{Cookie: cookie}, nil
 }
 
-func (s *QMXAutoSignService) saveFailureRecord(uid int64, trigger, message string) (model.QMXAutoSignRecord, error) {
-	return s.saveResultRecord(uid, trigger, qmx.ExecuteResult{Message: message}, errors.New(message))
+func (s *QMXAutoSignService) saveFailureRecord(uid int64, trigger, runID, message string) (model.QMXAutoSignRecord, error) {
+	return s.saveResultRecord(uid, trigger, runID, qmx.ExecuteResult{Message: message}, errors.New(message))
 }
 
-func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger string, result qmx.ExecuteResult, runErr error) (model.QMXAutoSignRecord, error) {
+func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger, runID string, result qmx.ExecuteResult, runErr error) (model.QMXAutoSignRecord, error) {
 	message := strings.TrimSpace(result.Message)
 	if runErr != nil {
 		message = runErr.Error()
@@ -285,6 +310,7 @@ func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger string, result 
 	}
 
 	record := model.QMXAutoSignRecord{
+		RunID:        strings.TrimSpace(runID),
 		UserUID:      uid,
 		Trigger:      normalizeQMXAutoSignTrigger(trigger),
 		Success:      runErr == nil && result.Success,
@@ -299,6 +325,174 @@ func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger string, result 
 		ExecutedAt:   time.Now(),
 	}
 	return record, s.db.Create(&record).Error
+}
+
+func newQMXAutoSignRunID(trigger string) string {
+	var randomBytes [6]byte
+	if _, err := crand.Read(randomBytes[:]); err == nil {
+		return fmt.Sprintf("%s-%d-%s", normalizeQMXAutoSignTrigger(trigger), time.Now().UnixMilli(), hex.EncodeToString(randomBytes[:]))
+	}
+	return fmt.Sprintf("%s-%d", normalizeQMXAutoSignTrigger(trigger), time.Now().UnixNano())
+}
+
+func (s *QMXAutoSignService) notifyQMXAutoSignRun(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || !s.qmxWebhook.Enabled() {
+		return
+	}
+
+	go func() {
+		content, err := s.qmxAutoSignRunMarkdown(runID)
+		if err != nil {
+			log.Printf("QMX auto sign webhook summary failed: %v", err)
+			return
+		}
+		if strings.TrimSpace(content) == "" {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), enterpriseWechatWebhookTimeout)
+		defer cancel()
+		if err := s.qmxWebhook.SendMarkdown(ctx, content); err != nil {
+			log.Printf("QMX auto sign webhook failed: %v", err)
+		}
+	}()
+}
+
+func (s *QMXAutoSignService) qmxAutoSignRunMarkdown(runID string) (string, error) {
+	var records []model.QMXAutoSignRecord
+	if err := s.db.Where("run_id = ?", runID).Order("executed_at asc, id asc").Find(&records).Error; err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", nil
+	}
+
+	users, err := s.qmxAutoSignUserMap(records)
+	if err != nil {
+		return "", err
+	}
+
+	trigger := records[0].Trigger
+	successCount := 0
+	failureLines := []string{}
+	accountNames := make([]string, 0, len(records))
+	successNames := []string{}
+	failureNames := []string{}
+	batchNames := []string{}
+	locationNames := []string{}
+	for _, record := range records {
+		name := qmxAutoSignRecordName(record, users)
+		accountNames = append(accountNames, name)
+		batchNames = append(batchNames, record.BatchName)
+		locationNames = append(locationNames, record.LocationName)
+		if record.Success {
+			successCount++
+			successNames = append(successNames, name)
+			continue
+		}
+		failureNames = append(failureNames, name)
+		failureLines = append(failureLines, fmt.Sprintf("%s：%s", name, webhookText(record.Message, "失败")))
+	}
+	failureCount := len(records) - successCount
+	status := "成功"
+	if failureCount > 0 && successCount > 0 {
+		status = "部分失败"
+	} else if failureCount > 0 {
+		status = "失败"
+	}
+
+	lines := []string{
+		fmt.Sprintf("### QMX 自动签到%s", status),
+		fmt.Sprintf(">触发：%s", qmxAutoSignTriggerLabel(trigger)),
+		fmt.Sprintf(">结果：成功 %d / 失败 %d / 总计 %d", successCount, failureCount, len(records)),
+		fmt.Sprintf(">账号：%s", joinWebhookValues(accountNames, 12)),
+		fmt.Sprintf(">时间：%s", records[len(records)-1].ExecutedAt.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf(">Run ID：%s", runID),
+	}
+	if joined := joinWebhookValues(batchNames, 6); joined != "" {
+		lines = append(lines, fmt.Sprintf(">批次：%s", joined))
+	}
+	if joined := joinWebhookValues(locationNames, 6); joined != "" {
+		lines = append(lines, fmt.Sprintf(">地点：%s", joined))
+	}
+	if successCount > 0 {
+		lines = append(lines, fmt.Sprintf(">成功账号：%s", joinWebhookValues(successNames, 12)))
+	}
+	if failureCount > 0 {
+		lines = append(lines, fmt.Sprintf(">失败账号：%s", joinWebhookValues(failureNames, 12)))
+		lines = append(lines, fmt.Sprintf(">失败摘要：%s", joinWebhookValues(failureLines, 6)))
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func (s *QMXAutoSignService) qmxAutoSignUserMap(records []model.QMXAutoSignRecord) (map[int64]model.User, error) {
+	seen := map[int64]struct{}{}
+	uids := make([]int64, 0, len(records))
+	for _, record := range records {
+		if _, ok := seen[record.UserUID]; ok {
+			continue
+		}
+		seen[record.UserUID] = struct{}{}
+		uids = append(uids, record.UserUID)
+	}
+	if len(uids) == 0 {
+		return map[int64]model.User{}, nil
+	}
+	var users []model.User
+	if err := s.db.Where("uid IN ?", uids).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64]model.User, len(users))
+	for _, user := range users {
+		out[user.UID] = user
+	}
+	return out, nil
+}
+
+func qmxAutoSignRecordName(record model.QMXAutoSignRecord, users map[int64]model.User) string {
+	if user, ok := users[record.UserUID]; ok {
+		return webhookText(user.Name, fmt.Sprintf("UID %d", record.UserUID))
+	}
+	return fmt.Sprintf("UID %d", record.UserUID)
+}
+
+func qmxAutoSignTriggerLabel(trigger string) string {
+	switch normalizeQMXAutoSignTrigger(trigger) {
+	case QMXAutoSignTriggerScheduled:
+		return "定时"
+	case QMXAutoSignTriggerManual:
+		return "手动"
+	default:
+		return trigger
+	}
+}
+
+func joinWebhookValues(values []string, limit int) string {
+	seen := map[string]struct{}{}
+	joined := []string{}
+	uniqueTotal := 0
+	for _, value := range values {
+		value = webhookText(value, "")
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		uniqueTotal++
+		if limit <= 0 || len(joined) < limit {
+			joined = append(joined, value)
+		}
+	}
+	if len(joined) == 0 {
+		return ""
+	}
+	if limit > 0 && uniqueTotal > len(joined) {
+		joined = append(joined, fmt.Sprintf("等 %d 项", uniqueTotal))
+	}
+	return strings.Join(joined, "、")
 }
 
 func normalizeQMXAutoSignTrigger(trigger string) string {

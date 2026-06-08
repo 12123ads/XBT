@@ -37,7 +37,8 @@ func main() {
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
 	qmxClient := qmx.New(cfg.AllowInsecureTLS)
 	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmxClient, database, xxtClient, credentialCrypto)
-	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto, cfg.QMXLocationPresets)
+	qmxAutoSignWebhook := service.NewEnterpriseWechatWebhookNotifier(cfg.QMXAutoSignWebhookURL)
+	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto, cfg.QMXLocationPresets, qmxAutoSignWebhook)
 	qmxAutoSignHandler := handler.NewAdminQMXAutoSignHandler(database, qmxAutoSignSvc)
 
 	r := gin.Default()
