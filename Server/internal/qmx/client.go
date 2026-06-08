@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	apiBase       = "https://sw.qmx.chaoxing.com"
-	qmxReferer    = "https://sw.qmx.chaoxing.com/mobile/?v=68cc80a69"
-	desKey        = "QRCODENC"
-	checkType     = "0"
+	apiBase    = "https://sw.qmx.chaoxing.com"
+	qmxReferer = "https://sw.qmx.chaoxing.com/mobile/?v=68cc80a69"
+	desKey     = "QRCODENC"
+	checkType  = "0"
 )
 
 type Client struct {
@@ -73,6 +73,7 @@ type ExecuteInput struct {
 	Latitude             float64
 	LocationName         string
 	RequireLocationMatch bool
+	UseProvidedLocation  bool
 }
 
 type ExecuteResult struct {
@@ -186,15 +187,15 @@ func (c *Client) Execute(input ExecuteInput) (ExecuteResult, error) {
 		cqfs = checkType
 	}
 	payload := map[string]string{
-	"jg":   "1",
-	"sj":   checkTime,
-	"rq":   info.Cqrq,
-	"pcId": info.Batch.ID,
-	"ldId": info.Batch.LdID,
-	"cwId": info.Batch.CwID,
-	"xsId": info.Batch.XsID,
-	"cqfs": cqfs,
-	"dkwz": loc.Name,
+		"jg":   "1",
+		"sj":   checkTime,
+		"rq":   info.Cqrq,
+		"pcId": info.Batch.ID,
+		"ldId": info.Batch.LdID,
+		"cwId": info.Batch.CwID,
+		"xsId": info.Batch.XsID,
+		"cqfs": cqfs,
+		"dkwz": loc.Name,
 	}
 	plain, err := json.Marshal(payload)
 	if err != nil {
@@ -403,12 +404,12 @@ func buildPreview(info studentInfoData, raw apiResponse) (Preview, error) {
 		unsupported = append(unsupported, "special_sdk")
 	}
 	return Preview{
-		BatchName:    info.Batch.Pcmc,
-		CheckDate:    info.Cqrq,
-		LateDate:     info.Wgrq,
-		StartTime:    info.Batch.Cqkssj,
-		EndTime:      info.Batch.Cqjssj,
-		LateEndTime:  info.Batch.Wgjssj,		Cqfs:         info.Batch.Cqfs,		Locations:    locations,
+		BatchName:   info.Batch.Pcmc,
+		CheckDate:   info.Cqrq,
+		LateDate:    info.Wgrq,
+		StartTime:   info.Batch.Cqkssj,
+		EndTime:     info.Batch.Cqjssj,
+		LateEndTime: info.Batch.Wgjssj, Cqfs: info.Batch.Cqfs, Locations: locations,
 		Requirements: reqs,
 		Unsupported:  unsupported,
 		RawCode:      raw.Code,
@@ -457,6 +458,16 @@ func hasMeaningfulJSON(raw json.RawMessage) bool {
 }
 
 func selectLocation(locations []Location, input ExecuteInput) (Location, error) {
+	if input.UseProvidedLocation {
+		if strings.TrimSpace(input.LocationName) == "" || input.Longitude == 0 || input.Latitude == 0 {
+			return Location{}, errors.New("provided QMX location is incomplete")
+		}
+		return Location{
+			Name: input.LocationName,
+			Lng:  input.Longitude,
+			Lat:  input.Latitude,
+		}, nil
+	}
 	if len(locations) == 0 {
 		return Location{}, errors.New("no allowed QMX locations")
 	}

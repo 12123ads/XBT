@@ -55,9 +55,9 @@ func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 	}
 
 	common.Success(c, gin.H{
-	"settings":             h.settingsView(settings),
-	"accounts":             accounts,
-	"qmx_location_presets": h.service.Presets(),
+		"settings":             h.settingsView(settings),
+		"accounts":             accounts,
+		"qmx_location_presets": h.service.Presets(),
 	})
 }
 
@@ -117,16 +117,10 @@ func (h *AdminQMXAutoSignHandler) UpdateAccount(c *gin.Context) {
 	}
 
 	if req.Location != nil {
-		name := strings.TrimSpace(req.Location.LocationName)
-		if name == "" || req.Location.LocationIndex < 0 {
+		if !applyQMXAutoSignLocation(&account, req.Location, false) {
 			common.Fail(c, 400, "valid location is required")
 			return
 		}
-		account.LocationName = name
-		account.LocationIndex = req.Location.LocationIndex
-		account.Longitude = req.Location.Longitude
-		account.Latitude = req.Location.Latitude
-		account.Range = req.Location.Range
 	}
 	account.Enabled = *req.Enabled
 	if account.Enabled && !hasConfiguredQMXLocation(account) {
@@ -217,6 +211,91 @@ func (h *AdminQMXAutoSignHandler) Records(c *gin.Context) {
 	})
 }
 
+func (h *AdminQMXAutoSignHandler) GetOwnSettings(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	settings, err := h.service.EnsureSettings()
+	if err != nil {
+		common.Fail(c, 500, "query QMX auto sign settings failed")
+		return
+	}
+
+	account, err := h.loadOrInitAccount(uid)
+	if err != nil {
+		common.Fail(c, 500, "query QMX auto sign account failed")
+		return
+	}
+	lastRecord, err := h.lastRecord(uid)
+	if err != nil {
+		common.Fail(c, 500, "query QMX auto sign records failed")
+		return
+	}
+
+	common.Success(c, gin.H{
+		"settings":    h.settingsView(settings),
+		"config":      h.accountConfigView(account),
+		"last_record": h.recordViewPtr(lastRecord),
+		"presets":     h.service.Presets(),
+	})
+}
+
+func (h *AdminQMXAutoSignHandler) UpdateOwnSettings(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	var req dto.AdminQMXAutoSignAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+		common.Fail(c, 400, "invalid request")
+		return
+	}
+
+	account, err := h.loadOrInitAccount(uid)
+	if err != nil {
+		common.Fail(c, 500, "query QMX auto sign account failed")
+		return
+	}
+
+	if req.Location != nil {
+		if !applyQMXAutoSignLocation(&account, req.Location, true) {
+			common.Fail(c, 400, "valid location is required")
+			return
+		}
+	}
+	account.Enabled = *req.Enabled
+	if account.Enabled && !hasConfiguredQMXLocation(account) {
+		common.Fail(c, 400, "please choose a QMX location before enabling this account")
+		return
+	}
+
+	if account.ID == 0 {
+		if err := h.db.Create(&account).Error; err != nil {
+			common.Fail(c, 500, "save QMX auto sign account failed")
+			return
+		}
+	} else if err := h.db.Save(&account).Error; err != nil {
+		common.Fail(c, 500, "save QMX auto sign account failed")
+		return
+	}
+	common.Success(c, h.accountConfigView(account))
+}
+
+func (h *AdminQMXAutoSignHandler) PreviewOwnLocations(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	preview, err := h.service.PreviewLocations(uid)
+	if err != nil {
+		common.Fail(c, 400, err.Error())
+		return
+	}
+	common.Success(c, preview)
+}
+
+func (h *AdminQMXAutoSignHandler) RunOwnAccount(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	record, err := h.service.RunSavedAccount(uid, service.QMXAutoSignTriggerManual)
+	if err != nil && record.ID == 0 {
+		common.Fail(c, 400, err.Error())
+		return
+	}
+	common.Success(c, h.recordView(record, nil))
+}
+
 func (h *AdminQMXAutoSignHandler) settingsView(settings model.QMXAutoSignSetting) gin.H {
 	timezone := strings.TrimSpace(settings.Timezone)
 	if timezone == "" {
@@ -292,6 +371,13 @@ func (h *AdminQMXAutoSignHandler) recordView(record model.QMXAutoSignRecord, use
 		"latitude":      record.Latitude,
 		"executed_at":   record.ExecutedAt.UnixMilli(),
 	}
+}
+
+func (h *AdminQMXAutoSignHandler) recordViewPtr(record *model.QMXAutoSignRecord) gin.H {
+	if record == nil {
+		return nil
+	}
+	return h.recordView(*record, nil)
 }
 
 func (h *AdminQMXAutoSignHandler) accountConfigMap() (map[int64]*model.QMXAutoSignAccount, error) {
@@ -374,5 +460,29 @@ func parsePositiveQuery(c *gin.Context, key string, fallback int) int {
 }
 
 func hasConfiguredQMXLocation(account model.QMXAutoSignAccount) bool {
-	return strings.TrimSpace(account.LocationName) != "" && account.LocationIndex >= 0
+	if strings.TrimSpace(account.LocationName) == "" {
+		return false
+	}
+	return account.LocationIndex >= 0 || (account.Longitude != 0 && account.Latitude != 0)
+}
+
+func applyQMXAutoSignLocation(account *model.QMXAutoSignAccount, location *dto.AdminQMXAutoSignLocationRequest, allowPreset bool) bool {
+	name := strings.TrimSpace(location.LocationName)
+	hasCoordinates := location.Longitude != 0 && location.Latitude != 0
+	if name == "" {
+		return false
+	}
+	if location.LocationIndex < 0 && (!allowPreset || !hasCoordinates) {
+		return false
+	}
+	account.LocationName = name
+	if location.LocationIndex < 0 {
+		account.LocationIndex = -1
+	} else {
+		account.LocationIndex = location.LocationIndex
+	}
+	account.Longitude = location.Longitude
+	account.Latitude = location.Latitude
+	account.Range = location.Range
+	return true
 }

@@ -28,18 +28,18 @@ const (
 )
 
 type QMXAutoSignService struct {
-	db        *gorm.DB
-	client    *qmx.Client
-	xxt       *xxt.Client
-	cc        *CredentialCrypto
-	loc       *time.Location
+	db         *gorm.DB
+	client     *qmx.Client
+	xxt        *xxt.Client
+	cc         *CredentialCrypto
+	loc        *time.Location
 	cfgPresets []config.QMXLocationPreset
 }
 
 func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset) *QMXAutoSignService {
 	loc, err := time.LoadLocation(qmxAutoSignTimezone)
 	if err != nil {
-	loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
+		loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
 	}
 	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets}
 }
@@ -135,7 +135,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 
 	var accounts []model.QMXAutoSignAccount
 	if err := s.db.
-		Where("enabled = ? AND location_name <> ? AND location_index >= ?", true, "", 0).
+		Where("enabled = ? AND location_name <> ? AND (location_index >= ? OR (longitude <> ? AND latitude <> ?))", true, "", 0, 0.0, 0.0).
 		Order("user_uid asc").
 		Find(&accounts).Error; err != nil {
 		return err
@@ -157,17 +157,17 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		go func(uid int64) {
 			defer wg.Done()
 			defer func() { <-sem }()
-		delay := time.Duration(rand.Intn(300)) * time.Second
+			delay := time.Duration(rand.Intn(300)) * time.Second
 			log.Printf("QMX auto sign account %d waiting %v", uid, delay)
-		select {
+			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(delay):
-		}
+			}
 			if _, err := s.RunAccount(uid, QMXAutoSignTriggerScheduled); err != nil {
 				log.Printf("QMX auto sign account %d failed: %v", uid, err)
-		}
-	}(account.UserUID)
+			}
+		}(account.UserUID)
 	}
 	wg.Wait()
 	return nil
@@ -182,7 +182,15 @@ func (s *QMXAutoSignService) PreviewLocations(uid int64) (qmx.Preview, error) {
 }
 
 func (s *QMXAutoSignService) RunAccount(uid int64, trigger string) (model.QMXAutoSignRecord, error) {
-	account, err := s.configuredAccount(uid)
+	return s.runAccount(uid, trigger, true)
+}
+
+func (s *QMXAutoSignService) RunSavedAccount(uid int64, trigger string) (model.QMXAutoSignRecord, error) {
+	return s.runAccount(uid, trigger, false)
+}
+
+func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnabled bool) (model.QMXAutoSignRecord, error) {
+	account, err := s.configuredAccount(uid, requireEnabled)
 	if err != nil {
 		record, saveErr := s.saveFailureRecord(uid, trigger, err.Error())
 		if saveErr != nil {
@@ -203,8 +211,11 @@ func (s *QMXAutoSignService) RunAccount(uid int64, trigger string) (model.QMXAut
 	result, err := s.client.Execute(qmx.ExecuteInput{
 		CredentialInput:      input,
 		LocationIndex:        account.LocationIndex,
-		LocationName:         account.LocationName,	Longitude:            drLng,
-	Latitude:             drLat,		RequireLocationMatch: true,
+		LocationName:         account.LocationName,
+		Longitude:            drLng,
+		Latitude:             drLat,
+		RequireLocationMatch: true,
+		UseProvidedLocation:  account.LocationIndex < 0,
 	})
 	record, saveErr := s.saveResultRecord(uid, trigger, result, err)
 	if saveErr != nil {
@@ -213,7 +224,7 @@ func (s *QMXAutoSignService) RunAccount(uid int64, trigger string) (model.QMXAut
 	return record, err
 }
 
-func (s *QMXAutoSignService) configuredAccount(uid int64) (model.QMXAutoSignAccount, error) {
+func (s *QMXAutoSignService) configuredAccount(uid int64, requireEnabled bool) (model.QMXAutoSignAccount, error) {
 	var account model.QMXAutoSignAccount
 	if err := s.db.Where("user_uid = ?", uid).Take(&account).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -221,7 +232,7 @@ func (s *QMXAutoSignService) configuredAccount(uid int64) (model.QMXAutoSignAcco
 		}
 		return account, err
 	}
-	if !account.Enabled {
+	if requireEnabled && !account.Enabled {
 		return account, errors.New("QMX auto sign is disabled for this account")
 	}
 	if !hasQMXAutoSignLocation(account) {
@@ -231,7 +242,10 @@ func (s *QMXAutoSignService) configuredAccount(uid int64) (model.QMXAutoSignAcco
 }
 
 func hasQMXAutoSignLocation(account model.QMXAutoSignAccount) bool {
-	return strings.TrimSpace(account.LocationName) != "" && account.LocationIndex >= 0
+	if strings.TrimSpace(account.LocationName) == "" {
+		return false
+	}
+	return account.LocationIndex >= 0 || (account.Longitude != 0 && account.Latitude != 0)
 }
 
 func (s *QMXAutoSignService) credentialInput(uid int64) (qmx.CredentialInput, error) {
@@ -304,7 +318,7 @@ func stringifyQMXCode(code any) string {
 }
 
 func truncateForDB(s string, max int) string {
-runes := []rune(s)
+	runes := []rune(s)
 	if len(runes) <= max {
 		return s
 	}
@@ -312,13 +326,13 @@ runes := []rune(s)
 }
 
 func (s *QMXAutoSignService) driftCoordinate(account model.QMXAutoSignAccount) (float64, float64) {
-preset := s.matchPreset(account)
+	preset := s.matchPreset(account)
 	if preset == nil {
 		return account.Longitude, account.Latitude
 	}
 	driftRange := preset.Range
 	if driftRange <= 0 {
-	driftRange = 400
+		driftRange = 400
 	}
 	angle := rand.Float64() * 2 * math.Pi
 	radius := math.Sqrt(rand.Float64()) * float64(driftRange)
@@ -328,14 +342,20 @@ preset := s.matchPreset(account)
 }
 
 func (s *QMXAutoSignService) matchPreset(account model.QMXAutoSignAccount) *config.QMXLocationPreset {
+	if account.LocationIndex >= 0 {
+		return nil
+	}
 	for i := range s.cfgPresets {
 		p := &s.cfgPresets[i]
 		if p.Name == account.LocationName {
 			return p
+		}
 	}
-	}
-	if account.LocationIndex >= 0 && account.LocationIndex < len(s.cfgPresets) {
-		return &s.cfgPresets[account.LocationIndex]
+	for i := range s.cfgPresets {
+		p := &s.cfgPresets[i]
+		if p.Lng == account.Longitude && p.Lat == account.Latitude {
+			return p
+		}
 	}
 	return nil
 }

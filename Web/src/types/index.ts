@@ -286,3 +286,27 @@ export interface AdminQMXAutoSignRecordPage {
   total: number;
   total_pages: number;
 }
+
+export interface QMXLocationPreset {
+  name: string;
+  lng: number;
+  lat: number;
+  range: number;
+}
+
+export interface OwnQMXAutoSignConfig {
+  user_uid: number;
+  enabled: boolean;
+  location_name: string;
+  location_index: number;
+  longitude: number;
+  latitude: number;
+  range: number;
+}
+
+export interface OwnQMXAutoSignSettings {
+  settings: AdminQMXAutoSignSettings;
+  config: OwnQMXAutoSignConfig;
+  last_record: AdminQMXAutoSignRecord | null;
+  presets: QMXLocationPreset[];
+}
