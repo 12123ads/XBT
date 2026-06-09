@@ -3,7 +3,9 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,14 +15,37 @@ import (
 )
 
 type SignService struct {
-	db            *gorm.DB
-	xxt           *xxt.Client
-	cc            *CredentialCrypto
-	courseWebhook *EnterpriseWechatWebhookNotifier
+	db                  *gorm.DB
+	xxt                 *xxt.Client
+	cc                  *CredentialCrypto
+	courseWebhook       *EnterpriseWechatWebhookNotifier
+	courseNotifyMu      sync.Mutex
+	courseNotifyBatches map[courseSignNotificationKey]*courseSignNotificationBatch
 }
 
 func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
-	return &SignService{db: db, xxt: xxtClient, cc: cc, courseWebhook: courseWebhook}
+	return &SignService{
+		db:                  db,
+		xxt:                 xxtClient,
+		cc:                  cc,
+		courseWebhook:       courseWebhook,
+		courseNotifyBatches: map[courseSignNotificationKey]*courseSignNotificationBatch{},
+	}
+}
+
+const courseSignNotificationDebounce = 8 * time.Second
+
+type courseSignNotificationKey struct {
+	ActivityID int64
+	CourseID   int64
+	ClassID    int64
+	SignType   int
+}
+
+type courseSignNotificationBatch struct {
+	Records []model.SignRecord
+	Version int
+	Timer   *time.Timer
 }
 
 type ExecuteSignRequest struct {
@@ -132,7 +157,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		sourceName = "未知用户"
 	}
 	if dbResult.RowsAffected > 0 {
-		s.notifyCourseSignSuccess(rec, target, sourceName)
+		s.enqueueCourseSignSuccess(rec)
 	}
 	return SignExecuteResult{
 		UserID:           req.TargetUID,
@@ -144,28 +169,140 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 	}
 }
 
-func (s *SignService) notifyCourseSignSuccess(rec model.SignRecord, target model.User, sourceName string) {
+func (s *SignService) enqueueCourseSignSuccess(rec model.SignRecord) {
 	if !s.courseWebhook.Enabled() {
 		return
 	}
-	targetName := webhookText(target.Name, fmt.Sprintf("UID %d", rec.UserUID))
-	sourceName = webhookText(sourceName, fmt.Sprintf("UID %d", rec.SourceUID))
-	courseName := webhookText(rec.CourseName, "未知课程")
-	activityName := webhookText(rec.ActivityName, "未知活动")
-	signedAt := time.UnixMilli(rec.SignTimeMS).Format("2006-01-02 15:04:05")
+	key := courseSignNotificationKey{
+		ActivityID: rec.ActivityID,
+		CourseID:   rec.CourseID,
+		ClassID:    rec.ClassID,
+		SignType:   rec.SignType,
+	}
 
-	content := strings.Join([]string{
+	s.courseNotifyMu.Lock()
+	batch := s.courseNotifyBatches[key]
+	if batch == nil {
+		batch = &courseSignNotificationBatch{}
+		s.courseNotifyBatches[key] = batch
+	}
+	batch.Records = append(batch.Records, rec)
+	batch.Version++
+	version := batch.Version
+	if batch.Timer != nil {
+		batch.Timer.Stop()
+	}
+	batch.Timer = time.AfterFunc(courseSignNotificationDebounce, func() {
+		s.flushCourseSignNotification(key, version)
+	})
+	s.courseNotifyMu.Unlock()
+}
+
+func (s *SignService) flushCourseSignNotification(key courseSignNotificationKey, version int) {
+	s.courseNotifyMu.Lock()
+	batch := s.courseNotifyBatches[key]
+	if batch == nil || batch.Version != version {
+		s.courseNotifyMu.Unlock()
+		return
+	}
+	records := append([]model.SignRecord(nil), batch.Records...)
+	delete(s.courseNotifyBatches, key)
+	s.courseNotifyMu.Unlock()
+
+	if len(records) == 0 || !s.courseWebhook.Enabled() {
+		return
+	}
+	content, err := s.courseSignSummaryMarkdown(records)
+	if err != nil {
+		log.Printf("course sign webhook summary failed: %v", err)
+		return
+	}
+	s.courseWebhook.SendMarkdownAsync("course sign", content)
+}
+
+func (s *SignService) courseSignSummaryMarkdown(records []model.SignRecord) (string, error) {
+	users, err := s.courseSignUserMap(records)
+	if err != nil {
+		return "", err
+	}
+
+	first := records[0]
+	courseName := webhookText(first.CourseName, "未知课程")
+	activityName := webhookText(first.ActivityName, "未知活动")
+	targetNames := make([]string, 0, len(records))
+	sourceNames := make([]string, 0, len(records))
+	firstTime := records[0].SignTimeMS
+	lastTime := records[0].SignTimeMS
+	for _, rec := range records {
+		targetNames = append(targetNames, courseSignUserName(rec.UserUID, users))
+		sourceNames = append(sourceNames, courseSignUserName(rec.SourceUID, users))
+		if rec.SignTimeMS < firstTime {
+			firstTime = rec.SignTimeMS
+		}
+		if rec.SignTimeMS > lastTime {
+			lastTime = rec.SignTimeMS
+		}
+		if strings.TrimSpace(courseName) == "" || courseName == "未知课程" {
+			courseName = webhookText(rec.CourseName, "未知课程")
+		}
+		if strings.TrimSpace(activityName) == "" || activityName == "未知活动" {
+			activityName = webhookText(rec.ActivityName, "未知活动")
+		}
+	}
+
+	timeText := time.UnixMilli(lastTime).Format("2006-01-02 15:04:05")
+	if firstTime != lastTime {
+		timeText = fmt.Sprintf("%s - %s", time.UnixMilli(firstTime).Format("2006-01-02 15:04:05"), time.UnixMilli(lastTime).Format("15:04:05"))
+	}
+
+	return strings.Join([]string{
 		"### 课程签到成功",
 		fmt.Sprintf(">课程：%s", courseName),
 		fmt.Sprintf(">活动：%s", activityName),
-		fmt.Sprintf(">签到用户：%s（UID %d）", targetName, rec.UserUID),
-		fmt.Sprintf(">执行人：%s（UID %d）", sourceName, rec.SourceUID),
-		fmt.Sprintf(">签到类型：%s", signTypeLabel(rec.SignType)),
-		fmt.Sprintf(">时间：%s", signedAt),
-		fmt.Sprintf(">活动 ID：%d", rec.ActivityID),
-		fmt.Sprintf(">课程/班级：%d / %d", rec.CourseID, rec.ClassID),
-	}, "\n")
-	s.courseWebhook.SendMarkdownAsync("course sign", content)
+		fmt.Sprintf(">结果：成功 %d 人", len(records)),
+		fmt.Sprintf(">签到用户：%s", joinWebhookValues(targetNames, 20)),
+		fmt.Sprintf(">执行人：%s", joinWebhookValues(sourceNames, 8)),
+		fmt.Sprintf(">签到类型：%s", signTypeLabel(first.SignType)),
+		fmt.Sprintf(">时间：%s", timeText),
+		fmt.Sprintf(">活动 ID：%d", first.ActivityID),
+		fmt.Sprintf(">课程/班级：%d / %d", first.CourseID, first.ClassID),
+	}, "\n"), nil
+}
+
+func (s *SignService) courseSignUserMap(records []model.SignRecord) (map[int64]model.User, error) {
+	seen := map[int64]struct{}{}
+	uids := make([]int64, 0, len(records)*2)
+	for _, rec := range records {
+		for _, uid := range []int64{rec.UserUID, rec.SourceUID} {
+			if uid <= 0 {
+				continue
+			}
+			if _, ok := seen[uid]; ok {
+				continue
+			}
+			seen[uid] = struct{}{}
+			uids = append(uids, uid)
+		}
+	}
+	if len(uids) == 0 {
+		return map[int64]model.User{}, nil
+	}
+	var users []model.User
+	if err := s.db.Where("uid IN ?", uids).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64]model.User, len(users))
+	for _, user := range users {
+		out[user.UID] = user
+	}
+	return out, nil
+}
+
+func courseSignUserName(uid int64, users map[int64]model.User) string {
+	if user, ok := users[uid]; ok {
+		return webhookText(user.Name, fmt.Sprintf("UID %d", uid))
+	}
+	return fmt.Sprintf("UID %d", uid)
 }
 
 func signTypeLabel(signType int) string {
