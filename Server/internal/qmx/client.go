@@ -240,13 +240,45 @@ func (c *Client) getStudentInfo(cred credential) (studentInfoData, apiResponse, 
 		return studentInfoData{}, apiResponse{}, fmt.Errorf("decode QMX preview response failed: %w", err)
 	}
 	if !resp.Success {
-		return studentInfoData{}, resp, fmt.Errorf("QMX preview failed: code=%v message=%s", resp.Code, resp.Message)
+		return studentInfoData{}, resp, errors.New(formatQMXPreviewError(resp))
 	}
 	var info studentInfoData
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		return studentInfoData{}, resp, fmt.Errorf("decode QMX student info failed: %w", err)
 	}
 	return info, resp, nil
+}
+
+func formatQMXPreviewError(resp apiResponse) string {
+	code := strings.TrimSpace(fmt.Sprint(resp.Code))
+	message := strings.TrimSpace(resp.Message)
+	if code == "20001" || strings.Contains(message, "未到查寝时间") {
+		timeRange := qmxMessageTimeRange(message)
+		if timeRange != "" {
+			return fmt.Sprintf("当前未到查寝时间%s，暂时无法读取在线定位点，可先使用预设定位点", timeRange)
+		}
+		return "当前未到查寝时间，暂时无法读取在线定位点，可先使用预设定位点"
+	}
+	if message != "" && code != "" && code != "<nil>" {
+		return fmt.Sprintf("读取 QMX 在线定位点失败：%s（code=%s）", message, code)
+	}
+	if message != "" {
+		return fmt.Sprintf("读取 QMX 在线定位点失败：%s", message)
+	}
+	if code != "" && code != "<nil>" {
+		return fmt.Sprintf("读取 QMX 在线定位点失败（code=%s）", code)
+	}
+	return "读取 QMX 在线定位点失败"
+}
+
+func qmxMessageTimeRange(message string) string {
+	if index := strings.Index(message, "（"); index >= 0 {
+		return strings.TrimSpace(message[index:])
+	}
+	if index := strings.Index(message, "("); index >= 0 {
+		return strings.TrimSpace(message[index:])
+	}
+	return ""
 }
 
 func (c *Client) doJSON(method, endpoint string, cred credential, reqBody []byte) ([]byte, error) {
