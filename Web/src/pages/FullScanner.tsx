@@ -10,9 +10,7 @@ import { ProgressCard } from '../components/sign/ProgressCard';
 import type { ApiResponse, SignStatusMessage, Classmate, User } from '../types';
 import { parseChaoxingQrText, type QrData } from '../utils/qr';
 import scanCursor from '../assets/scan_cursor.png';
-import config from '../../config.yaml';
-
-const LOCATION_PRESETS = config.sign?.location_presets || [];
+import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 
 type NativeCameraBridge = {
   isReady?: () => boolean;
@@ -41,6 +39,7 @@ const FullScanner = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user: currentUser } = useAuthStore();
+  const locationPresets = useCourseLocationPresets();
   
   const [isExecuting, setIsExecuting] = useState(false);
   const [latestQrData, setLatestQrData] = useState<QrData | null>(null);
@@ -915,7 +914,7 @@ const FullScanner = () => {
                     <MapPin size={22} />
                   </div>
                   <span className="text-[10px] text-white/80 font-bold tracking-wider truncate max-w-[60px]">
-                    {lat ? LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || "位置" : "位置"}
+                    {lat ? locationPresets.find((p) => p.lat === lat)?.name || "位置" : "位置"}
                   </span>
                 </motion.button>
 
@@ -960,7 +959,7 @@ const FullScanner = () => {
                   {!lat && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
                 </motion.div>
 
-                {LOCATION_PRESETS.map((p: any, i: number) => {
+                {locationPresets.map((p, i) => {
                 const isSelected = p.lat === lat && p.lng === lng;
                 return (
                   <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { setLat(p.lat); setLng(p.lng); setLocationStr(p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>

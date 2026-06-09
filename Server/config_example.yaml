@@ -31,6 +31,21 @@ qmx_auto_sign_webhook_url: ""
 # postgres 数据库连接字符串
 postgres_dsn: "host=example.com port=5432 user=admin password=114514 dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"
 
+# 课程位置签到预设坐标（BD-09）
+course_location_presets:
+  - name: "七号教学楼"
+    lng: "119.535984"
+    lat: "35.475740"
+    description: "中国山东省日照市东港区秦楼街道"
+  - name: "扩展训练基地"
+    lng: "119.528179"
+    lat: "35.460785"
+    description: "中国山东省日照市东港区秦楼街道山海路"
+  - name: "体育馆"
+    lng: "119.521267"
+    lat: "35.462135"
+    description: "中国山东省日照市东港区秦楼街道"
+
 # QMX 查寝预设坐标（在线获取不可用时使用）
 qmx_location_presets:
   - name: "山东外国语职业技术大学-一号学生宿舍楼"

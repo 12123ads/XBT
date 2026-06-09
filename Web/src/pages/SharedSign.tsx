@@ -12,9 +12,8 @@ import { LocationInput } from '../components/sign/LocationInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { getBrowserLocation } from '../utils/geolocation';
 import { parseChaoxingQrText } from '../utils/qr';
-import config from '../../config.yaml';
+import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 
-const LOCATION_PRESETS = config.sign?.location_presets || [];
 const QR_READER_ID = 'shared-sign-qr-reader';
 
 const getErrorMessage = (error: unknown, fallback: string) => (
@@ -48,6 +47,7 @@ const formatTime = (ts: number) => {
 
 const SharedSign = () => {
   const { token } = useParams();
+  const locationPresets = useCourseLocationPresets();
   const [share, setShare] = useState<SignShareInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -259,7 +259,7 @@ const SharedSign = () => {
           {share.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
           {share.sign_type === 4 && (
             <LocationInput
-              name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
+              name={locationPresets.find((p) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
               description={locationStr}
               onOpen={() => setIsLocationPickerOpen(true)}
               onLocate={handleUseBrowserLocation}
@@ -363,14 +363,14 @@ const SharedSign = () => {
               <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
               <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
               <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">
-                <motion.div whileTap={{ scale: 0.98 }} onClick={handleUseBrowserLocation} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !LOCATION_PRESETS.some((p: any) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}>
+                <motion.div whileTap={{ scale: 0.98 }} onClick={handleUseBrowserLocation} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !locationPresets.some((p) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}>
                   <div className="flex-1 min-w-0 pr-4">
                     <div className="font-bold text-slate-800 mb-0.5 text-sm">使用浏览器当前位置</div>
                     <div className="text-[10px] text-slate-400 font-medium truncate">{isLocating ? '正在请求定位权限并转换为 BD-09' : '从系统定位服务读取并转换为 BD-09'}</div>
                   </div>
                   {isLocating ? <Loader2 size={20} className="text-blue-600 shrink-0 animate-spin" /> : <MapPin size={20} className="text-blue-600 shrink-0" />}
                 </motion.div>
-                {LOCATION_PRESETS.map((p: any, i: number) => {
+                {locationPresets.map((p, i) => {
                   const isSelected = p.lat === lat && p.lng === lng;
                   return (
                     <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { applyLocation(p.lat, p.lng, p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>

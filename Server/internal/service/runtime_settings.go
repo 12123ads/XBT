@@ -17,12 +17,14 @@ const (
 	appSettingCourseSignWebhookURL  = "course_sign_webhook_url"
 	appSettingQMXAutoSignWebhookURL = "qmx_auto_sign_webhook_url"
 	appSettingQMXLocationPresets    = "qmx_location_presets"
+	appSettingCourseLocationPresets = "course_location_presets"
 )
 
 type RuntimeSettings struct {
-	CourseSignWebhookURL  string                     `json:"course_sign_webhook_url"`
-	QMXAutoSignWebhookURL string                     `json:"qmx_auto_sign_webhook_url"`
-	QMXLocationPresets    []config.QMXLocationPreset `json:"qmx_location_presets"`
+	CourseSignWebhookURL  string                        `json:"course_sign_webhook_url"`
+	QMXAutoSignWebhookURL string                        `json:"qmx_auto_sign_webhook_url"`
+	QMXLocationPresets    []config.QMXLocationPreset    `json:"qmx_location_presets"`
+	CourseLocationPresets []config.CourseLocationPreset `json:"course_location_presets"`
 }
 
 type RuntimeSettingsService struct {
@@ -37,6 +39,7 @@ func NewRuntimeSettingsService(db *gorm.DB, cfg config.Config) *RuntimeSettingsS
 			CourseSignWebhookURL:  strings.TrimSpace(cfg.CourseSignWebhookURL),
 			QMXAutoSignWebhookURL: strings.TrimSpace(cfg.QMXAutoSignWebhookURL),
 			QMXLocationPresets:    copyQMXLocationPresets(cfg.QMXLocationPresets),
+			CourseLocationPresets: copyCourseLocationPresets(cfg.CourseLocationPresets),
 		},
 	}
 }
@@ -46,6 +49,7 @@ func (s *RuntimeSettingsService) Settings() (RuntimeSettings, error) {
 		CourseSignWebhookURL:  s.defaults.CourseSignWebhookURL,
 		QMXAutoSignWebhookURL: s.defaults.QMXAutoSignWebhookURL,
 		QMXLocationPresets:    copyQMXLocationPresets(s.defaults.QMXLocationPresets),
+		CourseLocationPresets: copyCourseLocationPresets(s.defaults.CourseLocationPresets),
 	}
 
 	if value, ok, err := s.settingValue(appSettingCourseSignWebhookURL); err != nil {
@@ -67,6 +71,15 @@ func (s *RuntimeSettingsService) Settings() (RuntimeSettings, error) {
 		}
 		settings.QMXLocationPresets = copyQMXLocationPresets(presets)
 	}
+	if value, ok, err := s.settingValue(appSettingCourseLocationPresets); err != nil {
+		return settings, err
+	} else if ok {
+		var presets []config.CourseLocationPreset
+		if err := json.Unmarshal([]byte(value), &presets); err != nil {
+			return settings, err
+		}
+		settings.CourseLocationPresets = copyCourseLocationPresets(presets)
+	}
 	return settings, nil
 }
 
@@ -74,8 +87,13 @@ func (s *RuntimeSettingsService) Update(settings RuntimeSettings) (RuntimeSettin
 	settings.CourseSignWebhookURL = strings.TrimSpace(settings.CourseSignWebhookURL)
 	settings.QMXAutoSignWebhookURL = strings.TrimSpace(settings.QMXAutoSignWebhookURL)
 	settings.QMXLocationPresets = copyQMXLocationPresets(settings.QMXLocationPresets)
+	settings.CourseLocationPresets = copyCourseLocationPresets(settings.CourseLocationPresets)
 
-	rawPresets, err := json.Marshal(settings.QMXLocationPresets)
+	rawQMXPresets, err := json.Marshal(settings.QMXLocationPresets)
+	if err != nil {
+		return settings, err
+	}
+	rawCoursePresets, err := json.Marshal(settings.CourseLocationPresets)
 	if err != nil {
 		return settings, err
 	}
@@ -92,7 +110,11 @@ func (s *RuntimeSettingsService) Update(settings RuntimeSettings) (RuntimeSettin
 		tx.Rollback()
 		return settings, err
 	}
-	if err := setRuntimeSettingValue(tx, appSettingQMXLocationPresets, string(rawPresets)); err != nil {
+	if err := setRuntimeSettingValue(tx, appSettingQMXLocationPresets, string(rawQMXPresets)); err != nil {
+		tx.Rollback()
+		return settings, err
+	}
+	if err := setRuntimeSettingValue(tx, appSettingCourseLocationPresets, string(rawCoursePresets)); err != nil {
 		tx.Rollback()
 		return settings, err
 	}
@@ -129,6 +151,15 @@ func (s *RuntimeSettingsService) QMXLocationPresets() []config.QMXLocationPreset
 	return copyQMXLocationPresets(settings.QMXLocationPresets)
 }
 
+func (s *RuntimeSettingsService) CourseLocationPresets() []config.CourseLocationPreset {
+	settings, err := s.Settings()
+	if err != nil {
+		log.Printf("read course location presets setting failed: %v", err)
+		return copyCourseLocationPresets(s.defaults.CourseLocationPresets)
+	}
+	return copyCourseLocationPresets(settings.CourseLocationPresets)
+}
+
 func (s *RuntimeSettingsService) settingValue(key string) (string, bool, error) {
 	var setting model.AppSetting
 	err := s.db.Where("setting_key = ?", key).Take(&setting).Error
@@ -158,6 +189,15 @@ func copyQMXLocationPresets(in []config.QMXLocationPreset) []config.QMXLocationP
 		return []config.QMXLocationPreset{}
 	}
 	out := make([]config.QMXLocationPreset, len(in))
+	copy(out, in)
+	return out
+}
+
+func copyCourseLocationPresets(in []config.CourseLocationPreset) []config.CourseLocationPreset {
+	if len(in) == 0 {
+		return []config.CourseLocationPreset{}
+	}
+	out := make([]config.CourseLocationPreset, len(in))
 	copy(out, in)
 	return out
 }

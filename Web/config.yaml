@@ -3,18 +3,3 @@
 api:
   base_url: "/api"
   timeout: 10000
-
-sign:
-  location_presets:
-    - name: "七号教学楼"
-      lng: "119.535984"
-      lat: "35.475740"
-      description: "中国山东省日照市东港区秦楼街道"
-    - name: "扩展训练基地"
-      lng: "119.528179"
-      lat: "35.460785"
-      description: "中国山东省日照市东港区秦楼街道山海路"
-    - name: "体育馆"
-      lng: "119.521267"
-      lat: "35.462135"
-      description: "中国山东省日照市东港区秦楼街道"

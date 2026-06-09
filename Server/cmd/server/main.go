@@ -33,7 +33,7 @@ func main() {
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
-	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit)
+	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
 	adminSettingsHandler := handler.NewAdminSettingsHandler(runtimeSettingsSvc)
@@ -52,6 +52,7 @@ func main() {
 			c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"service": "xbt2-server"}})
 		})
 		api.POST("/auth/login", authHandler.Login)
+		api.GET("/sign/location-presets", signHandler.LocationPresets)
 		api.GET("/sign/shares/:token", signHandler.GetShare)
 		api.POST("/sign/shares/:token/execute", signHandler.ExecuteShare)
 

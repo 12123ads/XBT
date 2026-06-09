@@ -125,10 +125,18 @@ type AdminQMXLocationPresetRequest struct {
 	Range int     `json:"range"`
 }
 
+type AdminCourseLocationPresetRequest struct {
+	Name        string `json:"name"`
+	Lng         string `json:"lng"`
+	Lat         string `json:"lat"`
+	Description string `json:"description"`
+}
+
 type AdminRuntimeSettingsRequest struct {
-	CourseSignWebhookURL  string                          `json:"course_sign_webhook_url"`
-	QMXAutoSignWebhookURL string                          `json:"qmx_auto_sign_webhook_url"`
-	QMXLocationPresets    []AdminQMXLocationPresetRequest `json:"qmx_location_presets"`
+	CourseSignWebhookURL  string                             `json:"course_sign_webhook_url"`
+	QMXAutoSignWebhookURL string                             `json:"qmx_auto_sign_webhook_url"`
+	QMXLocationPresets    []AdminQMXLocationPresetRequest    `json:"qmx_location_presets"`
+	CourseLocationPresets []AdminCourseLocationPresetRequest `json:"course_location_presets"`
 }
 
 type AdminQMXAutoSignSettingsRequest struct {

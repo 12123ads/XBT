@@ -33,13 +33,23 @@ type SignHandler struct {
 	cc          *service.CredentialCrypto
 	signService *service.SignService
 	listLimit   int
+	settings    *service.RuntimeSettingsService
 }
 
-func NewSignHandler(db *gorm.DB, xxtClient *xxt.Client, cc *service.CredentialCrypto, signService *service.SignService, listLimit int) *SignHandler {
+func NewSignHandler(db *gorm.DB, xxtClient *xxt.Client, cc *service.CredentialCrypto, signService *service.SignService, listLimit int, settings *service.RuntimeSettingsService) *SignHandler {
 	if listLimit <= 0 {
 		listLimit = 5
 	}
-	return &SignHandler{db: db, xxt: xxtClient, cc: cc, signService: signService, listLimit: listLimit}
+	return &SignHandler{db: db, xxt: xxtClient, cc: cc, signService: signService, listLimit: listLimit, settings: settings}
+}
+
+func (h *SignHandler) LocationPresets(c *gin.Context) {
+	settings, err := h.settings.Settings()
+	if err != nil {
+		common.Fail(c, 500, "query location presets failed")
+		return
+	}
+	common.Success(c, gin.H{"items": settings.CourseLocationPresets})
 }
 
 func (h *SignHandler) Activities(c *gin.Context) {

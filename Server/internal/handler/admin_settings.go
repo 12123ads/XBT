@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -13,7 +14,10 @@ import (
 	"xbt2/server/internal/service"
 )
 
-const maxAdminQMXLocationPresetCount = 200
+const (
+	maxAdminQMXLocationPresetCount    = 200
+	maxAdminCourseLocationPresetCount = 200
+)
 
 type AdminSettingsHandler struct {
 	settings *service.RuntimeSettingsService
@@ -54,11 +58,17 @@ func (h *AdminSettingsHandler) Update(c *gin.Context) {
 		common.Fail(c, 400, err.Error())
 		return
 	}
+	coursePresets, err := normalizeAdminCourseLocationPresets(req.CourseLocationPresets)
+	if err != nil {
+		common.Fail(c, 400, err.Error())
+		return
+	}
 
 	settings, err := h.settings.Update(service.RuntimeSettings{
 		CourseSignWebhookURL:  courseWebhook,
 		QMXAutoSignWebhookURL: qmxWebhook,
 		QMXLocationPresets:    presets,
+		CourseLocationPresets: coursePresets,
 	})
 	if err != nil {
 		common.Fail(c, 500, "save settings failed")
@@ -110,6 +120,51 @@ func normalizeAdminQMXLocationPresets(reqs []dto.AdminQMXLocationPresetRequest) 
 		})
 	}
 	return presets, nil
+}
+
+func normalizeAdminCourseLocationPresets(reqs []dto.AdminCourseLocationPresetRequest) ([]config.CourseLocationPreset, error) {
+	if len(reqs) > maxAdminCourseLocationPresetCount {
+		return nil, fmt.Errorf("too many course location presets")
+	}
+
+	presets := make([]config.CourseLocationPreset, 0, len(reqs))
+	for i, req := range reqs {
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return nil, fmt.Errorf("course location preset %d name is required", i+1)
+		}
+		lng, err := normalizeCoordinateText(req.Lng, -180, 180)
+		if err != nil {
+			return nil, fmt.Errorf("course location preset %d lng is invalid", i+1)
+		}
+		lat, err := normalizeCoordinateText(req.Lat, -90, 90)
+		if err != nil {
+			return nil, fmt.Errorf("course location preset %d lat is invalid", i+1)
+		}
+		description := strings.TrimSpace(req.Description)
+		if description == "" {
+			return nil, fmt.Errorf("course location preset %d description is required", i+1)
+		}
+		presets = append(presets, config.CourseLocationPreset{
+			Name:        name,
+			Lng:         lng,
+			Lat:         lat,
+			Description: description,
+		})
+	}
+	return presets, nil
+}
+
+func normalizeCoordinateText(raw string, minValue, maxValue float64) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("coordinate is required")
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || invalidCoordinate(value) || value < minValue || value > maxValue {
+		return "", fmt.Errorf("coordinate is invalid")
+	}
+	return raw, nil
 }
 
 func invalidCoordinate(value float64) bool {

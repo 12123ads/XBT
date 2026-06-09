@@ -21,7 +21,7 @@ import client from '../api/client';
 import { useAuthStore } from '../store/auth';
 import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignShareCreateResponse } from '../types';
 import { getBrowserLocation } from '../utils/geolocation';
-import config from '../../config.yaml';
+import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 
 // Import refactored components
 import { GestureInput } from '../components/sign/GestureInput';
@@ -31,8 +31,6 @@ import { QrInput } from '../components/sign/QrInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
 
-const LOCATION_PRESETS = config.sign?.location_presets || [];
-
 const getErrorMessage = (error: unknown, fallback: string) => {
   return error instanceof Error ? error.message : fallback;
 };
@@ -41,6 +39,7 @@ const SignDetail = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { user: currentUser } = useAuthStore();
+  const locationPresets = useCourseLocationPresets();
   
   const activity = location.state?.activity as SignActivity;
   const course = location.state?.course as CourseActivities;
@@ -462,7 +461,7 @@ const SignDetail = () => {
             {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
             {activity.sign_type === 4 && (
               <LocationInput
-                name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
+                name={locationPresets.find((p) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
                 description={locationStr}
                 onOpen={() => setIsLocationPickerOpen(true)}
                 onLocate={handleUseBrowserLocation}
@@ -558,7 +557,7 @@ const SignDetail = () => {
                 <motion.div
                   whileTap={{ scale: 0.98 }}
                   onClick={handleUseBrowserLocation}
-                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !LOCATION_PRESETS.some((p: any) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
+                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !locationPresets.some((p) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
                 >
                   <div className="flex-1 min-w-0 pr-4">
                     <div className="font-bold text-slate-800 mb-0.5 text-sm">使用浏览器当前位置</div>
@@ -568,7 +567,7 @@ const SignDetail = () => {
                   </div>
                   {isLocating ? <Loader2 size={20} className="text-blue-600 shrink-0 animate-spin" /> : <MapPin size={20} className="text-blue-600 shrink-0" />}
                 </motion.div>
-                {LOCATION_PRESETS.map((p: any, i: number) => {
+                {locationPresets.map((p, i) => {
                 const isSelected = p.lat === lat && p.lng === lng;
                 return (
                   <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { applyLocation(p.lat, p.lng, p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
