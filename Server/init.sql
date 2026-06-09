@@ -119,6 +119,53 @@ CREATE TABLE IF NOT EXISTS sign_records (
   CONSTRAINT uq_sign_records_user_activity UNIQUE (user_uid, activity_id)
 );
 
+-- 10) QMX auto sign global settings
+CREATE TABLE IF NOT EXISTS qmx_auto_sign_settings (
+  id BIGSERIAL PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
+  run_at VARCHAR(16) NOT NULL DEFAULT '22:00',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO qmx_auto_sign_settings (id, enabled, timezone, run_at)
+VALUES (1, FALSE, 'Asia/Shanghai', '22:00')
+ON CONFLICT (id) DO NOTHING;
+
+-- 11) Per-account QMX auto sign configuration
+CREATE TABLE IF NOT EXISTS qmx_auto_sign_accounts (
+  id BIGSERIAL PRIMARY KEY,
+  user_uid BIGINT NOT NULL UNIQUE,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  location_name VARCHAR(255) NOT NULL DEFAULT '',
+  location_index INTEGER NOT NULL DEFAULT -1,
+  longitude DOUBLE PRECISION NOT NULL DEFAULT 0,
+  latitude DOUBLE PRECISION NOT NULL DEFAULT 0,
+  location_range INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 12) QMX auto sign execution records
+CREATE TABLE IF NOT EXISTS qmx_auto_sign_records (
+  id BIGSERIAL PRIMARY KEY,
+  user_uid BIGINT NOT NULL,
+  trigger VARCHAR(32) NOT NULL,
+  success BOOLEAN NOT NULL DEFAULT FALSE,
+  code VARCHAR(128) NOT NULL DEFAULT '',
+  message VARCHAR(512) NOT NULL DEFAULT '',
+  batch_name VARCHAR(255) NOT NULL DEFAULT '',
+  check_date VARCHAR(64) NOT NULL DEFAULT '',
+  check_time VARCHAR(64) NOT NULL DEFAULT '',
+  location_name VARCHAR(255) NOT NULL DEFAULT '',
+  longitude DOUBLE PRECISION NOT NULL DEFAULT 0,
+  latitude DOUBLE PRECISION NOT NULL DEFAULT 0,
+  executed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 常用查询索引
 CREATE INDEX IF NOT EXISTS idx_user_courses_user_uid ON user_courses (user_uid);
 CREATE INDEX IF NOT EXISTS idx_user_courses_course_class ON user_courses (course_id, class_id);
@@ -131,6 +178,12 @@ CREATE INDEX IF NOT EXISTS idx_sign_records_activity_id ON sign_records (activit
 CREATE INDEX IF NOT EXISTS idx_sign_records_user_uid ON sign_records (user_uid);
 CREATE INDEX IF NOT EXISTS idx_sign_records_source_uid ON sign_records (source_uid);
 CREATE INDEX IF NOT EXISTS idx_sign_records_sign_time_ms ON sign_records (sign_time_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qmx_auto_sign_accounts_user_uid ON qmx_auto_sign_accounts (user_uid);
+CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_accounts_enabled ON qmx_auto_sign_accounts (enabled);
+CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_user_uid ON qmx_auto_sign_records (user_uid);
+CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_trigger ON qmx_auto_sign_records (trigger);
+CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_success ON qmx_auto_sign_records (success);
+CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_executed_at ON qmx_auto_sign_records (executed_at);
 CREATE INDEX IF NOT EXISTS idx_whitelists_permission ON whitelists (permission);
 
 COMMIT;

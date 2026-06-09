@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, CheckCircle2, ChevronLeft, GraduationCap, ShieldCheck, Users } from 'lucide-react';
+import { AlarmClock, BookOpen, CheckCircle2, ChevronLeft, GraduationCap, Settings2, ShieldCheck, Users } from 'lucide-react';
 
 const entries = [
   {
@@ -22,6 +22,20 @@ const entries = [
     path: '/admin/sign-records',
     icon: CheckCircle2,
     tone: 'bg-emerald-600',
+  },
+  {
+    title: 'QMX 自动签到',
+    description: '配置晚上十点自动查寝、单账号定位点和执行记录。',
+    path: '/admin/qmx-auto-sign',
+    icon: AlarmClock,
+    tone: 'bg-cyan-600',
+  },
+  {
+    title: '后台设置',
+    description: '维护企业微信推送和 QMX 预设定位点。',
+    path: '/admin/settings',
+    icon: Settings2,
+    tone: 'bg-violet-600',
   },
   {
     title: '白名单管理',

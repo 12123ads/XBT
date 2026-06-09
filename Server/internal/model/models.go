@@ -60,6 +60,14 @@ type ClassGroupMember struct {
 	UpdatedAt time.Time `json:"-"`
 }
 
+type AppSetting struct {
+	ID         uint      `gorm:"primaryKey" json:"-"`
+	SettingKey string    `gorm:"column:setting_key;size:128;uniqueIndex;not null" json:"setting_key"`
+	Value      string    `gorm:"type:text;not null" json:"value"`
+	CreatedAt  time.Time `json:"-"`
+	UpdatedAt  time.Time `json:"-"`
+}
+
 type SignActivity struct {
 	ID           uint      `gorm:"primaryKey" json:"-"`
 	ActivityID   int64     `gorm:"unique;not null" json:"activity_id"`
@@ -103,4 +111,54 @@ type SignRecord struct {
 	SignTimeMS    int64     `gorm:"not null;index" json:"sign_time_ms"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
+}
+
+type QMXAutoSignSetting struct {
+	ID        uint      `gorm:"primaryKey" json:"-"`
+	Enabled   bool      `gorm:"not null;default:false" json:"enabled"`
+	Timezone  string    `gorm:"size:64;not null;default:Asia/Shanghai" json:"timezone"`
+	RunAt     string    `gorm:"size:16;not null;default:22:00" json:"run_at"`
+	CreatedAt time.Time `json:"-"`
+	UpdatedAt time.Time `json:"-"`
+}
+
+type QMXAutoSignAccount struct {
+	ID            uint      `gorm:"primaryKey" json:"-"`
+	UserUID       int64     `gorm:"not null;uniqueIndex" json:"user_uid"`
+	Enabled       bool      `gorm:"not null;default:false" json:"enabled"`
+	LocationName  string    `gorm:"size:255" json:"location_name"`
+	LocationIndex int       `gorm:"not null;default:-1" json:"location_index"`
+	Longitude     float64   `json:"longitude"`
+	Latitude      float64   `json:"latitude"`
+	Range         int       `gorm:"column:location_range" json:"range"`
+	CreatedAt     time.Time `json:"-"`
+	UpdatedAt     time.Time `json:"-"`
+}
+
+type QMXAutoSignRecord struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	RunID        string    `gorm:"size:64;index" json:"run_id"`
+	UserUID      int64     `gorm:"not null;index" json:"user_uid"`
+	Trigger      string    `gorm:"size:32;not null;index" json:"trigger"`
+	Success      bool      `gorm:"not null;index" json:"success"`
+	Code         string    `gorm:"size:128" json:"code"`
+	Message      string    `gorm:"size:512" json:"message"`
+	BatchName    string    `gorm:"size:255" json:"batch_name"`
+	CheckDate    string    `gorm:"size:64" json:"check_date"`
+	CheckTime    string    `gorm:"size:64" json:"check_time"`
+	LocationName string    `gorm:"size:255" json:"location_name"`
+	Longitude    float64   `json:"longitude"`
+	Latitude     float64   `json:"latitude"`
+	ExecutedAt   time.Time `gorm:"not null;index" json:"executed_at"`
+	CreatedAt    time.Time `json:"-"`
+	UpdatedAt    time.Time `json:"-"`
+}
+
+type QMXAutoSignRunState struct {
+	ID         uint       `gorm:"primaryKey" json:"-"`
+	RunID      string     `gorm:"size:64;uniqueIndex;not null" json:"run_id"`
+	Trigger    string     `gorm:"size:32;not null;index" json:"trigger"`
+	NotifiedAt *time.Time `gorm:"index" json:"notified_at"`
+	CreatedAt  time.Time  `json:"-"`
+	UpdatedAt  time.Time  `json:"-"`
 }

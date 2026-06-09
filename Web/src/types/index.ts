@@ -163,6 +163,46 @@ export interface AdminClassGroupSyncResponse {
   mode: AdminClassGroupSyncMode;
 }
 
+export interface QMXRoomCheckLocation {
+  name: string;
+  lng: number;
+  lat: number;
+  range: number;
+  distance?: number;
+}
+
+export interface QMXRoomCheckRequirements {
+  photo_required: boolean;
+  face_required: boolean;
+  bluetooth_required: boolean;
+  special_sdk: boolean;
+}
+
+export interface QMXRoomCheckPreview {
+  batch_name: string;
+  check_date: string;
+  late_date: string;
+  start_time: string;
+  end_time: string;
+  late_end_time: string;
+  locations: QMXRoomCheckLocation[];
+  requirements: QMXRoomCheckRequirements;
+  unsupported: string[];
+}
+
+export interface QMXRoomCheckExecuteResponse {
+  success: boolean;
+  code: number | string;
+  message: string;
+  batch_name: string;
+  check_date: string;
+  check_time: string;
+  location_name: string;
+  longitude: number;
+  latitude: number;
+  unsupported?: string[];
+}
+
 export interface AdminSignRecord {
   id: number;
   activity_id: number;
@@ -187,4 +227,115 @@ export interface AdminSignRecordPage {
   page_size: number;
   total: number;
   total_pages: number;
+}
+
+export interface AdminQMXAutoSignSettings {
+  enabled: boolean;
+  timezone: string;
+  run_at: string;
+  next_run_at: number;
+}
+
+export interface AdminQMXAutoSignConfig {
+  user_uid: number;
+  enabled: boolean;
+  location_name: string;
+  location_index: number;
+  longitude: number;
+  latitude: number;
+  range: number;
+}
+
+export interface AdminQMXAutoSignRecord {
+  id: number;
+  run_id: string;
+  user_uid: number;
+  name: string;
+  mobile_masked: string;
+  trigger: 'scheduled' | 'manual' | string;
+  success: boolean;
+  code: string;
+  message: string;
+  batch_name: string;
+  check_date: string;
+  check_time: string;
+  location_name: string;
+  longitude: number;
+  latitude: number;
+  executed_at: number;
+}
+
+export interface AdminQMXAutoSignRecordGroup {
+  id: number;
+  run_id: string;
+  trigger: 'scheduled' | 'manual' | string;
+  success: boolean;
+  total_count: number;
+  success_count: number;
+  failure_count: number;
+  account_names: string;
+  success_names: string;
+  failure_names: string;
+  batch_names: string;
+  location_names: string;
+  messages: string;
+  first_executed_at: number;
+  last_executed_at: number;
+  executed_at: number;
+  batch_name?: string;
+  location_name?: string;
+  message?: string;
+}
+
+export interface AdminQMXAutoSignAccount {
+  uid: number;
+  name: string;
+  mobile_masked: string;
+  avatar: string;
+  permission: number;
+  config: AdminQMXAutoSignConfig;
+  last_record: AdminQMXAutoSignRecord | null;
+}
+
+export interface AdminQMXAutoSignOverview {
+  settings: AdminQMXAutoSignSettings;
+  accounts: AdminQMXAutoSignAccount[];
+}
+
+export interface AdminQMXAutoSignRecordPage {
+  items: AdminQMXAutoSignRecordGroup[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface QMXLocationPreset {
+  name: string;
+  lng: number;
+  lat: number;
+  range: number;
+}
+
+export interface AdminRuntimeSettings {
+  course_sign_webhook_url: string;
+  qmx_auto_sign_webhook_url: string;
+  qmx_location_presets: QMXLocationPreset[];
+}
+
+export interface OwnQMXAutoSignConfig {
+  user_uid: number;
+  enabled: boolean;
+  location_name: string;
+  location_index: number;
+  longitude: number;
+  latitude: number;
+  range: number;
+}
+
+export interface OwnQMXAutoSignSettings {
+  settings: AdminQMXAutoSignSettings;
+  config: OwnQMXAutoSignConfig;
+  last_record: AdminQMXAutoSignRecord | null;
+  presets: QMXLocationPreset[];
 }

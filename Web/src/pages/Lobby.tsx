@@ -16,7 +16,8 @@ import {
   Fingerprint,
   BookOpen,
   CheckCircle2,
-  RectangleEllipsis
+  RectangleEllipsis,
+  Building2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
@@ -213,6 +214,14 @@ const Lobby = () => {
             </div>
           </motion.div>
           <div className="flex items-center space-x-1">
+            <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => navigate('/room-check')}
+              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              title="查寝定位打卡"
+            >
+              <Building2 size={20} />
+            </motion.button>
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/courses')}

@@ -768,6 +768,78 @@ DELETE /api/admin/whitelist/users/12
 - 同一 `activity_id/course_id/class_id/sign_type` 会合并为一条记录，`target_count` 表示本次合并后的目标人数。
 - 历史旧记录可能缺少课程或活动快照，接口会返回 `未知课程` 或 `未知活动`。
 
+### 6.8 QMX 自动签到（管理员）
+
+QMX 自动签到用于每天北京时间 `22:00` 自动执行查寝定位签到。它独立于学习通课程签到记录，不写入 `sign_records`。
+
+#### 6.8.1 获取自动签到总览
+- Method: `GET`
+- Path: `/api/admin/qmx-auto-sign`
+- Auth: 是（管理员）
+
+响应包含全局开关、下次执行时间和每个账号的单独配置、最近执行结果。
+
+#### 6.8.2 更新全局开关
+- Method: `PUT`
+- Path: `/api/admin/qmx-auto-sign/settings`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "enabled": true
+}
+```
+
+#### 6.8.3 读取账号 QMX 定位点
+- Method: `POST`
+- Path: `/api/admin/qmx-auto-sign/accounts/:uid/locations/preview`
+- Auth: 是（管理员）
+
+说明：后端使用该账号保存的学习通凭据换取 QMX 凭据，并返回当前查寝批次和允许定位点。
+
+#### 6.8.4 更新账号自动签到配置
+- Method: `PUT`
+- Path: `/api/admin/qmx-auto-sign/accounts/:uid`
+- Auth: 是（管理员）
+
+请求体：
+
+```json
+{
+  "enabled": true,
+  "location": {
+    "location_name": "宿舍楼",
+    "location_index": 0,
+    "longitude": 119.123456,
+    "latitude": 35.123456,
+    "range": 100
+  }
+}
+```
+
+说明：开启单账号自动签到前必须已选择定位点。定时执行时优先按 `location_name` 匹配当前 QMX 定位点，找不到再按 `location_index` 兜底。
+
+#### 6.8.5 单账号立即执行
+- Method: `POST`
+- Path: `/api/admin/qmx-auto-sign/accounts/:uid/run`
+- Auth: 是（管理员）
+
+说明：只对该账号立即执行一次，用于测试或补签；要求该账号已开启并已配置定位点。
+
+#### 6.8.6 获取自动签到记录
+- Method: `GET`
+- Path: `/api/admin/qmx-auto-sign/records`
+- Auth: 是（管理员）
+- Query:
+  - `page`: 页码，默认 `1`
+  - `page_size`: 每页数量，默认 `20`，最大 `100`
+  - `user_uid`: 可选，按账号过滤
+  - `trigger`: 可选，`scheduled` 或 `manual`
+
+记录包含账号、触发方式、成功状态、QMX 返回码/消息、批次、定位点和执行时间。
+
 ---
 
 ## 7. 错误码与常见错误

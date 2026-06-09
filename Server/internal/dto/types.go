@@ -49,6 +49,25 @@ type SignShareExecuteRequest struct {
 	Special map[string]interface{} `json:"special_params"`
 }
 
+type QMXRoomCheckCredentialRequest struct {
+	QMXURL string `json:"qmx_url"`
+	XToken string `json:"x_token"`
+	Cookie string `json:"cookie"`
+	Raw    string `json:"raw"`
+}
+
+type QMXRoomCheckPreviewRequest struct {
+	QMXRoomCheckCredentialRequest
+}
+
+type QMXRoomCheckExecuteRequest struct {
+	QMXRoomCheckCredentialRequest
+	LocationIndex int     `json:"location_index"`
+	Longitude     float64 `json:"longitude"`
+	Latitude      float64 `json:"latitude"`
+	LocationName  string  `json:"location_name"`
+}
+
 type AddWhitelistRequest struct {
 	Mobile string `json:"mobile" binding:"required"`
 }
@@ -97,4 +116,34 @@ type AdminClassGroupMembersRequest struct {
 type AdminClassGroupCopySelectionRequest struct {
 	SourceUID int64  `json:"source_uid" binding:"required"`
 	Mode      string `json:"mode" binding:"required"`
+}
+
+type AdminQMXLocationPresetRequest struct {
+	Name  string  `json:"name"`
+	Lng   float64 `json:"lng"`
+	Lat   float64 `json:"lat"`
+	Range int     `json:"range"`
+}
+
+type AdminRuntimeSettingsRequest struct {
+	CourseSignWebhookURL  string                          `json:"course_sign_webhook_url"`
+	QMXAutoSignWebhookURL string                          `json:"qmx_auto_sign_webhook_url"`
+	QMXLocationPresets    []AdminQMXLocationPresetRequest `json:"qmx_location_presets"`
+}
+
+type AdminQMXAutoSignSettingsRequest struct {
+	Enabled *bool `json:"enabled" binding:"required"`
+}
+
+type AdminQMXAutoSignLocationRequest struct {
+	LocationName  string  `json:"location_name" binding:"required"`
+	LocationIndex int     `json:"location_index"`
+	Longitude     float64 `json:"longitude"`
+	Latitude      float64 `json:"latitude"`
+	Range         int     `json:"range"`
+}
+
+type AdminQMXAutoSignAccountRequest struct {
+	Enabled  *bool                            `json:"enabled" binding:"required"`
+	Location *AdminQMXAutoSignLocationRequest `json:"location"`
 }

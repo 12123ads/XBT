@@ -11,7 +11,10 @@ import AdminPanel from './pages/AdminPanel';
 import AdminAccounts from './pages/AdminAccounts';
 import AdminClassGroups from './pages/AdminClassGroups';
 import AdminSignRecords from './pages/AdminSignRecords';
+import AdminQMXAutoSign from './pages/AdminQMXAutoSign';
+import AdminSettings from './pages/AdminSettings';
 import SharedSign from './pages/SharedSign';
+import RoomCheck from './pages/RoomCheck';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -69,9 +72,12 @@ function App() {
               <Route path="/admin/accounts" element={<AdminAccounts />} />
               <Route path="/admin/class-groups" element={<AdminClassGroups />} />
               <Route path="/admin/sign-records" element={<AdminSignRecords />} />
+              <Route path="/admin/qmx-auto-sign" element={<AdminQMXAutoSign />} />
+              <Route path="/admin/settings" element={<AdminSettings />} />
               <Route path="/admin/whitelist" element={<Whitelist />} />
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
+              <Route path="/room-check" element={<RoomCheck />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
