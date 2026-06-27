@@ -22,6 +22,7 @@ import { useAuthStore } from '../store/auth';
 import type { ApiResponse, LearningDashboard as LearningDashboardData, LearningItem } from '../types';
 
 type ViewKey = 'todo' | 'homework' | 'exams' | 'activities';
+type StatusFilter = 'all' | 'active' | 'ended' | 'finished';
 
 const emptyDashboard: LearningDashboardData = {
   todo: [],
@@ -38,12 +39,63 @@ const views: Array<{ key: ViewKey; label: string; icon: typeof Timer }> = [
   { key: 'activities', label: '课程任务', icon: BookOpen }
 ];
 
+const statusFilters: Array<{ key: StatusFilter; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'active', label: '进行中' },
+  { key: 'ended', label: '已结束' },
+  { key: 'finished', label: '已完成' }
+];
+
 const itemKey = (item: LearningItem) => `${item.kind}:${item.id || item.title}:${item.course_id}:${item.class_id}`;
 
+const isActiveItem = (item: LearningItem) => (item.ongoing || item.pending) && !item.finished && !item.expired;
+
+const isEndedItem = (item: LearningItem) => item.expired || (!isActiveItem(item) && !item.finished && item.status?.includes('已结束'));
+
+const itemStatusRank = (item: LearningItem) => {
+  if (isActiveItem(item)) return 0;
+  if (isEndedItem(item)) return 1;
+  if (item.finished) return 2;
+  return 3;
+};
+
+const itemSortTime = (item: LearningItem) => {
+  if (item.end_time > 0) return item.end_time;
+  if (item.start_time > 0) return item.start_time;
+  return Number.MAX_SAFE_INTEGER;
+};
+
+const sortLearningItems = (items: LearningItem[]) => {
+  return [...items].sort((a, b) => {
+    const rankDiff = itemStatusRank(a) - itemStatusRank(b);
+    if (rankDiff !== 0) return rankDiff;
+
+    const timeDiff = itemSortTime(a) - itemSortTime(b);
+    if (timeDiff !== 0) return timeDiff;
+
+    const courseDiff = (a.course_name || '').localeCompare(b.course_name || '', 'zh-CN');
+    if (courseDiff !== 0) return courseDiff;
+    return (a.title || '').localeCompare(b.title || '', 'zh-CN');
+  });
+};
+
+const filterByStatus = (items: LearningItem[], filter: StatusFilter) => {
+  switch (filter) {
+    case 'active':
+      return items.filter(isActiveItem);
+    case 'ended':
+      return items.filter(isEndedItem);
+    case 'finished':
+      return items.filter(item => item.finished);
+    default:
+      return items;
+  }
+};
+
 const statusClass = (item: LearningItem) => {
-  if (item.ongoing || item.pending) return 'bg-blue-50 text-blue-700 border-blue-100';
+  if (isActiveItem(item)) return 'bg-blue-50 text-blue-700 border-blue-100';
+  if (isEndedItem(item)) return 'bg-slate-50 text-slate-600 border-slate-100';
   if (item.finished) return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-  if (item.expired) return 'bg-slate-50 text-slate-500 border-slate-100';
   return 'bg-amber-50 text-amber-700 border-amber-100';
 };
 
@@ -65,6 +117,7 @@ const LearningDashboard = () => {
   const { activeUid } = useAuthStore();
   const [data, setData] = useState<LearningDashboardData>(emptyDashboard);
   const [activeView, setActiveView] = useState<ViewKey>('todo');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [showIgnored, setShowIgnored] = useState(false);
   const [ignored, setIgnored] = useState<Record<string, LearningItem>>(() => {
@@ -108,10 +161,19 @@ const LearningDashboard = () => {
   }, [fetchDashboard]);
 
   const rawItems = data[activeView] || [];
-  const visibleItems = useMemo(
-    () => rawItems.filter(item => !ignored[itemKey(item)]),
-    [rawItems, ignored]
-  );
+  const visibleItems = useMemo(() => {
+    const available = rawItems.filter(item => !ignored[itemKey(item)]);
+    return sortLearningItems(filterByStatus(available, statusFilter));
+  }, [rawItems, ignored, statusFilter]);
+  const statusCounts = useMemo(() => {
+    const available = rawItems.filter(item => !ignored[itemKey(item)]);
+    return {
+      all: available.length,
+      active: available.filter(isActiveItem).length,
+      ended: available.filter(isEndedItem).length,
+      finished: available.filter(item => item.finished).length
+    };
+  }, [rawItems, ignored]);
   const ignoredItems = useMemo(() => Object.values(ignored), [ignored]);
 
   const ignoreItem = (item: LearningItem) => {
@@ -176,6 +238,28 @@ const LearningDashboard = () => {
         </div>
       </div>
 
+      <div className="bg-white border-b border-slate-100 px-3 py-2 shrink-0">
+        <div className="grid grid-cols-4 gap-2">
+          {statusFilters.map(filter => {
+            const active = statusFilter === filter.key;
+            return (
+              <button
+                key={filter.key}
+                onClick={() => setStatusFilter(filter.key)}
+                className={`min-w-0 rounded-lg px-2 py-2 text-xs font-bold transition-colors ${
+                  active ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <span className="block truncate">{filter.label}</span>
+                <span className={`block text-[10px] mt-0.5 ${active ? 'text-slate-300' : 'text-slate-400'}`}>
+                  {statusCounts[filter.key]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <PullToRefresh onRefresh={fetchDashboard} isRefreshing={isLoading} className="p-4">
         <div className="space-y-3 pb-[calc(80px+var(--sab))]">
           {data.errors.length > 0 && (
@@ -190,7 +274,7 @@ const LearningDashboard = () => {
 
           <div className="flex items-center justify-between px-1">
             <div className="text-xs text-slate-500">
-              显示 {visibleItems.length} 条，已忽略 {ignoredItems.length} 条
+              显示 {visibleItems.length} 条，按状态和结束时间排序，已忽略 {ignoredItems.length} 条
             </div>
             <button
               onClick={() => setShowIgnored(v => !v)}

@@ -113,9 +113,9 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 	}()
 	wg.Wait()
 
-	out.Homework = homework
-	out.Exams = exams
-	out.Activities = activities
+	out.Homework = sortLearningItems(homework)
+	out.Exams = sortLearningItems(exams)
+	out.Activities = sortLearningItems(activities)
 	out.Todo = buildLearningTodo(out.Homework, out.Exams, out.Activities)
 	return out, nil
 }
@@ -294,10 +294,7 @@ func (c *Client) GetLearningActivities(cli *http.Client) ([]LearningItem, error)
 		}
 		all = append(all, items...)
 	}
-	sort.SliceStable(all, func(i, j int) bool {
-		return all[i].StartTime > all[j].StartTime
-	})
-	return all, nil
+	return sortLearningItems(all), nil
 }
 
 func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
@@ -329,11 +326,11 @@ func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learnin
 		endTime := parseTimeMillis(firstNonNil(item["endTime"], item["end_time"], item["deadline"]))
 		statusCode := int64FromAny(item["status"])
 		ongoing := statusCode == 1
-		finished := statusCode == 2
+		ended := statusCode == 2
 		status := "未开始"
 		if ongoing {
 			status = "进行中"
-		} else if finished {
+		} else if ended {
 			status = "已结束"
 		}
 		items = append(items, LearningItem{
@@ -351,7 +348,7 @@ func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learnin
 			StartTime:  startTime,
 			EndTime:    endTime,
 			Pending:    ongoing,
-			Finished:   finished,
+			Expired:    ended,
 			Ongoing:    ongoing,
 		})
 	}
@@ -477,13 +474,50 @@ func buildLearningTodo(homework, exams, activities []LearningItem) []LearningIte
 			out = append(out, item)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Ongoing != out[j].Ongoing {
-			return out[i].Ongoing
+	return sortLearningItems(out)
+}
+
+func sortLearningItems(items []LearningItem) []LearningItem {
+	sort.SliceStable(items, func(i, j int) bool {
+		leftRank := learningItemStatusRank(items[i])
+		rightRank := learningItemStatusRank(items[j])
+		if leftRank != rightRank {
+			return leftRank < rightRank
 		}
-		return out[i].Title < out[j].Title
+		leftTime := learningItemSortTime(items[i])
+		rightTime := learningItemSortTime(items[j])
+		if leftTime != rightTime {
+			return leftTime < rightTime
+		}
+		if items[i].CourseName != items[j].CourseName {
+			return items[i].CourseName < items[j].CourseName
+		}
+		return items[i].Title < items[j].Title
 	})
-	return out
+	return items
+}
+
+func learningItemStatusRank(item LearningItem) int {
+	if (item.Ongoing || item.Pending) && !item.Finished && !item.Expired {
+		return 0
+	}
+	if item.Expired || strings.Contains(item.Status, "已结束") {
+		return 1
+	}
+	if item.Finished {
+		return 2
+	}
+	return 3
+}
+
+func learningItemSortTime(item LearningItem) int64 {
+	if item.EndTime > 0 {
+		return item.EndTime
+	}
+	if item.StartTime > 0 {
+		return item.StartTime
+	}
+	return int64(^uint64(0) >> 1)
 }
 
 func extractLearningIDs(raw string) (courseID, classID int64, taskID string) {
