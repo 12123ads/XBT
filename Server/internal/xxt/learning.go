@@ -21,6 +21,7 @@ const (
 	learningKindHomework = "homework"
 	learningKindExam     = "exam"
 	learningKindActivity = "activity"
+	learningKindProgress = "progress"
 )
 
 type LearningDashboard struct {
@@ -28,6 +29,7 @@ type LearningDashboard struct {
 	Homework   []LearningItem `json:"homework"`
 	Exams      []LearningItem `json:"exams"`
 	Activities []LearningItem `json:"activities"`
+	Progress   []LearningItem `json:"progress"`
 	Errors     []string       `json:"errors"`
 }
 
@@ -50,6 +52,15 @@ type LearningItem struct {
 	Finished   bool   `json:"finished"`
 	Expired    bool   `json:"expired"`
 	Ongoing    bool   `json:"ongoing"`
+
+	CompletedTasks int    `json:"completed_tasks"`
+	TotalTasks     int    `json:"total_tasks"`
+	CompletionRate string `json:"completion_rate"`
+	CourseScore    string `json:"course_score"`
+	ChapterQuiz    string `json:"chapter_quiz"`
+	Ranking        string `json:"ranking"`
+	AIPractice     string `json:"ai_practice"`
+	GroupTask      string `json:"group_task"`
 }
 
 type learningCourse struct {
@@ -58,6 +69,8 @@ type learningCourse struct {
 	CourseName string
 	Teacher    string
 	CPI        string
+	Enc        string
+	PEnc       string
 }
 
 func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboard, error) {
@@ -72,6 +85,7 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 	var homework []LearningItem
 	var exams []LearningItem
 	var activities []LearningItem
+	var progress []LearningItem
 	var errorsMu sync.Mutex
 	addErr := func(section string, err error) {
 		if err == nil {
@@ -83,7 +97,7 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		items, err := c.GetLearningHomework(&cli)
@@ -111,11 +125,21 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 		}
 		activities = items
 	}()
+	go func() {
+		defer wg.Done()
+		items, err := c.GetLearningProgress(&cli)
+		if err != nil {
+			addErr("progress", err)
+			return
+		}
+		progress = items
+	}()
 	wg.Wait()
 
 	out.Homework = sortLearningItems(homework)
 	out.Exams = sortLearningItems(exams)
 	out.Activities = sortLearningItems(activities)
+	out.Progress = sortLearningItems(progress)
 	out.Todo = buildLearningTodo(out.Homework, out.Exams, out.Activities)
 	return out, nil
 }
@@ -297,6 +321,148 @@ func (c *Client) GetLearningActivities(cli *http.Client) ([]LearningItem, error)
 	return sortLearningItems(all), nil
 }
 
+func (c *Client) GetLearningProgress(cli *http.Client) ([]LearningItem, error) {
+	courses, err := c.getLearningCourses(cli)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]LearningItem, 0, len(courses))
+	for _, course := range courses {
+		item := c.getLearningProgressForCourse(cli, course)
+		items = append(items, item)
+		time.Sleep(300 * time.Millisecond)
+	}
+	return sortLearningItems(items), nil
+}
+
+func (c *Client) getLearningProgressForCourse(cli *http.Client, course learningCourse) LearningItem {
+	pEnc := firstNonEmpty(course.PEnc, course.Enc)
+	if pEnc == "" && course.ClassID > 0 {
+		pEnc = "stuenc_" + strconv.FormatInt(course.ClassID, 10)
+	}
+	link := learningStudyDataLink(course)
+	item := LearningItem{
+		ID:             fmt.Sprintf("%d:%d", course.CourseID, course.ClassID),
+		Kind:           learningKindProgress,
+		Type:           "课程进度",
+		Title:          firstNonEmpty(course.CourseName, "未知课程"),
+		Status:         "未知",
+		CourseName:     course.CourseName,
+		Info:           "点击查看",
+		Link:           link,
+		CourseID:       course.CourseID,
+		ClassID:        course.ClassID,
+		CompletionRate: "点击查看",
+		CourseScore:    "--",
+		ChapterQuiz:    "--",
+		Ranking:        "--",
+		AIPractice:     "--",
+		GroupTask:      "--",
+	}
+	if course.CourseID == 0 || course.ClassID == 0 || course.CPI == "" {
+		return item
+	}
+
+	base := url.Values{}
+	base.Set("clazzid", strconv.FormatInt(course.ClassID, 10))
+	base.Set("courseid", strconv.FormatInt(course.CourseID, 10))
+	base.Set("cpi", course.CPI)
+	base.Set("ut", "s")
+	base.Set("pEnc", pEnc)
+	baseParams := base.Encode()
+	referer := learningStudyDataLink(course)
+
+	jobURL := "https://stat2-ans.chaoxing.com/stat2/study-data/job?" + baseParams
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, jobURL, nil, referer); err == nil {
+		data := mapFromAny(deepFindFirst(payload, "data"))
+		completed := int(int64FromAny(data["job"]))
+		total := int(int64FromAny(firstNonNil(data["publishJobNum"], data["publishJobnum"])))
+		if total == 0 {
+			total = completed
+		}
+		item.CompletedTasks = completed
+		item.TotalTasks = total
+		if per := strVal(data["jobPer"]); per != "" {
+			item.CompletionRate = strings.TrimSuffix(per, "%") + "%"
+		} else if total > 0 {
+			item.CompletionRate = fmt.Sprintf("%d%%", completed*100/total)
+		}
+		item.Info = item.CompletionRate
+		item.ChapterQuiz = formatLearningPair(data["job"], firstNonNil(data["publishJobNum"], data["publishJobnum"]))
+		if rank := int64FromAny(data["jobRank"]); rank > 0 {
+			item.Ranking = fmt.Sprintf("第%d名", rank)
+		}
+		item.AIPractice = formatLearningPair(data["aiEvaluateReachCount"], data["publishLibraryNum"])
+		item.GroupTask = formatLearningPair(data["taskNum"], data["publishTaskNum"])
+	}
+
+	pointURL := "https://stat2-ans.chaoxing.com/stat2/study-data/point"
+	if payload, err := c.getLearningJSON(cli, http.MethodPost, pointURL, []byte(baseParams), referer); err == nil {
+		if points := strVal(firstNonNil(deepFindFirst(payload, "ponits"), deepFindFirst(payload, "points"))); points != "" {
+			item.CourseScore = points + "分"
+		}
+	}
+
+	aiURL := "https://stat2-ans.chaoxing.com/stat2/study-data/ai-evaluate-stat?" + baseParams
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, aiURL, nil, referer); err == nil {
+		data := mapFromAny(deepFindFirst(payload, "data"))
+		if pair := formatLearningPair(data["aiEvaluateReachCount"], data["publishLibraryNum"]); pair != "--" {
+			item.AIPractice = pair
+		}
+	}
+
+	groupURL := "https://stat2-ans.chaoxing.com/stat2/study-data/groupTask?" + baseParams
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, groupURL, nil, referer); err == nil {
+		data := mapFromAny(deepFindFirst(payload, "data"))
+		if pair := formatLearningPair(data["taskNum"], data["publishTaskNum"]); pair != "--" {
+			item.GroupTask = pair
+		}
+	}
+
+	if item.TotalTasks > 0 && item.CompletedTasks >= item.TotalTasks {
+		item.Status = "已完成"
+		item.Finished = true
+		item.Pending = false
+	} else if item.TotalTasks > 0 {
+		item.Status = "进行中"
+		item.Pending = true
+		item.Finished = false
+	} else {
+		item.Pending = false
+	}
+	return item
+}
+
+func (c *Client) getLearningJSON(cli *http.Client, method, rawURL string, body []byte, referer string) (interface{}, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, _ := http.NewRequest(method, rawURL, r)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var payload interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
 	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist?fid=0&courseId=%d&classId=%d&showNotStartedActive=0&_=%d", course.CourseID, course.ClassID, time.Now().UnixMilli())
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
@@ -436,6 +602,8 @@ func (c *Client) getLearningCourses(cli *http.Client) ([]learningCourse, error) 
 				CourseName: strVal(m["name"]),
 				Teacher:    strVal(m["teacherfactor"]),
 				CPI:        strVal(firstNonNil(content["cpi"], ch.CPI)),
+				Enc:        strVal(firstNonNil(content["enc"], m["enc"])),
+				PEnc:       strings.Trim(strVal(firstNonNil(content["pEnc"], m["pEnc"])), `"'`),
 			})
 		}
 	}
@@ -518,6 +686,36 @@ func learningItemSortTime(item LearningItem) int64 {
 		return item.StartTime
 	}
 	return int64(^uint64(0) >> 1)
+}
+
+func learningStudyDataLink(course learningCourse) string {
+	if course.CourseID == 0 || course.ClassID == 0 {
+		return ""
+	}
+	q := url.Values{}
+	q.Set("courseid", strconv.FormatInt(course.CourseID, 10))
+	q.Set("clazzid", strconv.FormatInt(course.ClassID, 10))
+	if course.CPI != "" {
+		q.Set("cpi", course.CPI)
+	}
+	q.Set("ut", "s")
+	return "https://stat2-ans.chaoxing.com/study-data/index?" + q.Encode()
+}
+
+func formatLearningPair(doneRaw, totalRaw interface{}) string {
+	done := int64FromAny(doneRaw)
+	total := int64FromAny(totalRaw)
+	if doneRaw == nil || totalRaw == nil {
+		return "--"
+	}
+	return fmt.Sprintf("%d/%d", done, total)
+}
+
+func mapFromAny(v interface{}) map[string]interface{} {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return map[string]interface{}{}
 }
 
 func extractLearningIDs(raw string) (courseID, classID int64, taskID string) {
