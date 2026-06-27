@@ -59,6 +59,35 @@ export interface CourseActivities {
   activities: SignActivity[];
 }
 
+export interface LearningItem {
+  id: string;
+  kind: 'homework' | 'exam' | 'activity' | string;
+  type: string;
+  title: string;
+  status: string;
+  course_name: string;
+  info: string;
+  link: string;
+  raw: string;
+  course_id: number;
+  class_id: number;
+  active_id: number;
+  start_time: number;
+  end_time: number;
+  pending: boolean;
+  finished: boolean;
+  expired: boolean;
+  ongoing: boolean;
+}
+
+export interface LearningDashboard {
+  todo: LearningItem[];
+  homework: LearningItem[];
+  exams: LearningItem[];
+  activities: LearningItem[];
+  errors: string[];
+}
+
 export interface Classmate {
   uid: number;
   name: string;

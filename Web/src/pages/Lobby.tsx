@@ -17,7 +17,8 @@ import {
   BookOpen,
   CheckCircle2,
   RectangleEllipsis,
-  Building2
+  Building2,
+  BarChart3
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
@@ -214,6 +215,14 @@ const Lobby = () => {
             </div>
           </motion.div>
           <div className="flex items-center space-x-1">
+            <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => navigate('/learning')}
+              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              title="学习仪表盘"
+            >
+              <BarChart3 size={20} />
+            </motion.button>
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/room-check')}

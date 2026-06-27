@@ -15,6 +15,7 @@ import AdminQMXAutoSign from './pages/AdminQMXAutoSign';
 import AdminSettings from './pages/AdminSettings';
 import SharedSign from './pages/SharedSign';
 import RoomCheck from './pages/RoomCheck';
+import LearningDashboard from './pages/LearningDashboard';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -78,6 +79,7 @@ function App() {
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
               <Route path="/room-check" element={<RoomCheck />} />
+              <Route path="/learning" element={<LearningDashboard />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -31,6 +31,7 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
+	learningHandler := handler.NewLearningHandler(database, xxtClient, credentialCrypto)
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
@@ -62,6 +63,7 @@ func main() {
 			authed.GET("/courses", courseHandler.List)
 			authed.POST("/courses/sync", courseHandler.Sync)
 			authed.PUT("/courses/selection", courseHandler.UpdateSelection)
+			authed.GET("/learning/dashboard", learningHandler.Dashboard)
 
 			authed.GET("/sign/activities", signHandler.Activities)
 			authed.GET("/sign/classmates", signHandler.Classmates)
