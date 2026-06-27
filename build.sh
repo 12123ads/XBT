@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-chaoxing-learning-dashboard}"
 HTTP_PROXY="${HTTP_PROXY:-http://10.0.0.170:7890}"
 HTTPS_PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"
 NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,db,server,web}"
