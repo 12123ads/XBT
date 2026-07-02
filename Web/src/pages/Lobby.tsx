@@ -190,8 +190,8 @@ const Lobby = () => {
   return (
     <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
       {/* Header */}
-      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 min-h-[calc(124px+var(--sat))] pt-[var(--sat)] py-3 flex flex-col justify-center gap-3 shrink-0">
-        <div className="flex items-center w-full min-w-0">
+      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 min-h-[calc(88px+var(--sat))] pt-[calc(12px+var(--sat))] pb-3 grid grid-cols-[minmax(132px,1fr)_minmax(0,1.35fr)] items-center gap-3 shrink-0">
+        <div className="flex items-center min-w-0">
           <motion.div
             whileTap={{ scale: 0.92 }}
             onClick={() => navigate('/accounts')}
@@ -215,8 +215,8 @@ const Lobby = () => {
             </div>
           </motion.div>
         </div>
-        <div className="w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <div className="flex items-center gap-2 min-w-max">
+        <div className="min-w-0 overflow-x-auto overscroll-x-contain [touch-action:pan-x] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex w-max items-center gap-2 pr-1">
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/learning')}
