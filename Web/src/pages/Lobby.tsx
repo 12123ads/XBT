@@ -190,14 +190,14 @@ const Lobby = () => {
   return (
     <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
       {/* Header */}
-      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 h-[calc(80px+var(--sat))] pt-[var(--sat)] flex items-center shrink-0">
-        <div className="flex items-center justify-between w-full">
+      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 min-h-[calc(124px+var(--sat))] pt-[var(--sat)] py-3 flex flex-col justify-center gap-3 shrink-0">
+        <div className="flex items-center w-full min-w-0">
           <motion.div
             whileTap={{ scale: 0.92 }}
             onClick={() => navigate('/accounts')}
-            className="flex items-center space-x-3 cursor-pointer hover:opacity-80 transition-opacity"
+            className="flex items-center space-x-3 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
           >
-            <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm">
+            <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm shrink-0">
               {user?.avatar ? (
                 <img src={user.avatar} alt={user.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
               ) : (
@@ -206,19 +206,21 @@ const Lobby = () => {
                 </div>
               )}
             </div>
-            <div>
-              <h2 className="font-bold text-slate-900 flex items-center">
-                {user?.name || '未登录'}
-                <ChevronRight size={14} className="ml-1 text-slate-400" />
+            <div className="min-w-0">
+              <h2 className="font-bold text-slate-900 flex items-center min-w-0">
+                <span className="truncate">{user?.name || '未登录'}</span>
+                <ChevronRight size={14} className="ml-1 text-slate-400 shrink-0" />
               </h2>
-              <p className="text-xs text-slate-500">{user?.mobile}</p>
+              <p className="text-xs text-slate-500 truncate">{user?.mobile}</p>
             </div>
           </motion.div>
-          <div className="flex items-center space-x-1">
+        </div>
+        <div className="w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex items-center gap-2 min-w-max">
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/learning')}
-              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
               title="学习仪表盘"
             >
               <BarChart3 size={20} />
@@ -226,7 +228,7 @@ const Lobby = () => {
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/room-check')}
-              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
               title="查寝定位打卡"
             >
               <Building2 size={20} />
@@ -234,7 +236,7 @@ const Lobby = () => {
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/courses')}
-              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
               title="课程配置"
             >
               <Settings size={20} />
@@ -242,7 +244,7 @@ const Lobby = () => {
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={fetchActivities}
-              className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
               title="刷新活动"
             >
               <RefreshIndicator spinning={isLoading} />
@@ -252,7 +254,7 @@ const Lobby = () => {
                 <motion.button
                   whileTap={{ scale: 0.92 }}
                   onClick={() => navigate('/admin/panel')}
-                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
                   title="管理面板"
                 >
                   <Users size={20} />
@@ -260,7 +262,7 @@ const Lobby = () => {
                 <motion.button
                   whileTap={{ scale: 0.92 }}
                   onClick={() => navigate('/admin/whitelist')}
-                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
                   title="白名单管理"
                 >
                   <ShieldCheck size={20} />
