@@ -31,12 +31,7 @@ func (h *LearningHandler) Dashboard(c *gin.Context) {
 		common.Fail(c, 400, "credential expired, please login again")
 		return
 	}
-	progressCourses, err := h.selectedLearningProgressCourses(uid)
-	if err != nil {
-		common.Fail(c, 500, "query selected courses failed")
-		return
-	}
-	dashboard, err := h.xxt.GetLearningDashboard(user.Mobile, password, progressCourses)
+	dashboard, err := h.xxt.GetLearningDashboard(user.Mobile, password)
 	if err != nil {
 		if isXXTAuthError(err) {
 			common.Fail(c, 401, "学习通登录已失效，请使用新密码重新登录")
@@ -46,15 +41,4 @@ func (h *LearningHandler) Dashboard(c *gin.Context) {
 		return
 	}
 	common.Success(c, dashboard)
-}
-
-func (h *LearningHandler) selectedLearningProgressCourses(uid int64) ([]xxt.LearningCourseRef, error) {
-	var courses []xxt.LearningCourseRef
-	err := h.db.Table("user_courses uc").
-		Select("uc.course_id, uc.class_id, c.name as course_name, c.teacher").
-		Joins("join courses c on uc.course_id = c.course_id and uc.class_id = c.class_id").
-		Where("uc.user_uid = ? and uc.is_selected = true", uid).
-		Order("c.name asc").
-		Scan(&courses).Error
-	return courses, err
 }

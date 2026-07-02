@@ -2,7 +2,6 @@ package xxt
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,12 +22,6 @@ const (
 	learningKindExam     = "exam"
 	learningKindActivity = "activity"
 	learningKindProgress = "progress"
-)
-
-const (
-	learningProgressMaxConcurrent = 6
-	learningProgressCourseTimeout = 2 * time.Second
-	learningProgressTotalTimeout  = 7 * time.Second
 )
 
 type LearningDashboard struct {
@@ -70,13 +63,6 @@ type LearningItem struct {
 	GroupTask      string `json:"group_task"`
 }
 
-type LearningCourseRef struct {
-	CourseID   int64  `gorm:"column:course_id"`
-	ClassID    int64  `gorm:"column:class_id"`
-	CourseName string `gorm:"column:course_name"`
-	Teacher    string `gorm:"column:teacher"`
-}
-
 type learningCourse struct {
 	CourseID   int64
 	ClassID    int64
@@ -87,7 +73,7 @@ type learningCourse struct {
 	PEnc       string
 }
 
-func (c *Client) GetLearningDashboard(mobile, password string, progressCourses []LearningCourseRef) (LearningDashboard, error) {
+func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboard, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return LearningDashboard{}, err
@@ -141,7 +127,7 @@ func (c *Client) GetLearningDashboard(mobile, password string, progressCourses [
 	}()
 	go func() {
 		defer wg.Done()
-		items, err := c.GetLearningProgress(&cli, progressCourses)
+		items, err := c.GetLearningProgress(&cli)
 		if err != nil {
 			addErr("progress", err)
 			return
@@ -335,123 +321,21 @@ func (c *Client) GetLearningActivities(cli *http.Client) ([]LearningItem, error)
 	return sortLearningItems(all), nil
 }
 
-func (c *Client) GetLearningProgress(cli *http.Client, selected []LearningCourseRef) ([]LearningItem, error) {
-	if len(selected) == 0 {
-		return []LearningItem{}, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), learningProgressTotalTimeout)
-	defer cancel()
-
-	courses, err := c.getLearningCoursesWithContext(ctx, cli)
+func (c *Client) GetLearningProgress(cli *http.Client) ([]LearningItem, error) {
+	courses, err := c.getLearningCourses(cli)
 	if err != nil {
 		return nil, err
 	}
-	courses = filterLearningProgressCourses(courses, selected)
-	items := make([]LearningItem, len(courses))
-	for i, course := range courses {
-		items[i] = defaultLearningProgressItem(course)
+	items := make([]LearningItem, 0, len(courses))
+	for _, course := range courses {
+		item := c.getLearningProgressForCourse(cli, course)
+		items = append(items, item)
+		time.Sleep(300 * time.Millisecond)
 	}
-
-	sem := make(chan struct{}, learningProgressMaxConcurrent)
-	var wg sync.WaitGroup
-	for i, course := range courses {
-		i, course := i, course
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-			courseCtx, courseCancel := context.WithTimeout(ctx, learningProgressCourseTimeout)
-			defer courseCancel()
-			items[i] = c.getLearningProgressForCourse(courseCtx, cli, course)
-		}()
-	}
-	wg.Wait()
 	return sortLearningItems(items), nil
 }
 
-func filterLearningProgressCourses(courses []learningCourse, selected []LearningCourseRef) []learningCourse {
-	selectedByKey := make(map[string]LearningCourseRef, len(selected))
-	order := make([]string, 0, len(selected))
-	for _, ref := range selected {
-		if ref.CourseID == 0 || ref.ClassID == 0 {
-			continue
-		}
-		key := learningCourseKey(ref.CourseID, ref.ClassID)
-		if _, exists := selectedByKey[key]; exists {
-			continue
-		}
-		selectedByKey[key] = ref
-		order = append(order, key)
-	}
-	if len(selectedByKey) == 0 {
-		return nil
-	}
-
-	remoteByKey := make(map[string]learningCourse, len(courses))
-	for _, course := range courses {
-		key := learningCourseKey(course.CourseID, course.ClassID)
-		ref, ok := selectedByKey[key]
-		if !ok {
-			continue
-		}
-		if course.CourseName == "" {
-			course.CourseName = ref.CourseName
-		}
-		if course.Teacher == "" {
-			course.Teacher = ref.Teacher
-		}
-		remoteByKey[key] = course
-	}
-
-	out := make([]learningCourse, 0, len(order))
-	for _, key := range order {
-		if course, ok := remoteByKey[key]; ok {
-			out = append(out, course)
-			continue
-		}
-		ref := selectedByKey[key]
-		out = append(out, learningCourse{
-			CourseID:   ref.CourseID,
-			ClassID:    ref.ClassID,
-			CourseName: ref.CourseName,
-			Teacher:    ref.Teacher,
-		})
-	}
-	return out
-}
-
-func learningCourseKey(courseID, classID int64) string {
-	return fmt.Sprintf("%d_%d", courseID, classID)
-}
-
-func defaultLearningProgressItem(course learningCourse) LearningItem {
-	return LearningItem{
-		ID:             fmt.Sprintf("%d:%d", course.CourseID, course.ClassID),
-		Kind:           learningKindProgress,
-		Type:           "课程进度",
-		Title:          firstNonEmpty(course.CourseName, "未知课程"),
-		Status:         "未知",
-		CourseName:     course.CourseName,
-		Info:           "点击查看",
-		Link:           learningStudyDataLink(course),
-		CourseID:       course.CourseID,
-		ClassID:        course.ClassID,
-		CompletionRate: "点击查看",
-		CourseScore:    "--",
-		ChapterQuiz:    "--",
-		Ranking:        "--",
-		AIPractice:     "--",
-		GroupTask:      "--",
-	}
-}
-
-func (c *Client) getLearningProgressForCourse(ctx context.Context, cli *http.Client, course learningCourse) LearningItem {
+func (c *Client) getLearningProgressForCourse(cli *http.Client, course learningCourse) LearningItem {
 	pEnc := firstNonEmpty(course.PEnc, course.Enc)
 	if pEnc == "" && course.ClassID > 0 {
 		pEnc = "stuenc_" + strconv.FormatInt(course.ClassID, 10)
@@ -489,7 +373,7 @@ func (c *Client) getLearningProgressForCourse(ctx context.Context, cli *http.Cli
 	referer := learningStudyDataLink(course)
 
 	jobURL := "https://stat2-ans.chaoxing.com/stat2/study-data/job?" + baseParams
-	if payload, err := c.getLearningJSON(ctx, cli, http.MethodGet, jobURL, nil, referer); err == nil {
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, jobURL, nil, referer); err == nil {
 		data := mapFromAny(deepFindFirst(payload, "data"))
 		completed := int(int64FromAny(data["job"]))
 		total := int(int64FromAny(firstNonNil(data["publishJobNum"], data["publishJobnum"])))
@@ -513,14 +397,14 @@ func (c *Client) getLearningProgressForCourse(ctx context.Context, cli *http.Cli
 	}
 
 	pointURL := "https://stat2-ans.chaoxing.com/stat2/study-data/point"
-	if payload, err := c.getLearningJSON(ctx, cli, http.MethodPost, pointURL, []byte(baseParams), referer); err == nil {
+	if payload, err := c.getLearningJSON(cli, http.MethodPost, pointURL, []byte(baseParams), referer); err == nil {
 		if points := strVal(firstNonNil(deepFindFirst(payload, "ponits"), deepFindFirst(payload, "points"))); points != "" {
 			item.CourseScore = points + "分"
 		}
 	}
 
 	aiURL := "https://stat2-ans.chaoxing.com/stat2/study-data/ai-evaluate-stat?" + baseParams
-	if payload, err := c.getLearningJSON(ctx, cli, http.MethodGet, aiURL, nil, referer); err == nil {
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, aiURL, nil, referer); err == nil {
 		data := mapFromAny(deepFindFirst(payload, "data"))
 		if pair := formatLearningPair(data["aiEvaluateReachCount"], data["publishLibraryNum"]); pair != "--" {
 			item.AIPractice = pair
@@ -528,7 +412,7 @@ func (c *Client) getLearningProgressForCourse(ctx context.Context, cli *http.Cli
 	}
 
 	groupURL := "https://stat2-ans.chaoxing.com/stat2/study-data/groupTask?" + baseParams
-	if payload, err := c.getLearningJSON(ctx, cli, http.MethodGet, groupURL, nil, referer); err == nil {
+	if payload, err := c.getLearningJSON(cli, http.MethodGet, groupURL, nil, referer); err == nil {
 		data := mapFromAny(deepFindFirst(payload, "data"))
 		if pair := formatLearningPair(data["taskNum"], data["publishTaskNum"]); pair != "--" {
 			item.GroupTask = pair
@@ -549,15 +433,12 @@ func (c *Client) getLearningProgressForCourse(ctx context.Context, cli *http.Cli
 	return item
 }
 
-func (c *Client) getLearningJSON(ctx context.Context, cli *http.Client, method, rawURL string, body []byte, referer string) (interface{}, error) {
+func (c *Client) getLearningJSON(cli *http.Client, method, rawURL string, body []byte, referer string) (interface{}, error) {
 	var r io.Reader
 	if body != nil {
 		r = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, r)
-	if err != nil {
-		return nil, err
-	}
+	req, _ := http.NewRequest(method, rawURL, r)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	if referer != "" {
@@ -641,14 +522,7 @@ func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learnin
 }
 
 func (c *Client) getLearningCourses(cli *http.Client) ([]learningCourse, error) {
-	return c.getLearningCoursesWithContext(context.Background(), cli)
-}
-
-func (c *Client) getLearningCoursesWithContext(ctx context.Context, cli *http.Client) ([]learningCourse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&mcode=", nil)
-	if err != nil {
-		return nil, err
-	}
+	req, _ := http.NewRequest(http.MethodGet, "https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&mcode=", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := cli.Do(req)
 	if err != nil {
