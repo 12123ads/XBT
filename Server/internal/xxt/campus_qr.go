@@ -118,6 +118,7 @@ func (c *Client) campusQRLogin(cli *http.Client, token, code, state, appID strin
 	}
 	var out struct {
 		State   bool                `json:"state"`
+		Success bool                `json:"success"`
 		Code    string              `json:"code"`
 		Message string              `json:"message"`
 		Data    campusQRLoginResult `json:"data"`
@@ -125,7 +126,7 @@ func (c *Client) campusQRLogin(cli *http.Client, token, code, state, appID strin
 	if err := c.campusQRJSON(cli, http.MethodPost, "https://main.swut.cn/sso/xinLogin", token, payload, &out); err != nil {
 		return campusQRLoginResult{}, err
 	}
-	if !out.State || out.Data.AccessToken == "" {
+	if !campusQROK(out.State, out.Success, out.Code) || out.Data.AccessToken == "" {
 		return campusQRLoginResult{}, fmt.Errorf("campus qr login failed: %s", firstNonEmpty(out.Message, out.Code))
 	}
 	return out.Data, nil
@@ -139,13 +140,14 @@ func (c *Client) campusQRGo(cli *http.Client, token, clientID, channel string) e
 	}
 	var out struct {
 		State   bool   `json:"state"`
+		Success bool   `json:"success"`
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	}
 	if err := c.campusQRJSON(cli, http.MethodPost, "https://main.swut.cn/sso/go", token, payload, &out); err != nil {
 		return err
 	}
-	if !out.State {
+	if !campusQROK(out.State, out.Success, out.Code) {
 		return fmt.Errorf("campus qr sso go failed: %s", firstNonEmpty(out.Message, out.Code))
 	}
 	return nil
@@ -154,6 +156,7 @@ func (c *Client) campusQRGo(cli *http.Client, token, clientID, channel string) e
 func (c *Client) campusQRShow(cli *http.Client, token string) (CampusQR, error) {
 	var out struct {
 		State   bool     `json:"state"`
+		Success bool     `json:"success"`
 		Code    string   `json:"code"`
 		Message string   `json:"message"`
 		Data    CampusQR `json:"data"`
@@ -161,10 +164,14 @@ func (c *Client) campusQRShow(cli *http.Client, token string) (CampusQR, error) 
 	if err := c.campusQRJSON(cli, http.MethodGet, "https://main.swut.cn/qr/campusCard/show", token, nil, &out); err != nil {
 		return CampusQR{}, err
 	}
-	if !out.State || out.Data.QRContent == "" {
+	if !campusQROK(out.State, out.Success, out.Code) || out.Data.QRContent == "" {
 		return CampusQR{}, fmt.Errorf("campus qr show failed: %s", firstNonEmpty(out.Message, out.Code))
 	}
 	return out.Data, nil
+}
+
+func campusQROK(state, success bool, code string) bool {
+	return state || success || strings.EqualFold(strings.TrimSpace(code), "success")
 }
 
 func (c *Client) campusQRJSON(cli *http.Client, method, rawURL, token string, payload interface{}, out interface{}) error {
