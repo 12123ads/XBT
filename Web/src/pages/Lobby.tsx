@@ -219,6 +219,14 @@ const Lobby = () => {
           <div className="flex w-max items-center gap-2 pr-1">
             <motion.button
               whileTap={{ scale: 0.92 }}
+              onClick={() => navigate('/campus-qr')}
+              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
+              title="校园码"
+            >
+              <QrCode size={20} />
+            </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/learning')}
               className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
               title="学习仪表盘"

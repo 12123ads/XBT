@@ -16,6 +16,7 @@ import AdminSettings from './pages/AdminSettings';
 import SharedSign from './pages/SharedSign';
 import RoomCheck from './pages/RoomCheck';
 import LearningDashboard from './pages/LearningDashboard';
+import CampusQR from './pages/CampusQR';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -80,6 +81,7 @@ function App() {
               <Route path="/scanner" element={<FullScanner />} />
               <Route path="/room-check" element={<RoomCheck />} />
               <Route path="/learning" element={<LearningDashboard />} />
+              <Route path="/campus-qr" element={<CampusQR />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

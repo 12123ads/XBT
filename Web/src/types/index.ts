@@ -88,6 +88,14 @@ export interface LearningDashboard {
   errors: string[];
 }
 
+export interface CampusQR {
+  full_name: string;
+  effect_account: string;
+  bar_content: string;
+  qr_content: string;
+  expire_time: string;
+}
+
 export interface Classmate {
   uid: number;
   name: string;
