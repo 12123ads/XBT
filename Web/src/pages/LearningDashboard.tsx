@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   AlertTriangle,
-  BarChart3,
   BookOpen,
   CheckCircle2,
   ChevronLeft,
@@ -22,7 +21,7 @@ import PullToRefresh from '../components/PullToRefresh';
 import { useAuthStore } from '../store/auth';
 import type { ApiResponse, LearningDashboard as LearningDashboardData, LearningItem } from '../types';
 
-type ViewKey = 'todo' | 'homework' | 'exams' | 'activities' | 'progress';
+type ViewKey = 'todo' | 'homework' | 'exams' | 'activities';
 type StatusFilter = 'all' | 'active' | 'ended' | 'finished';
 
 const emptyDashboard: LearningDashboardData = {
@@ -30,7 +29,6 @@ const emptyDashboard: LearningDashboardData = {
   homework: [],
   exams: [],
   activities: [],
-  progress: [],
   errors: []
 };
 
@@ -38,8 +36,7 @@ const views: Array<{ key: ViewKey; label: string; icon: typeof Timer }> = [
   { key: 'todo', label: '待办', icon: Timer },
   { key: 'homework', label: '作业', icon: FileText },
   { key: 'exams', label: '考试', icon: GraduationCap },
-  { key: 'activities', label: '课程任务', icon: BookOpen },
-  { key: 'progress', label: '课程进度', icon: BarChart3 }
+  { key: 'activities', label: '课程任务', icon: BookOpen }
 ];
 
 const statusFilters: Array<{ key: StatusFilter; label: string }> = [
@@ -63,7 +60,6 @@ const itemStatusRank = (item: LearningItem) => {
 };
 
 const itemSortTime = (item: LearningItem) => {
-  if (item.kind === 'progress') return item.finished ? 1 : 0;
   if (item.end_time > 0) return item.end_time;
   if (item.start_time > 0) return item.start_time;
   return Number.MAX_SAFE_INTEGER;
@@ -111,17 +107,9 @@ const kindAccent = (kind: string) => {
       return 'text-red-600 bg-red-50';
     case 'activity':
       return 'text-blue-600 bg-blue-50';
-    case 'progress':
-      return 'text-violet-600 bg-violet-50';
     default:
       return 'text-slate-600 bg-slate-50';
   }
-};
-
-const parsePercent = (value: string) => {
-  const parsed = Number.parseFloat(String(value || '').replace('%', ''));
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.min(100, parsed));
 };
 
 const LearningDashboard = () => {
@@ -156,7 +144,6 @@ const LearningDashboard = () => {
         homework: next.homework || [],
         exams: next.exams || [],
         activities: next.activities || [],
-        progress: next.progress || [],
         errors: next.errors || []
       });
       if (next.errors?.length) {
@@ -229,7 +216,7 @@ const LearningDashboard = () => {
       </div>
 
       <div className="bg-white border-b border-slate-100 px-3 py-3 shrink-0">
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {views.map(view => {
             const Icon = view.icon;
             const count = (data[view.key] || []).filter(item => !ignored[itemKey(item)]).length;
@@ -345,7 +332,7 @@ const LearningDashboard = () => {
               >
                 <div className="flex items-start gap-3">
                   <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${kindAccent(item.kind)}`}>
-                    {item.kind === 'exam' ? <GraduationCap size={20} /> : item.kind === 'homework' ? <FileText size={20} /> : item.kind === 'progress' ? <BarChart3 size={20} /> : <BookOpen size={20} />}
+                    {item.kind === 'exam' ? <GraduationCap size={20} /> : item.kind === 'homework' ? <FileText size={20} /> : <BookOpen size={20} />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
@@ -355,41 +342,11 @@ const LearningDashboard = () => {
                       <span className="text-[11px] text-slate-400 truncate">{item.type}</span>
                     </div>
                     <h3 className="font-bold text-slate-900 text-sm leading-5 mt-2 break-words">{item.title}</h3>
-                    {item.kind === 'progress' ? (
-                      <div className="mt-3 space-y-3">
-                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${item.finished ? 'bg-emerald-500' : 'bg-blue-500'}`}
-                            style={{ width: `${parsePercent(item.completion_rate)}%` }}
-                          />
-                        </div>
-                        <div className="grid grid-cols-3 gap-2 text-[11px]">
-                          <div className="rounded-lg bg-slate-50 px-2 py-1.5">
-                            <div className="text-slate-400">任务点</div>
-                            <div className="font-bold text-slate-700">{item.completed_tasks}/{item.total_tasks}</div>
-                          </div>
-                          <div className="rounded-lg bg-slate-50 px-2 py-1.5">
-                            <div className="text-slate-400">积分</div>
-                            <div className="font-bold text-slate-700">{item.course_score || '--'}</div>
-                          </div>
-                          <div className="rounded-lg bg-slate-50 px-2 py-1.5">
-                            <div className="text-slate-400">排名</div>
-                            <div className="font-bold text-slate-700">{item.ranking || '--'}</div>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5 text-[11px] text-slate-500">
-                          <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">章节 {item.chapter_quiz || '--'}</span>
-                          <span className="rounded-md bg-blue-50 px-2 py-1 text-blue-700">AI {item.ai_practice || '--'}</span>
-                          <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">分组 {item.group_task || '--'}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 mt-2 text-xs text-slate-500 min-w-0">
-                        <span className="truncate">{item.course_name || '未知课程'}</span>
-                        {item.info && <span className="shrink-0 text-slate-300">/</span>}
-                        {item.info && <span className="truncate">{item.info}</span>}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-2 mt-2 text-xs text-slate-500 min-w-0">
+                      <span className="truncate">{item.course_name || '未知课程'}</span>
+                      {item.info && <span className="shrink-0 text-slate-300">/</span>}
+                      {item.info && <span className="truncate">{item.info}</span>}
+                    </div>
                   </div>
                   <ExternalLink size={17} className="text-slate-300 shrink-0 mt-1" />
                 </div>

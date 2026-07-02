@@ -61,7 +61,7 @@ export interface CourseActivities {
 
 export interface LearningItem {
   id: string;
-  kind: 'homework' | 'exam' | 'activity' | 'progress' | string;
+  kind: 'homework' | 'exam' | 'activity' | string;
   type: string;
   title: string;
   status: string;
@@ -78,14 +78,6 @@ export interface LearningItem {
   finished: boolean;
   expired: boolean;
   ongoing: boolean;
-  completed_tasks: number;
-  total_tasks: number;
-  completion_rate: string;
-  course_score: string;
-  chapter_quiz: string;
-  ranking: string;
-  ai_practice: string;
-  group_task: string;
 }
 
 export interface LearningDashboard {
@@ -93,7 +85,6 @@ export interface LearningDashboard {
   homework: LearningItem[];
   exams: LearningItem[];
   activities: LearningItem[];
-  progress: LearningItem[];
   errors: string[];
 }
 
