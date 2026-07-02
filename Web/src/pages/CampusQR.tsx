@@ -12,6 +12,16 @@ const getErrorMessage = (error: unknown, fallback: string) => (
   error instanceof Error ? error.message : fallback
 );
 
+const logCampusQRError = (error: unknown) => {
+  const detail = error as Error & { apiResponse?: unknown; response?: unknown };
+  console.error('[CampusQR] fetch failed', {
+    message: error instanceof Error ? error.message : String(error),
+    apiResponse: detail.apiResponse,
+    response: detail.response,
+    raw: error
+  });
+};
+
 const parseExpireTime = (value: string) => {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
   if (!match) return 0;
@@ -66,6 +76,7 @@ const CampusQR = () => {
       setQRImage(await buildQRImage(data.qr_content));
       setNow(Date.now());
     } catch (error) {
+      logCampusQRError(error);
       toast.error(getErrorMessage(error, '获取校园码失败'));
     } finally {
       setIsLoading(false);

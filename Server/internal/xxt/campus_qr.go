@@ -31,6 +31,30 @@ type CampusQR struct {
 	ExpireTime    string `json:"expire_time"`
 }
 
+func (q *CampusQR) UnmarshalJSON(raw []byte) error {
+	var data struct {
+		FullName           string `json:"fullName"`
+		FullNameSnake      string `json:"full_name"`
+		EffectAccount      string `json:"effectAccount"`
+		EffectAccountSnake string `json:"effect_account"`
+		BarContent         string `json:"barContent"`
+		BarContentSnake    string `json:"bar_content"`
+		QRContent          string `json:"qrContent"`
+		QRContentSnake     string `json:"qr_content"`
+		ExpireTime         string `json:"expireTime"`
+		ExpireTimeSnake    string `json:"expire_time"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return err
+	}
+	q.FullName = firstNonEmpty(data.FullName, data.FullNameSnake)
+	q.EffectAccount = firstNonEmpty(data.EffectAccount, data.EffectAccountSnake)
+	q.BarContent = firstNonEmpty(data.BarContent, data.BarContentSnake)
+	q.QRContent = firstNonEmpty(data.QRContent, data.QRContentSnake)
+	q.ExpireTime = firstNonEmpty(data.ExpireTime, data.ExpireTimeSnake)
+	return nil
+}
+
 func (c *Client) GetCampusQR(mobile, password string) (CampusQR, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {

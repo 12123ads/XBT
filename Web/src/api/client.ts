@@ -20,7 +20,9 @@ client.interceptors.response.use(
   (response) => {
     const res = response.data as ApiResponse<any>;
     if (res.code !== 0) {
-      return Promise.reject(new Error(res.message || '操作失败'));
+      const apiError = new Error(res.message || '操作失败');
+      (apiError as Error & { apiResponse?: ApiResponse<any> }).apiResponse = res;
+      return Promise.reject(apiError);
     }
     return response;
   },
@@ -31,7 +33,9 @@ client.interceptors.response.use(
       return Promise.reject(new Error(error.response?.data?.message || '登录已失效，请重新登录'));
     }
     if (error.response?.data?.message) {
-      return Promise.reject(new Error(error.response.data.message));
+      const apiError = new Error(error.response.data.message);
+      (apiError as Error & { response?: unknown }).response = error.response;
+      return Promise.reject(apiError);
     }
     return Promise.reject(error);
   }
