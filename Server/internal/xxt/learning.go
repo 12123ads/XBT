@@ -3,6 +3,7 @@ package xxt
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,6 +61,12 @@ type learningCourse struct {
 	CPI        string
 }
 
+type learningCourseTasks struct {
+	Homework   []LearningItem
+	Exams      []LearningItem
+	Activities []LearningItem
+}
+
 func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboard, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
@@ -104,12 +111,14 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 	}()
 	go func() {
 		defer wg.Done()
-		items, err := c.GetLearningActivities(&cli)
+		tasks, err := c.GetLearningActivities(&cli)
 		if err != nil {
 			addErr("activities", err)
 			return
 		}
-		activities = items
+		homework = append(homework, tasks.Homework...)
+		exams = append(exams, tasks.Exams...)
+		activities = append(activities, tasks.Activities...)
 	}()
 	wg.Wait()
 
@@ -193,7 +202,7 @@ func (c *Client) GetLearningExams(cli *http.Client) ([]LearningItem, error) {
 	if len(all) > 0 || len(errs) == 0 {
 		return all, nil
 	}
-	return nil, fmt.Errorf(strings.Join(errs, "; "))
+	return nil, errors.New(strings.Join(errs, "; "))
 }
 
 func extractPhoneExamItems(doc *html.Node) []LearningItem {
@@ -281,20 +290,75 @@ func extractTableExamItems(doc *html.Node) []LearningItem {
 	return compactLearningItems(items)
 }
 
-func (c *Client) GetLearningActivities(cli *http.Client) ([]LearningItem, error) {
+// GetLearningActivities 汇总所有课程的课堂活动与任务引擎任务，
+// 任务引擎子任务按真实类目拆分进作业/考试/课程任务，未完成项由 buildLearningTodo 归入待办。
+func (c *Client) GetLearningActivities(cli *http.Client) (learningCourseTasks, error) {
 	courses, err := c.getLearningCourses(cli)
 	if err != nil {
-		return nil, err
+		return learningCourseTasks{}, err
 	}
-	all := make([]LearningItem, 0)
+	all := learningCourseTasks{
+		Homework:   make([]LearningItem, 0),
+		Exams:      make([]LearningItem, 0),
+		Activities: make([]LearningItem, 0),
+	}
+	sem := make(chan struct{}, 5)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for _, course := range courses {
+		wg.Add(1)
+		go func(course learningCourse) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			tasks := c.getLearningCourseTasks(cli, course)
+			mu.Lock()
+			defer mu.Unlock()
+			all.Homework = append(all.Homework, tasks.Homework...)
+			all.Exams = append(all.Exams, tasks.Exams...)
+			all.Activities = append(all.Activities, tasks.Activities...)
+		}(course)
+	}
+	wg.Wait()
+	return all, nil
+}
+
+func (c *Client) getLearningCourseTasks(cli *http.Client, course learningCourse) learningCourseTasks {
+	var (
+		activities []LearningItem
+		engine     []LearningItem
+		wg         sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
 		items, err := c.getLearningActivitiesForCourse(cli, course)
 		if err != nil {
-			continue
+			return
 		}
-		all = append(all, items...)
+		activities = items
+	}()
+	go func() {
+		defer wg.Done()
+		engine = c.getTaskEngineTasksForCourse(cli, course)
+	}()
+	wg.Wait()
+
+	out := learningCourseTasks{Homework: []LearningItem{}, Exams: []LearningItem{}, Activities: activities}
+	if out.Activities == nil {
+		out.Activities = []LearningItem{}
 	}
-	return sortLearningItems(all), nil
+	for _, item := range engine {
+		switch item.Kind {
+		case learningKindHomework:
+			out.Homework = append(out.Homework, item)
+		case learningKindExam:
+			out.Exams = append(out.Exams, item)
+		default:
+			out.Activities = append(out.Activities, item)
+		}
+	}
+	return out
 }
 
 func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
