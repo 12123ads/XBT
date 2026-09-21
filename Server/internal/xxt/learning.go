@@ -178,6 +178,7 @@ func (c *Client) GetLearningHomework(cli *http.Client) ([]LearningItem, error) {
 			Raw:        raw,
 			CourseID:   courseID,
 			ClassID:    classID,
+			EndTime:    parseLearningDeadline(info),
 			Pending:    pending,
 			Finished:   !pending && strings.Contains(status, "已"),
 		})
@@ -762,6 +763,45 @@ func formatLearningTime(ms int64) string {
 	return time.UnixMilli(ms).Format("2006-01-02 15:04")
 }
 
+var (
+	learningAbsoluteDateRe = regexp.MustCompile(taskEngineDatePattern)
+	learningDayRe          = regexp.MustCompile(`(\d+)\s*天`)
+	learningHourRe         = regexp.MustCompile(`(\d+)\s*(?:小时|时)`)
+	learningMinuteRe       = regexp.MustCompile(`(\d+)\s*分`)
+)
+
+// parseLearningDeadline 从作业/考试的时间文本中解析出截止时间戳（毫秒）。
+// 支持绝对日期（含区间时取结束端）和“剩余X天X小时X分”的相对写法；
+// 已过期或无法解析时返回 0，供 Vikunja 同步判定是否设置 due_date。
+func parseLearningDeadline(text string) int64 {
+	text = strings.TrimSpace(text)
+	if text == "" || containsAny(text, "已过期", "已结束", "过期") {
+		return 0
+	}
+	if dates := learningAbsoluteDateRe.FindAllString(text, -1); len(dates) > 0 {
+		if ms := parseTaskEngineDate(dates[len(dates)-1]); ms > 0 {
+			return ms
+		}
+	}
+	if strings.Contains(text, "剩余") || containsAny(text, "天", "小时", "分") {
+		days := firstRegexInt(learningDayRe, text)
+		hours := firstRegexInt(learningHourRe, text)
+		minutes := firstRegexInt(learningMinuteRe, text)
+		total := time.Duration(days)*24*time.Hour + time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
+		if total > 0 {
+			return time.Now().Add(total).UnixMilli()
+		}
+	}
+	return 0
+}
+
+func firstRegexInt(re *regexp.Regexp, text string) int {
+	if m := re.FindStringSubmatch(text); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return 0
+}
 func compactLearningItems(items []LearningItem) []LearningItem {
 	out := items[:0]
 	for _, item := range items {
