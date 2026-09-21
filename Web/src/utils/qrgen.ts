@@ -184,7 +184,7 @@ const drawCodewords = (matrix: Matrix, reserved: Reserved, codewords: number[], 
 };
 
 const formatBits = (mask: number) => {
-  let data = (0b01 << 3) | mask;
+  const data = (0b01 << 3) | mask;
   let value = data << 10;
   for (let i = 14; i >= 10; i -= 1) {
     if (((value >>> i) & 1) !== 0) value ^= FORMAT_GENERATOR << (i - 10);

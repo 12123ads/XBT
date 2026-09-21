@@ -45,6 +45,11 @@ func main() {
 	qmxAutoSignSvc := service.NewQMXAutoSignService(database, qmxClient, xxtClient, credentialCrypto, cfg.QMXLocationPresets, qmxAutoSignWebhook)
 	qmxAutoSignSvc.SetPresetsProvider(runtimeSettingsSvc.QMXLocationPresets)
 	qmxAutoSignHandler := handler.NewAdminQMXAutoSignHandler(database, qmxAutoSignSvc)
+	vikunjaSyncSvc, err := service.NewVikunjaSyncService(database, xxtClient, credentialCrypto, cfg.VikunjaBaseURL)
+	if err != nil {
+		log.Fatalf("vikunja sync init failed: %v", err)
+	}
+	vikunjaHandler := handler.NewVikunjaHandler(database, credentialCrypto, vikunjaSyncSvc, cfg.VikunjaBaseURL)
 
 	r := gin.Default()
 
@@ -59,13 +64,19 @@ func main() {
 		api.POST("/sign/shares/:token/execute", signHandler.ExecuteShare)
 
 		authed := api.Group("")
-		authed.Use(middleware.Auth(jwtSvc))
+		authed.Use(middleware.Auth(jwtSvc, database))
 		{
 			authed.GET("/courses", courseHandler.List)
 			authed.POST("/courses/sync", courseHandler.Sync)
 			authed.PUT("/courses/selection", courseHandler.UpdateSelection)
 			authed.GET("/learning/dashboard", learningHandler.Dashboard)
+			authed.GET("/learning/captcha", learningHandler.CaptchaImage)
+			authed.POST("/learning/captcha", learningHandler.CaptchaSubmit)
 			authed.GET("/campus-qr", campusQRHandler.Show)
+			authed.GET("/vikunja/settings", vikunjaHandler.Settings)
+			authed.PUT("/vikunja/settings", vikunjaHandler.UpdateSettings)
+			authed.POST("/vikunja/test", vikunjaHandler.TestConnection)
+			authed.POST("/vikunja/sync", vikunjaHandler.SyncNow)
 
 			authed.GET("/sign/activities", signHandler.Activities)
 			authed.GET("/sign/classmates", signHandler.Classmates)
@@ -116,6 +127,7 @@ func main() {
 	}
 
 	qmxAutoSignSvc.StartScheduler(context.Background())
+	vikunjaSyncSvc.StartScheduler(context.Background())
 	log.Printf("xbt2 server listening on %s (app_env=%s, gin_mode=%s)", cfg.HTTPAddr, cfg.AppEnv, gin.Mode())
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("server start failed: %v", err)

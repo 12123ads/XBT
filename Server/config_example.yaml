@@ -28,6 +28,10 @@ course_sign_webhook_url: ""
 # QMX 自动签到结果企业微信群机器人 webhook（留空则不推送）
 qmx_auto_sign_webhook_url: ""
 
+# 全站唯一 Vikunja 实例地址；留空禁用。用户只能配置自己的 Token 和项目。
+# 更换实例后，用户必须重新绑定 Token，不会把原 Token 发送到新实例。
+vikunja_base_url: ""
+
 # postgres 数据库连接字符串
 postgres_dsn: "host=example.com port=5432 user=admin password=114514 dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import toast from 'react-hot-toast';
 
 interface GestureCanvasProps {
@@ -8,13 +8,10 @@ interface GestureCanvasProps {
 
 const GestureCanvas: React.FC<GestureCanvasProps> = ({ value, onPathChange }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [path, setPath] = useState<number[]>([]);
+  const path = useMemo(() => value.split('').map(Number), [value]);
   const isDrawing = useRef(false);
   const pointsRef = useRef<{ x: number, y: number, r: number }[]>([]);
 
-  useEffect(() => {
-    if (value === '') setPath([]);
-  }, [value]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -101,10 +98,8 @@ const GestureCanvas: React.FC<GestureCanvasProps> = ({ value, onPathChange }) =>
     isDrawing.current = true;
     const hitIdx = findHitPoint(e);
     if (hitIdx !== null) {
-      setPath([hitIdx]);
       onPathChange(String(hitIdx));
     } else {
-      setPath([]);
       onPathChange('');
     }
   };
@@ -113,7 +108,7 @@ const GestureCanvas: React.FC<GestureCanvasProps> = ({ value, onPathChange }) =>
     if (!isDrawing.current) return;
     const pointIdx = findHitPoint(e);
     if (pointIdx !== null && !path.includes(pointIdx)) {
-      let newPoints = [];
+      const newPoints = [];
       if (path.length > 0) {
         const lastIdx = path[path.length - 1];
         const midPoint = getMidPoint(lastIdx, pointIdx);
@@ -121,7 +116,6 @@ const GestureCanvas: React.FC<GestureCanvasProps> = ({ value, onPathChange }) =>
       }
       newPoints.push(pointIdx);
       const newPath = [...path, ...newPoints];
-      setPath(newPath);
       onPathChange(newPath.join(''));
     }
   };
@@ -130,7 +124,6 @@ const GestureCanvas: React.FC<GestureCanvasProps> = ({ value, onPathChange }) =>
     isDrawing.current = false;
     if (path.length > 0 && path.length < 4) {
       toast.error('手势至少连接 4 个点', { id: 'gesture-error' });
-      setPath([]);
       onPathChange('');
     }
   };

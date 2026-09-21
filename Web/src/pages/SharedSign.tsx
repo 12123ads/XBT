@@ -5,7 +5,7 @@ import { Camera, CheckCircle2, Clock, Fingerprint, Loader2, MapPin, QrCode, Rect
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
 import publicClient from '../api/publicClient';
-import type { ApiResponse, SignShareExecuteResponse, SignShareInfo } from '../types';
+import type { ApiResponse, SignShareExecuteResponse, SignShareInfo, SignSpecialParams } from '../types';
 import { GestureInput } from '../components/sign/GestureInput';
 import { PinInput } from '../components/sign/PinInput';
 import { LocationInput } from '../components/sign/LocationInput';
@@ -126,7 +126,7 @@ const SharedSign = () => {
     setLocationStr(nextDescription);
   };
 
-  const executeShare = async (specialParams: Record<string, any>) => {
+  const executeShare = async (specialParams: SignSpecialParams) => {
     if (!token || !share || isExecutingRef.current || result?.used) return;
     setIsExecuting(true);
     setResult(null);
@@ -158,7 +158,7 @@ const SharedSign = () => {
       toast.error('请先选择签到位置');
       return;
     }
-    const specialParams: Record<string, any> = {};
+    const specialParams: SignSpecialParams = {};
     if (share.sign_type === 3 || share.sign_type === 5) {
       specialParams.sign_code = signCode.trim();
     } else if (share.sign_type === 4) {

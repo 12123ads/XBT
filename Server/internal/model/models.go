@@ -79,6 +79,15 @@ type SignActivity struct {
 	UpdatedAt    time.Time `json:"-"`
 }
 
+type SignActivityScope struct {
+	ID         uint      `gorm:"primaryKey" json:"-"`
+	ActivityID int64     `gorm:"not null;uniqueIndex:idx_sign_activity_scope" json:"activity_id"`
+	CourseID   int64     `gorm:"not null;uniqueIndex:idx_sign_activity_scope" json:"course_id"`
+	ClassID    int64     `gorm:"not null;uniqueIndex:idx_sign_activity_scope" json:"class_id"`
+	CreatedAt  time.Time `json:"-"`
+	UpdatedAt  time.Time `json:"-"`
+}
+
 type SignShare struct {
 	ID            uint       `gorm:"primaryKey" json:"-"`
 	TokenHash     string     `gorm:"size:64;uniqueIndex;not null" json:"-"`
@@ -161,4 +170,32 @@ type QMXAutoSignRunState struct {
 	NotifiedAt *time.Time `gorm:"index" json:"notified_at"`
 	CreatedAt  time.Time  `json:"-"`
 	UpdatedAt  time.Time  `json:"-"`
+}
+
+type VikunjaSettings struct {
+	ID               uint       `gorm:"primaryKey" json:"-"`
+	UserUID          int64      `gorm:"not null;uniqueIndex" json:"user_uid"`
+	BoundInstanceURL string     `gorm:"size:512;not null;default:''" json:"-"`
+	APITokenCipher   string     `gorm:"type:text" json:"-"`
+	ProjectID        int64      `json:"project_id"`
+	ProjectTitle     string     `gorm:"size:255" json:"project_title"`
+	Enabled          bool       `gorm:"not null;default:false" json:"enabled"`
+	LastSyncAt       *time.Time `json:"last_sync_at"`
+	LastSyncMessage  string     `gorm:"size:512" json:"last_sync_message"`
+	CreatedAt        time.Time  `json:"-"`
+	UpdatedAt        time.Time  `json:"-"`
+}
+
+type VikunjaSyncItem struct {
+	ID            uint      `gorm:"primaryKey" json:"-"`
+	UserUID       int64     `gorm:"not null;uniqueIndex:idx_vikunja_scope_item" json:"user_uid"`
+	ItemKey       string    `gorm:"size:128;not null;uniqueIndex:idx_vikunja_scope_item" json:"item_key"`
+	InstanceURL   string    `gorm:"size:512;not null;default:'';uniqueIndex:idx_vikunja_scope_item" json:"-"`
+	VikunjaTaskID int64     `gorm:"not null" json:"vikunja_task_id"`
+	ProjectID     int64     `gorm:"not null;uniqueIndex:idx_vikunja_scope_item" json:"project_id"`
+	Title         string    `gorm:"size:255" json:"title"`
+	DueDate       int64     `json:"due_date"`
+	LastSeenAt    time.Time `json:"last_seen_at"`
+	CreatedAt     time.Time `json:"-"`
+	UpdatedAt     time.Time `json:"-"`
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import {
@@ -21,7 +21,8 @@ import {
   BarChart3
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import axios from 'axios';
+import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { getChineseStringByDatetime } from '../utils/datetime';
 import type { ApiResponse, CourseActivities } from '../types';
@@ -35,7 +36,7 @@ type PendingActivityEntry = {
 const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
   const rafRef = useRef<number | null>(null);
   const angleRef = useRef(0);
-  const [angle, setAngle] = useState(0);
+  const iconRef = useRef<SVGSVGElement>(null);
 
   const stopRaf = () => {
     if (rafRef.current !== null) {
@@ -45,6 +46,9 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
   };
 
   useEffect(() => {
+    const renderAngle = () => {
+      if (iconRef.current) iconRef.current.style.transform = `rotate(${angleRef.current}deg)`;
+    };
     if (spinning) {
       stopRaf();
       let last = performance.now();
@@ -52,7 +56,7 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
         const delta = now - last;
         last = now;
         angleRef.current = (angleRef.current + delta * 0.36) % 360;
-        setAngle(angleRef.current);
+        renderAngle();
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -63,7 +67,7 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
     const current = ((angleRef.current % 360) + 360) % 360;
     if (current < 0.5) {
       angleRef.current = 0;
-      setAngle(0);
+      renderAngle();
       return;
     }
 
@@ -75,13 +79,13 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
       const eased = 1 - Math.pow(1 - t, 3);
       const next = current + remain * eased;
       angleRef.current = next % 360;
-      setAngle(angleRef.current);
+      renderAngle();
 
       if (t < 1) {
         rafRef.current = requestAnimationFrame(settle);
       } else {
         angleRef.current = 0;
-        setAngle(0);
+        renderAngle();
         rafRef.current = null;
       }
     };
@@ -91,12 +95,19 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
 
   useEffect(() => () => stopRaf(), []);
 
-  return <RefreshCw size={20} style={{ transform: `rotate(${angle}deg)` }} />;
+  return <RefreshCw ref={iconRef} size={20} />;
 };
 
 const Lobby = () => {
-  const { user, activeUid } = useAuthStore();
+  const { user, activeUid, token } = useAuthStore();
   const navigate = useNavigate();
+  const owner = useMemo<RequestAccount | null>(() => (
+    activeUid !== null && token ? { uid: activeUid, token } : null
+  ), [activeUid, token]);
+  const mountedRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initialize from cache if available
   const [activities, setActivities] = useState<CourseActivities[]>(() => {
@@ -115,30 +126,51 @@ const Lobby = () => {
   }, []);
 
   const fetchActivities = useCallback(async () => {
-    // Prevent multiple requests if already loading
-    if (isLoading) return;
+    if (!owner || !mountedRef.current || inFlightRef.current) return;
+    const account = useAuthStore.getState();
+    if (account.activeUid !== owner.uid || account.token !== owner.token) return;
+
+    inFlightRef.current = true;
+    const requestId = ++requestIdRef.current;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const isCurrent = () => {
+      const current = useAuthStore.getState();
+      return mountedRef.current && requestIdRef.current === requestId && !controller.signal.aborted
+        && current.activeUid === owner.uid && current.token === owner.token;
+    };
 
     setIsLoading(true);
     try {
-      const response = await client.get<ApiResponse<CourseActivities[]>>('/sign/activities');
-      const data = response.data.data;
-      setActivities(data || []);
-
-      // Update cache
-      if (activeUid && data) {
-        localStorage.setItem(`cached_activities_${activeUid}`, JSON.stringify(data));
+      const response = await client.get<ApiResponse<CourseActivities[]>>('/sign/activities', withAccount(owner, controller.signal));
+      if (!isCurrent()) return;
+      const data = response.data.data || [];
+      setActivities(data);
+      localStorage.setItem(`cached_activities_${owner.uid}`, JSON.stringify(data));
+    } catch (error: unknown) {
+      if (isCurrent() && !axios.isCancel(error)) {
+        toast.error(error instanceof Error ? error.message : '获取签到活动失败');
       }
-    } catch (error: any) {
-      toast.error(error.message || '获取签到活动失败');
     } finally {
-      setIsLoading(false);
+      if (isCurrent()) {
+        abortControllerRef.current = null;
+        inFlightRef.current = false;
+        setIsLoading(false);
+      }
     }
-  }, [isLoading, activeUid]);
+  }, [owner]);
 
   useEffect(() => {
-    // Initial fetch
-    fetchActivities();
-  }, [activeUid]);
+    mountedRef.current = true;
+    void fetchActivities();
+    return () => {
+      mountedRef.current = false;
+      requestIdRef.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      inFlightRef.current = false;
+    };
+  }, [fetchActivities]);
 
   const toggleCourse = (courseId: number, classId: number) => {
     const key = `${courseId}-${classId}`;

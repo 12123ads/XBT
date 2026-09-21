@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, Camera, EyeOff, Eye, MapPin, CheckCircle2 } from 'lucide-react';
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import axios from 'axios';
+import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { ProgressCard } from '../components/sign/ProgressCard';
-import type { ApiResponse, SignStatusMessage, Classmate, User } from '../types';
+import type { ApiResponse, SignActivity, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, Classmate, User } from '../types';
 import { parseChaoxingQrText, type QrData } from '../utils/qr';
 import scanCursor from '../assets/scan_cursor.png';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
@@ -23,6 +24,29 @@ type NativeCameraBridge = {
 
 type WindowWithBridge = Window & {
   XBTCameraBridge?: NativeCameraBridge;
+  BarcodeDetector?: new (options: { formats: string[] }) => {
+    detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]>;
+  };
+};
+
+type CameraTrackCapabilities = MediaTrackCapabilities & {
+  zoom?: { min: number; max: number; step?: number };
+};
+
+type CameraTrackConstraintSet = MediaTrackConstraintSet & {
+  focusMode?: ConstrainDOMString;
+  zoom?: ConstrainDouble;
+};
+
+const getNativeBridge = (): NativeCameraBridge | null => {
+  const bridge = (window as WindowWithBridge).XBTCameraBridge;
+  if (!bridge) return null;
+  try {
+    if (typeof bridge.isReady === 'function' && !bridge.isReady()) return null;
+  } catch {
+    return null;
+  }
+  return bridge;
 };
 
 const getFriendlyCameraLabel = (camera: CameraDevice, index: number) => {
@@ -38,30 +62,34 @@ const getFriendlyCameraLabel = (camera: CameraDevice, index: number) => {
 const FullScanner = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user: currentUser } = useAuthStore();
+  const { activity, selectedUids, classmates } = (location.state || {}) as {
+    activity?: SignActivity;
+    selectedUids?: number[];
+    classmates?: Classmate[];
+  };
+  const { user: currentUser, activeUid, token } = useAuthStore();
   const locationPresets = useCourseLocationPresets();
+  const owner = useMemo<RequestAccount | null>(() => (
+    activeUid !== null && token ? { uid: activeUid, token } : null
+  ), [activeUid, token]);
   
   const [isExecuting, setIsExecuting] = useState(false);
   const [latestQrData, setLatestQrData] = useState<QrData | null>(null);
   const [signStatuses, setSignStatuses] = useState<Record<number, Partial<SignStatusMessage>>>({});
   
-  const [cameras, setCameras] = useState<CameraDevice[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [isNativeBridgeMode] = useState(() => getNativeBridge() !== null);
+  const isNativeBridgeModeRef = useRef(isNativeBridgeMode);
+  const [cameras, setCameras] = useState<CameraDevice[]>(() => isNativeBridgeMode ? [
+    { id: '__native_environment__', label: '后置摄像头' },
+    { id: '__native_user__', label: '前置摄像头' },
+  ] : []);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(isNativeBridgeMode ? '__native_environment__' : null);
   const [showCameraList, setShowCameraList] = useState(false);
   const [isStealthMode, setIsStealthMode] = useState(false);
-  const [isCameraReady, setIsCameraReady] = useState(false);
-  const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
+  const scannerSessionKey = isNativeBridgeMode ? '__native__' : (selectedDeviceId || '');
+  const [readyScannerSessionKey, setReadyScannerSessionKey] = useState<string | null>(null);
+  const isCameraReady = readyScannerSessionKey === scannerSessionKey;
 
-  useEffect(() => {
-    if (isCameraReady) {
-      const timer = setTimeout(() => {
-        setShowLoadingOverlay(false);
-      }, 5);
-      return () => clearTimeout(timer);
-    } else {
-      setShowLoadingOverlay(true);
-    }
-  }, [isCameraReady]);
 
   const [lat, setLat] = useState('');
   const [lng, setLng] = useState('');
@@ -111,7 +139,7 @@ const FullScanner = () => {
   const currentZoom = useRef<number>(1);
   const [displayZoom, setDisplayZoom] = useState(1);
   const [showZoomOverlay, setShowZoomOverlay] = useState(false);
-  const zoomHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const scannerRef = useRef<HTMLDivElement>(null);
 
@@ -129,55 +157,42 @@ const FullScanner = () => {
     };
   }, []);
 
-  const isNativeBridgeModeRef = useRef(false);
-  const [isNativeBridgeMode, setIsNativeBridgeMode] = useState(false);
   const [nativePreviewReady, setNativePreviewReady] = useState(false);
   const nativePreviewReadyRef = useRef(false);
-  const selectedDeviceIdRef = useRef<string | null>(null);
+  const selectedDeviceIdRef = useRef<string | null>(selectedDeviceId);
 
-  const { activity, selectedUids, classmates } = location.state || {};
   const latestQrDataRef = useRef<QrData | null>(null);
   const isExecutingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const scanSuccessHandlerRef = useRef<(decodedText: string) => void>(() => {});
+  const mountedRef = useRef(false);
 
-  const getNativeBridge = (): NativeCameraBridge | null => {
-    const bridge = (window as WindowWithBridge).XBTCameraBridge;
-    if (!bridge) return null;
-    try {
-      if (typeof bridge.isReady === 'function' && !bridge.isReady()) return null;
-    } catch {
-      return null;
-    }
-    return bridge;
-  };
 
-  const syncReaderPunchHole = () => {
+  const syncReaderPunchHole = useCallback(() => {
     const bridge = getNativeBridge();
     const reader = readerRef.current;
     if (!bridge || !reader || typeof bridge.syncPunchHole !== 'function') return;
     const rect = reader.getBoundingClientRect();
     bridge.syncPunchHole(rect.left, rect.top, rect.width, rect.height);
-  };
+  }, []);
 
-  const setNativeLensFacing = (deviceId: string | null) => {
+  const setNativeLensFacing = useCallback((deviceId: string | null) => {
     const bridge = getNativeBridge();
     if (!bridge || typeof bridge.setLensFacing !== 'function' || !deviceId) return;
     const selected = cameras.find((c) => c.id === deviceId);
     const label = selected?.label?.toLowerCase() ?? '';
     const facing: 'user' | 'environment' = /front|user|前置|自拍/.test(label) ? 'user' : 'environment';
     bridge.setLensFacing(facing);
-  };
+  }, [cameras]);
 
-  const orderedTargetUids = [currentUser?.uid, ...(selectedUids || [])].filter(Boolean) as number[];
+  const orderedTargetUids = useMemo(() => (
+    [...new Set([currentUser?.uid, ...(selectedUids || [])].filter(Boolean) as number[])]
+  ), [currentUser?.uid, selectedUids]);
 
   useEffect(() => {
     latestQrDataRef.current = latestQrData;
   }, [latestQrData]);
 
-  useEffect(() => {
-    isExecutingRef.current = isExecuting;
-  }, [isExecuting]);
 
   useEffect(() => {
     nativePreviewReadyRef.current = nativePreviewReady;
@@ -189,12 +204,12 @@ const FullScanner = () => {
 
   useEffect(() => {
     setNativeLensFacing(selectedDeviceId);
-  }, [selectedDeviceId, cameras]);
+  }, [selectedDeviceId, setNativeLensFacing]);
 
   useEffect(() => {
     if (!activity) return;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let retryCount = 0;
     const maxRetry = 30;
 
@@ -221,39 +236,36 @@ const FullScanner = () => {
     activateNativeScanner();
     return () => {
       disposed = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
       const bridge = getNativeBridge();
       bridge?.setScannerActive?.(false);
     };
-  }, [activity]);
+  }, [activity, setNativeLensFacing]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      if (isExecutingRef.current) {
-        isExecutingRef.current = false;
-        abortControllerRef.current?.abort();
-      }
+      mountedRef.current = false;
+      isExecutingRef.current = false;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      clearTimeout(zoomHideTimerRef.current);
     };
-  }, []);
+  }, [owner]);
 
   const closePopup = () => {
     setIsExecuting(false);
     isExecutingRef.current = false;
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     lastScanTimeRef.current = Date.now(); // 2s protection after close
   };
 
   useEffect(() => {
-    if (isNativeBridgeModeRef.current) {
-      setSelectedDeviceId('__native_environment__');
-      setCameras([
-        { id: '__native_environment__', label: '后置摄像头' } as CameraDevice,
-        { id: '__native_user__', label: '前置摄像头' } as CameraDevice,
-      ]);
-      return;
-    }
-
+    if (isNativeBridgeMode) return;
+    let disposed = false;
     Html5Qrcode.getCameras().then(devices => {
+      if (disposed) return;
       if (devices && devices.length > 0) {
         const normalizedDevices = devices.map((d, index) => ({
           ...d,
@@ -265,22 +277,14 @@ const FullScanner = () => {
         );
         setSelectedDeviceId(backCamera ? backCamera.id : (normalizedDevices.length > 1 ? normalizedDevices[1].id : normalizedDevices[0].id));
       }
-    }).catch(err => console.error("Error getting cameras", err));
-  }, []);
+    }).catch((error: unknown) => {
+      if (!disposed) console.error('Error getting cameras', error);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [isNativeBridgeMode]);
 
-  useEffect(() => {
-    const bridge = getNativeBridge();
-    isNativeBridgeModeRef.current = !!bridge;
-    setIsNativeBridgeMode(!!bridge);
-    setNativePreviewReady(false);
-    if (bridge) {
-      setSelectedDeviceId('__native_environment__');
-      setCameras([
-        { id: '__native_environment__', label: '后置摄像头' } as CameraDevice,
-        { id: '__native_user__', label: '前置摄像头' } as CameraDevice,
-      ]);
-    }
-  }, []);
 
   useEffect(() => {
     if (!isNativeBridgeMode) return;
@@ -321,7 +325,7 @@ const FullScanner = () => {
       const error = customEvent.detail?.error?.trim() || '';
       if (!isActive && error === 'inactive') return;
       setNativePreviewReady(isActive);
-      if (isActive || (error && error !== 'inactive')) setIsCameraReady(true);
+      if (isActive || (error && error !== 'inactive')) setReadyScannerSessionKey('__native__');
     };
     window.addEventListener('xbt-native-camera-state', onCameraState);
     return () => {
@@ -347,11 +351,11 @@ const FullScanner = () => {
         const error = (state.error || '').trim();
         if (active) {
           setNativePreviewReady(true);
-          setIsCameraReady(true);
+          setReadyScannerSessionKey('__native__');
           return;
         }
         if (error && error !== 'inactive') {
-          setIsCameraReady(true);
+          setReadyScannerSessionKey('__native__');
         }
       } catch {
         // ignore malformed payload
@@ -370,100 +374,99 @@ const FullScanner = () => {
 
   const activeScannerRef = useRef<Html5Qrcode | null>(null);
   const transitionPromise = useRef<Promise<void>>(Promise.resolve());
-  const scannerSessionKey = isNativeBridgeMode ? '__native__' : (selectedDeviceId || '');
 
   useEffect(() => {
     if (!activity) {
-      if (!activity) navigate('/');
+      navigate('/');
       return;
     }
-    if (!selectedDeviceId && !isNativeBridgeModeRef.current) return;
-
     const bridge = getNativeBridge();
-    if (bridge) {
-      setNativePreviewReady(false);
-      setIsCameraReady(false);
-      setNativeLensFacing(selectedDeviceId);
-    }
+    const deviceId = bridge ? selectedDeviceIdRef.current : scannerSessionKey;
+    if (!deviceId && !bridge) return;
 
+    const reader = readerRef.current;
     let isMounted = true;
-    const safeStart = async () => {
-      setIsCameraReady(false);
-      transitionPromise.current = transitionPromise.current.then(async () => {
-        try {
-          const useNativeScanner = !!bridge;
-          if (activeScannerRef.current) {
-            const scanner = activeScannerRef.current;
-            if (scanner.isScanning) await scanner.stop();
-            const container = document.getElementById("reader");
-            if (container) container.innerHTML = "";
-            activeScannerRef.current = null;
-          }
-
-          if (!isMounted) return;
-          if (useNativeScanner) {
-            syncReaderPunchHole();
-            return;
-          }
-          if (!selectedDeviceId) return;
-
-          const html5QrCode = new Html5Qrcode("reader");
-          activeScannerRef.current = html5QrCode;
-
-          await html5QrCode.start(
-            selectedDeviceId,
-            {
-              fps: 30,
-              aspectRatio: 1.777778,
-              videoConstraints: {
-                deviceId: { exact: selectedDeviceId },
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                advanced: [{ focusMode: "continuous" } as any]
-              }
-            },
-            onScanSuccess,
-            onScanFailure
-          );
-          
-          setIsCameraReady(true);
-          
-          if ('BarcodeDetector' in window) {
-            const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-            const videoElement = document.querySelector("#reader video") as HTMLVideoElement;
-            const nativeScanLoop = async () => {
-              if (!isMounted || !activeScannerRef.current) return;
-              if (videoElement && videoElement.readyState >= 2) {
-                try {
-                  const barcodes = await detector.detect(videoElement);
-                  if (barcodes.length > 0) onScanSuccess(barcodes[0].rawValue);
-                } catch (e) {}
-              }
-              requestAnimationFrame(nativeScanLoop);
-            };
-            nativeScanLoop();
-          }
-        } catch (err) {
-          if (isMounted && !String(err).includes("transition")) toast.error("相机启动失败，请重试");
+    let nativeScanFrame: number | undefined;
+    transitionPromise.current = transitionPromise.current.then(async () => {
+      try {
+        if (activeScannerRef.current) {
+          const scanner = activeScannerRef.current;
+          if (scanner.isScanning) await scanner.stop();
+          if (reader) reader.innerHTML = '';
+          activeScannerRef.current = null;
         }
-      });
-    };
 
-    safeStart();
+        if (!isMounted) return;
+        if (bridge) {
+          syncReaderPunchHole();
+          return;
+        }
+        if (!deviceId) return;
+
+        const html5QrCode = new Html5Qrcode('reader');
+        activeScannerRef.current = html5QrCode;
+        const focusConstraints: CameraTrackConstraintSet = { focusMode: 'continuous' };
+        await html5QrCode.start(
+          deviceId,
+          {
+            fps: 30,
+            aspectRatio: 1.777778,
+            videoConstraints: {
+              deviceId: { exact: deviceId },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              advanced: [focusConstraints]
+            }
+          },
+          (decodedText) => {
+            if (isMounted) scanSuccessHandlerRef.current(decodedText);
+          },
+          () => {}
+        );
+        if (!isMounted) return;
+        setReadyScannerSessionKey(scannerSessionKey);
+
+        const BarcodeDetector = (window as WindowWithBridge).BarcodeDetector;
+        if (BarcodeDetector) {
+          const detector = new BarcodeDetector({ formats: ['qr_code'] });
+          const videoElement = reader?.querySelector<HTMLVideoElement>('video');
+          const nativeScanLoop = async () => {
+            if (!isMounted || activeScannerRef.current !== html5QrCode) return;
+            if (videoElement && videoElement.readyState >= 2) {
+              try {
+                const barcodes = await detector.detect(videoElement);
+                if (!isMounted || activeScannerRef.current !== html5QrCode) return;
+                if (barcodes.length > 0) scanSuccessHandlerRef.current(barcodes[0].rawValue);
+              } catch {
+                // A failed detection is best-effort; keep scanning the next frame.
+              }
+            }
+            if (isMounted) nativeScanFrame = requestAnimationFrame(nativeScanLoop);
+          };
+          void nativeScanLoop();
+        }
+      } catch (error: unknown) {
+        if (isMounted && !String(error).includes('transition')) toast.error('相机启动失败，请重试');
+      }
+    });
+
     return () => {
       isMounted = false;
-      setNativePreviewReady(false);
+      if (nativeScanFrame !== undefined) cancelAnimationFrame(nativeScanFrame);
       transitionPromise.current = transitionPromise.current.then(async () => {
         if (activeScannerRef.current) {
           const scanner = activeScannerRef.current;
-          try { if (scanner.isScanning) await scanner.stop(); } catch (e) {}
+          try {
+            if (scanner.isScanning) await scanner.stop();
+          } catch {
+            // Still release the scanner and reader when stopping the stream fails.
+          }
           activeScannerRef.current = null;
-          const container = document.getElementById("reader");
-          if (container) container.innerHTML = "";
+          if (reader) reader.innerHTML = '';
         }
       });
     };
-  }, [activity, navigate, scannerSessionKey]);
+  }, [activity, navigate, scannerSessionKey, syncReaderPunchHole]);
 
   useEffect(() => {
     if (!isNativeBridgeModeRef.current) return;
@@ -481,7 +484,7 @@ const FullScanner = () => {
       window.removeEventListener('resize', syncReaderPunchHole);
       window.removeEventListener('scroll', syncReaderPunchHole);
     };
-  }, [isCameraReady]);
+  }, [isCameraReady, syncReaderPunchHole]);
 
   useEffect(() => {
     if (!isNativeBridgeMode) return;
@@ -498,28 +501,39 @@ const FullScanner = () => {
     };
   }, [isNativeBridgeMode]);
 
-  const handleExecute = async (initialQr: QrData) => {
-    if (isExecutingRef.current) return;
+  const handleExecute = useCallback(async (initialQr: QrData) => {
+    if (!activity || !owner || !mountedRef.current || isExecutingRef.current) return;
+    const account = useAuthStore.getState();
+    if (account.activeUid !== owner.uid || account.token !== owner.token) return;
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const ownsBatch = () => {
+      const current = useAuthStore.getState();
+      return mountedRef.current && abortControllerRef.current === controller
+        && current.activeUid === owner.uid && current.token === owner.token;
+    };
+    const isCurrent = () => ownsBatch() && !controller.signal.aborted && isExecutingRef.current;
+
     setIsExecuting(true);
     isExecutingRef.current = true;
-    abortControllerRef.current = new AbortController();
-    
-    const initialStatuses: Record<number, any> = {};
+    const initialStatuses: Record<number, Partial<SignStatusMessage>> = {};
     orderedTargetUids.forEach(uid => initialStatuses[uid] = { status: 'pending', message: '等待中' });
     setSignStatuses(initialStatuses);
 
     try {
       // 1. Check current sign status first
-      const checkResp = await client.post<ApiResponse<{ items: any[] }>>('/sign/check', {
+      const checkResp = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
         activity_id: activity.active_id,
+        course_id: activity.course_id,
+        class_id: activity.class_id,
         user_ids: orderedTargetUids
-      }, {
-        signal: abortControllerRef.current?.signal
-      });
+      }, withAccount(owner, controller.signal));
+      if (!isCurrent()) return;
 
       const checkItems = checkResp.data.data.items;
       const signedUids = new Set(checkItems.filter(item => item.signed).map(item => item.user_id));
-      
+
       checkItems.forEach(item => {
         if (item.signed) {
           setSignStatuses(prev => ({ ...prev, [item.user_id]: { status: 'success', message: item.message || '已签到' } }));
@@ -534,35 +548,35 @@ const FullScanner = () => {
         const MAX_RETRIES = 15;
         let lastError = '';
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-          if (!isExecutingRef.current) return;
+          if (!isCurrent()) return;
 
           const currentQr = latestQrDataRef.current || initialQr;
-          setSignStatuses(prev => ({ 
-            ...prev, 
-            [uid]: { 
-              ...prev[uid], 
-              status: attempt === 0 ? 'signing' : 'retrying', 
-              attempt, 
+          setSignStatuses(prev => ({
+            ...prev,
+            [uid]: {
+              ...prev[uid],
+              status: attempt === 0 ? 'signing' : 'retrying',
+              attempt,
               message: attempt === 0 ? '正在尝试签到' : (prev[uid]?.message || `准备重试(${attempt})`)
-            } 
+            }
           }));
           try {
-            const special_params: Record<string, any> = { enc: currentQr.enc, c: currentQr.c };
+            const special_params: SignSpecialParams = { enc: currentQr.enc, c: currentQr.c };
             if (latRef.current && lngRef.current) {
               special_params.latitude = latRef.current;
               special_params.longitude = lngRef.current;
               special_params.description = locationStrRef.current;
             }
-            const execResp = await client.post<ApiResponse<any>>('/sign/execute', {
+            const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: 2,
               course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
               activity_name: activity.activity_name,
               course_name: activity.course_name,
               course_teacher: activity.course_teacher,
               special_params
-            }, {
-              signal: abortControllerRef.current?.signal
-            });
+            }, withAccount(owner, controller.signal));
+            if (!isCurrent()) return;
+
             const res = execResp.data.data;
             if (res.success || res.already_signed) {
               setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: res.message || '成功' } }));
@@ -570,46 +584,61 @@ const FullScanner = () => {
             }
             lastError = res.message || '失败';
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
-          } catch (err: any) { 
-            if (err.name === 'CanceledError' || err.name === 'AbortError') return;
-            lastError = err.message || '异常'; 
+          } catch (error: unknown) {
+            if (axios.isAxiosError<ApiResponse<unknown>>(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+              controller.abort();
+              throw error;
+            }
+            if (!isCurrent() || axios.isCancel(error) || (error instanceof Error && error.name === 'AbortError')) return;
+            lastError = error instanceof Error ? error.message : '异常';
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           }
           if (attempt < MAX_RETRIES) {
             const delay = attempt < 3 ? 1000 : 2000;
             for (let i = 0; i < delay; i += 100) {
-              if (!isExecutingRef.current) return;
+              if (!isCurrent()) return;
               await new Promise(resolve => setTimeout(resolve, 100));
             }
-          } else setSignStatuses(prev => ({ ...prev, [uid]: { status: 'failed', message: lastError } }));
+          } else if (isCurrent()) {
+            setSignStatuses(prev => ({ ...prev, [uid]: { status: 'failed', message: lastError } }));
+          }
         }
       }));
-    } catch (error: any) {
-      if (error.name !== 'CanceledError' && error.name !== 'AbortError') {
-        toast.error(error.message || '执行过程出错');
+    } catch (error: unknown) {
+      controller.abort();
+      if (ownsBatch() && !axios.isCancel(error) && !(error instanceof Error && error.name === 'AbortError')) {
+        const message = error instanceof Error ? error.message : '执行过程出错';
+        setSignStatuses(prev => {
+          const next = { ...prev };
+          orderedTargetUids.forEach(uid => {
+            if (next[uid]?.status !== 'success') next[uid] = { ...next[uid], status: 'failed', message };
+          });
+          return next;
+        });
+        toast.error(message);
       }
     } finally {
-      abortControllerRef.current = null;
+      if (ownsBatch()) abortControllerRef.current = null;
     }
-  };
+  }, [activity, orderedTargetUids, owner]);
 
-  const onScanSuccess = (decodedText: string) => {
+  const onScanSuccess = useCallback((decodedText: string) => {
     const now = Date.now();
-    if (isExecuting || isExecutingRef.current || (now - lastScanTimeRef.current < 2000)) return;
+    if (!mountedRef.current || isExecuting || isExecutingRef.current || (now - lastScanTimeRef.current < 2000)) return;
 
     const qr = parseChaoxingQrText(decodedText);
     if (qr) {
       lastScanTimeRef.current = now;
       if (!latestQrDataRef.current || latestQrDataRef.current.enc !== qr.enc) setLatestQrData(qr);
-      handleExecute(qr);
+      latestQrDataRef.current = qr;
+      void handleExecute(qr);
     }
-  };
+  }, [isExecuting, handleExecute]);
 
   useEffect(() => {
     scanSuccessHandlerRef.current = onScanSuccess;
   }, [onScanSuccess]);
 
-  const onScanFailure = () => {};
 
   const onTouchStart = (e: React.TouchEvent) => {
     // 如果上一轮被三指打断，新的触摸序列自动解锁，避免永久失效
@@ -657,27 +686,29 @@ const FullScanner = () => {
             currentZoom.current = nativeZoom;
             setDisplayZoom(nativeZoom);
             setShowZoomOverlay(true);
-            if (zoomHideTimerRef.current) clearTimeout(zoomHideTimerRef.current);
+            clearTimeout(zoomHideTimerRef.current);
             lastTouchDistance.current = distance;
           }
           return;
         }
 
-        const videoElement = document.querySelector("#reader video") as HTMLVideoElement;
-        const stream = videoElement?.srcObject as MediaStream;
-        const track = stream?.getVideoTracks()[0];
+        const videoElement = readerRef.current?.querySelector<HTMLVideoElement>('video');
+        const stream = videoElement?.srcObject;
+        if (!(stream instanceof MediaStream)) return;
+        const track = stream.getVideoTracks()[0];
+        if (!track || typeof track.getCapabilities !== 'function') return;
+        const capabilities = track.getCapabilities() as CameraTrackCapabilities;
+        const zoom = capabilities.zoom;
+        if (!zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max)) return;
 
-        if (!track) return;
-        const capabilities = track.getCapabilities() as any;
-        if (!capabilities.zoom) return;
-
-        let newZoom = currentZoom.current + zoomStep;
-        newZoom = Math.max(capabilities.zoom.min, Math.min(capabilities.zoom.max, newZoom));
-        await track.applyConstraints({ advanced: [{ zoom: newZoom } as any] });
+        const newZoom = Math.max(zoom.min, Math.min(zoom.max, currentZoom.current + zoomStep));
+        const zoomConstraints: CameraTrackConstraintSet = { zoom: newZoom };
+        await track.applyConstraints({ advanced: [zoomConstraints] });
+        if (!mountedRef.current) return;
         currentZoom.current = newZoom;
         setDisplayZoom(newZoom);
         setShowZoomOverlay(true);
-        if (zoomHideTimerRef.current) clearTimeout(zoomHideTimerRef.current);
+        clearTimeout(zoomHideTimerRef.current);
         lastTouchDistance.current = distance;
       } catch (err) {
         console.error("Zoom apply failed", err);
@@ -694,7 +725,7 @@ const FullScanner = () => {
     if (e.touches.length < 2) {
       lastTouchDistance.current = null;
       if (showZoomOverlay) {
-        if (zoomHideTimerRef.current) clearTimeout(zoomHideTimerRef.current);
+        clearTimeout(zoomHideTimerRef.current);
         zoomHideTimerRef.current = setTimeout(() => {
           setShowZoomOverlay(false);
         }, 500);
@@ -755,7 +786,7 @@ const FullScanner = () => {
 
       {/* Camera Loading Overlay */}
       <AnimatePresence>
-        {showLoadingOverlay && (
+        {!isCameraReady && (
           <motion.div 
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1018,7 +1049,7 @@ const FullScanner = () => {
               <h3 className="text-lg font-black mb-4 text-slate-900">选择摄像头</h3>
               <div className="space-y-2 max-h-[40vh] overflow-y-auto custom-scrollbar">
                 {cameras.map(camera => (
-                  <button key={camera.id} type="button" onClick={() => { setSelectedDeviceId(camera.id); setShowCameraList(false); }} className={`w-full p-4 rounded-xl text-left font-bold transition-all flex items-center justify-between ${selectedDeviceId === camera.id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
+                  <button key={camera.id} type="button" onClick={() => { if (!isNativeBridgeMode && selectedDeviceId !== camera.id) setReadyScannerSessionKey(null); setSelectedDeviceId(camera.id); setShowCameraList(false); }} className={`w-full p-4 rounded-xl text-left font-bold transition-all flex items-center justify-between ${selectedDeviceId === camera.id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
                     <span className="truncate">{camera.label || `摄像头 ${camera.id.substring(0, 5)}`}</span>
                     {selectedDeviceId === camera.id && <div className="w-2 h-2 bg-white rounded-full" />}
                   </button>

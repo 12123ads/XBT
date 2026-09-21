@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,14 +13,20 @@ import (
 	"xbt2/server/internal/xxt"
 )
 
+type loginClient interface {
+	PreLogin(mobile, password string) (*xxt.LoginResult, error)
+}
+
+var errLoginNotAllowed = errors.New("login not allowed")
+
 type AuthHandler struct {
 	db     *gorm.DB
 	jwt    *service.JWTService
 	cc     *service.CredentialCrypto
-	xxtCli *xxt.Client
+	xxtCli loginClient
 }
 
-func NewAuthHandler(db *gorm.DB, jwt *service.JWTService, cc *service.CredentialCrypto, xxtCli *xxt.Client) *AuthHandler {
+func NewAuthHandler(db *gorm.DB, jwt *service.JWTService, cc *service.CredentialCrypto, xxtCli loginClient) *AuthHandler {
 	return &AuthHandler{db: db, jwt: jwt, cc: cc, xxtCli: xxtCli}
 }
 
@@ -30,7 +37,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	wl, allowed, err := h.resolveWhitelist(req.Mobile)
+	database := h.db.WithContext(c.Request.Context())
+	_, allowed, err := h.resolveWhitelist(database, req.Mobile)
 	if err != nil {
 		common.Fail(c, 500, err.Error())
 		return
@@ -52,23 +60,45 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	user := model.User{
-		UID:              loginResult.UID,
-		Mobile:           req.Mobile,
-		Name:             loginResult.Name,
-		Avatar:           loginResult.Avatar,
-		CredentialCipher: cipher,
-		Permission:       wl.Permission,
-		LastLoginAt:      time.Now(),
-	}
-	if err := h.db.Where("uid = ?", user.UID).Assign(user).FirstOrCreate(&user).Error; err != nil {
-		common.Fail(c, 500, "save user failed")
-		return
-	}
-
-	token, err := h.jwt.Sign(user.UID, user.Mobile, user.Permission)
+	var user model.User
+	var token string
+	err = database.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("LOCK TABLE whitelists IN SHARE ROW EXCLUSIVE MODE").Error; err != nil {
+			return err
+		}
+		wl, allowed, err := h.resolveWhitelist(tx, req.Mobile)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return errLoginNotAllowed
+		}
+		if wl.ID == 0 {
+			if err := tx.Create(&wl).Error; err != nil {
+				return err
+			}
+		}
+		user = model.User{
+			UID:              loginResult.UID,
+			Mobile:           req.Mobile,
+			Name:             loginResult.Name,
+			Avatar:           loginResult.Avatar,
+			CredentialCipher: cipher,
+			Permission:       wl.Permission,
+			LastLoginAt:      time.Now(),
+		}
+		if err := tx.Where("uid = ?", user.UID).Assign(user).FirstOrCreate(&user).Error; err != nil {
+			return err
+		}
+		token, err = h.jwt.Sign(user.UID, user.Mobile, user.Permission)
+		return err
+	})
 	if err != nil {
-		common.Fail(c, 500, "token generate failed")
+		if errors.Is(err, errLoginNotAllowed) {
+			common.Fail(c, 403, "账号未授权")
+		} else {
+			common.Fail(c, 500, "save login failed")
+		}
 		return
 	}
 
@@ -84,21 +114,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
-func (h *AuthHandler) resolveWhitelist(mobile string) (model.Whitelist, bool, error) {
+func (h *AuthHandler) resolveWhitelist(database *gorm.DB, mobile string) (model.Whitelist, bool, error) {
 	var cnt int64
-	if err := h.db.Model(&model.Whitelist{}).Count(&cnt).Error; err != nil {
+	if err := database.Model(&model.Whitelist{}).Count(&cnt).Error; err != nil {
 		return model.Whitelist{}, false, err
 	}
 	if cnt == 0 {
-		bootstrap := model.Whitelist{Mobile: mobile, Permission: 2}
-		if err := h.db.Create(&bootstrap).Error; err != nil {
-			return model.Whitelist{}, false, err
-		}
-		return bootstrap, true, nil
+		return model.Whitelist{Mobile: mobile, Permission: 2}, true, nil
 	}
 	var wl model.Whitelist
-	if err := h.db.Where("mobile = ?", mobile).First(&wl).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+	if err := database.Where("mobile = ?", mobile).First(&wl).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return model.Whitelist{}, false, nil
 		}
 		return model.Whitelist{}, false, err

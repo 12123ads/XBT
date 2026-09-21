@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import type { ApiResponse } from '../types';
 import config from '../../config.yaml';
 
@@ -9,15 +9,18 @@ const publicClient = axios.create({
 
 publicClient.interceptors.response.use(
   (response) => {
-    const res = response.data as ApiResponse<any>;
+    const res = response.data as ApiResponse<unknown>;
     if (res.code !== 0) {
-      return Promise.reject(new Error(res.message || '操作失败'));
+      return Promise.reject(new AxiosError<ApiResponse<unknown>>(
+        res.message || '操作失败', 'ERR_API_RESPONSE', response.config, response.request, response
+      ));
     }
     return response;
   },
-  (error) => {
-    if (error.response?.data?.message) {
-      return Promise.reject(new Error(error.response.data.message));
+  (error: unknown) => {
+    if (axios.isCancel(error)) return Promise.reject(error);
+    if (axios.isAxiosError<ApiResponse<unknown>>(error) && error.response?.data?.message) {
+      error.message = error.response.data.message;
     }
     return Promise.reject(error);
   },

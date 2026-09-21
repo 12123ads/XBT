@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, RefreshCw, Check, Loader2, Book } from 'lucide-react';
@@ -14,7 +14,7 @@ const Courses = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [hasAttemptedSync, setHasAttemptedSync] = useState(false);
+  const hasAttemptedSync = useRef(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   const isDirty = JSON.stringify(courses.map(c => c.is_selected)) !== JSON.stringify(initialCourses.map(c => c.is_selected));
@@ -26,8 +26,8 @@ const Courses = () => {
       const data = response.data.data || [];
       setCourses(data);
       setInitialCourses(JSON.parse(JSON.stringify(data)));
-    } catch (error: any) {
-      toast.error(error.message || '获取课程失败');
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '获取课程失败');
     } finally {
       setIsLoading(false);
     }
@@ -35,7 +35,7 @@ const Courses = () => {
 
   useEffect(() => {
     fetchCourses();
-  }, []);
+  }, [fetchCourses]);
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -56,25 +56,27 @@ const Courses = () => {
     }
   };
 
-  useEffect(() => {
-    if (!isLoading && courses && courses.length === 0 && !hasAttemptedSync && !isSyncing) {
-      setHasAttemptedSync(true);
-      handleSync();
-    }
-  }, [isLoading, courses, hasAttemptedSync, isSyncing]);
 
-  const handleSync = async () => {
+  const handleSync = useCallback(async () => {
+    hasAttemptedSync.current = true;
     setIsSyncing(true);
     try {
       await client.post('/courses/sync');
       toast.success('同步成功');
-      fetchCourses();
-    } catch (error: any) {
-      toast.error(error.message || '同步失败');
+      await fetchCourses();
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '同步失败');
     } finally {
       setIsSyncing(false);
     }
-  };
+  }, [fetchCourses]);
+
+  useEffect(() => {
+    if (!isLoading && courses.length === 0 && !hasAttemptedSync.current && !isSyncing) {
+      hasAttemptedSync.current = true;
+      void handleSync();
+    }
+  }, [isLoading, courses, isSyncing, handleSync]);
 
   const toggleSelection = (classId: number) => {
     setCourses(prev => (prev || []).map(c => 
@@ -93,8 +95,8 @@ const Courses = () => {
       toast.success('设置已保存');
       setInitialCourses(JSON.parse(JSON.stringify(courses)));
       navigate('/');
-    } catch (error: any) {
-      toast.error(error.message || '保存失败');
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '保存失败');
     } finally {
       setIsSaving(false);
     }

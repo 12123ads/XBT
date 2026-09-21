@@ -29,7 +29,9 @@ type SignExecuteRequest struct {
 }
 
 type SignCheckRequest struct {
-	ActivityID int64   `json:"activity_id" binding:"required"`
+	ActivityID int64   `json:"activity_id" binding:"required,gt=0"`
+	CourseID   int64   `json:"course_id" binding:"required,gt=0"`
+	ClassID    int64   `json:"class_id" binding:"required,gt=0"`
 	UserIDs    []int64 `json:"user_ids"`
 }
 

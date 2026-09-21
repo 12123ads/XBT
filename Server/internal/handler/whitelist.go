@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"regexp"
 	"sort"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"xbt2/server/internal/dto"
 	"xbt2/server/internal/model"
 )
+
+var errWhitelistAdmin = errors.New("cannot modify admin account")
 
 type WhitelistHandler struct {
 	db *gorm.DB
@@ -67,30 +70,31 @@ func (h *WhitelistHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	var existing model.Whitelist
-	if err := h.db.Where("mobile = ?", req.Mobile).First(&existing).Error; err == nil && existing.Permission >= 2 {
-		common.Fail(c, 400, "管理员账号不允许通过该接口修改")
-		return
-	}
-
-	row := model.Whitelist{Mobile: req.Mobile, Permission: 1}
-	if err := h.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "mobile"}},
-		DoUpdates: clause.AssignmentColumns([]string{"permission", "updated_at"}),
-	}).Create(&row).Error; err != nil {
-		common.Fail(c, 500, "upsert whitelist user failed")
-		return
-	}
-	_ = h.db.Model(&model.User{}).Where("mobile = ?", req.Mobile).Update("permission", 1).Error
-
-	uid := int64(0)
+	var row model.Whitelist
 	var user model.User
-	if err := h.db.Where("mobile = ?", req.Mobile).Take(&user).Error; err == nil {
-		uid = user.UID
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		row, err = upsertOrdinaryWhitelistUser(tx, req.Mobile)
+		if err != nil {
+			return err
+		}
+		err = tx.Where("mobile = ?", req.Mobile).Take(&user).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, errWhitelistAdmin) {
+			common.Fail(c, 400, "管理员账号不允许通过该接口修改")
+		} else {
+			common.Fail(c, 500, "upsert whitelist user failed")
+		}
+		return
 	}
 	common.Success(c, gin.H{
 		"id":            row.ID,
-		"uid":           uid,
+		"uid":           user.UID,
 		"mobile_masked": common.MaskMobile(req.Mobile),
 		"permission":    1,
 	})
@@ -123,20 +127,23 @@ func (h *WhitelistHandler) BatchImportUsers(c *gin.Context) {
 
 	added := 0
 	skippedAdmin := 0
-	for _, m := range uniq {
-		var existing model.Whitelist
-		if err := h.db.Where("mobile = ?", m).First(&existing).Error; err == nil && existing.Permission >= 2 {
-			skippedAdmin++
-			continue
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		for _, mobile := range uniq {
+			_, err := upsertOrdinaryWhitelistUser(tx, mobile)
+			if errors.Is(err, errWhitelistAdmin) {
+				skippedAdmin++
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			added++
 		}
-
-		row := model.Whitelist{Mobile: m, Permission: 1}
-		_ = h.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "mobile"}},
-			DoUpdates: clause.AssignmentColumns([]string{"permission", "updated_at"}),
-		}).Create(&row).Error
-		_ = h.db.Model(&model.User{}).Where("mobile = ?", m).Update("permission", 1).Error
-		added++
+		return nil
+	})
+	if err != nil {
+		common.Fail(c, 500, "import whitelist users failed")
+		return
 	}
 
 	common.Success(c, gin.H{
@@ -156,24 +163,62 @@ func (h *WhitelistHandler) DeleteUser(c *gin.Context) {
 	id := uint(id64)
 
 	var wl model.Whitelist
-	if err := h.db.Where("id = ?", id).First(&wl).Error; err != nil {
-		common.Fail(c, 404, "not found")
+	err = h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&wl).Error; err != nil {
+			return err
+		}
+		if wl.Permission >= 2 {
+			return errWhitelistAdmin
+		}
+		if err := tx.Where("id = ?", id).Delete(&model.Whitelist{}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.User{}).Where("mobile = ?", wl.Mobile).Update("permission", 0).Error
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			common.Fail(c, 404, "not found")
+		case errors.Is(err, errWhitelistAdmin):
+			common.Fail(c, 400, "cannot delete admin account")
+		default:
+			common.Fail(c, 500, "delete failed")
+		}
 		return
 	}
-	if wl.Permission >= 2 {
-		common.Fail(c, 400, "cannot delete admin account")
-		return
-	}
-
-	if err := h.db.Where("id = ?", id).Delete(&model.Whitelist{}).Error; err != nil {
-		common.Fail(c, 500, "delete failed")
-		return
-	}
-	_ = h.db.Model(&model.User{}).Where("mobile = ?", wl.Mobile).Update("permission", 0).Error
 
 	common.Success(c, gin.H{
 		"id":            id,
 		"uid":           int64(0),
 		"mobile_masked": common.MaskMobile(wl.Mobile),
 	})
+}
+
+func upsertOrdinaryWhitelistUser(tx *gorm.DB, mobile string) (model.Whitelist, error) {
+	var existing model.Whitelist
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("mobile = ?", mobile).Take(&existing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.Whitelist{}, err
+	}
+	if err == nil && existing.Permission >= 2 {
+		return model.Whitelist{}, errWhitelistAdmin
+	}
+	row := model.Whitelist{Mobile: mobile, Permission: 1}
+	result := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "mobile"}},
+		DoUpdates: clause.AssignmentColumns([]string{"permission", "updated_at"}),
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Lt{Column: clause.Column{Table: "whitelists", Name: "permission"}, Value: 2},
+		}},
+	}).Create(&row)
+	if result.Error != nil {
+		return model.Whitelist{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return model.Whitelist{}, errWhitelistAdmin
+	}
+	if err := tx.Model(&model.User{}).Where("mobile = ?", mobile).Update("permission", 1).Error; err != nil {
+		return model.Whitelist{}, err
+	}
+	return row, nil
 }

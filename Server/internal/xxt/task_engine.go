@@ -2,6 +2,7 @@ package xxt
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,6 +120,14 @@ func (c *Client) fetchLearningPage(cli *http.Client, method, rawURL, referer str
 		return learningResponse{}, err
 	}
 	defer resp.Body.Close()
+	if isAntiSpiderBlocked(resp) {
+		io.Copy(io.Discard, resp.Body)
+		return learningResponse{}, ErrCaptchaRequired
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		io.Copy(io.Discard, resp.Body)
+		return learningResponse{}, fmt.Errorf("query task engine page failed: HTTP %d", resp.StatusCode)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return learningResponse{}, err
@@ -131,17 +140,25 @@ func (c *Client) fetchLearningPage(cli *http.Client, method, rawURL, referer str
 }
 
 // getTaskEngineTasksForCourse 读取任务引擎任务包并展开为具体学习计划，
-// 任一环节失败都回退为任务包级条目，不丢整门课的数据。
-func (c *Client) getTaskEngineTasksForCourse(cli *http.Client, course learningCourse) []LearningItem {
+// 普通错误保留已取得的条目并回传；验证码错误优先交由调用方恢复会话。
+func (c *Client) getTaskEngineTasksForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
 	packages, err := c.fetchTaskEnginePackages(cli, course)
-	if err != nil || len(packages) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
 	}
 	items := make([]LearningItem, 0, len(packages))
+	var errs []error
 	for _, pkg := range packages {
-		items = append(items, c.expandTaskEnginePackage(cli, course, pkg)...)
+		expanded, err := c.expandTaskEnginePackage(cli, course, pkg)
+		if errors.Is(err, ErrCaptchaRequired) {
+			return nil, err
+		}
+		items = append(items, expanded...)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task package %s: %w", strVal(pkg["id"]), err))
+		}
 	}
-	return compactLearningItems(items)
+	return compactLearningItems(items), errors.Join(errs...)
 }
 
 func (c *Client) fetchTaskEnginePackages(cli *http.Client, course learningCourse) ([]map[string]interface{}, error) {
@@ -163,75 +180,103 @@ func (c *Client) fetchTaskEnginePackages(cli *http.Client, course learningCourse
 	return normalizeActiveList(arr), nil
 }
 
-func (c *Client) expandTaskEnginePackage(cli *http.Client, course learningCourse, pkg map[string]interface{}) []LearningItem {
+func (c *Client) expandTaskEnginePackage(cli *http.Client, course learningCourse, pkg map[string]interface{}) ([]LearningItem, error) {
 	taskID := strconv.FormatInt(int64FromAny(pkg["id"]), 10)
 	summary := taskEngineSummaryItem(pkg, course, taskID)
 	jumpLink := summary.Link
 	if jumpLink == "" {
-		return []LearningItem{summary}
+		return []LearningItem{summary}, nil
 	}
 
+	var errs []error
 	landingURL := jumpLink
 	taskUserID := ""
-	if landing, err := c.fetchLearningPage(cli, http.MethodGet, jumpLink, "https://mobilelearn.chaoxing.com/", false); err == nil {
+	landing, err := c.fetchLearningPage(cli, http.MethodGet, jumpLink, "https://mobilelearn.chaoxing.com/", false)
+	if errors.Is(err, ErrCaptchaRequired) {
+		return nil, err
+	}
+	if err != nil {
+		errs = append(errs, fmt.Errorf("task landing: %w", err))
+	} else {
 		taskUserID = extractTaskEngineUserID(landing)
 		landingURL = landing.FinalURL
 	}
 	if taskUserID == "" {
 		subURL := fmt.Sprintf("https://task.chaoxing.com/userStudyPlan/studyPlanSubPage?taskId=%s&encryJumpGroupId=null", url.QueryEscape(taskID))
-		if sub, err := c.fetchLearningPage(cli, http.MethodGet, subURL, jumpLink, false); err == nil {
+		sub, err := c.fetchLearningPage(cli, http.MethodGet, subURL, jumpLink, false)
+		if errors.Is(err, ErrCaptchaRequired) {
+			return nil, err
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task subpage: %w", err))
+		} else {
 			taskUserID = extractTaskEngineUserID(sub)
 		}
 	}
 	if taskUserID == "" {
-		return []LearningItem{summary}
+		return []LearningItem{summary}, errors.Join(errs...)
 	}
 
-	plans, ok := c.fetchTaskEnginePlans(cli, taskUserID, firstNonEmpty(landingURL, jumpLink))
-	if !ok || len(plans) == 0 {
-		return []LearningItem{summary}
+	plans, err := c.fetchTaskEnginePlans(cli, taskUserID, firstNonEmpty(landingURL, jumpLink))
+	if errors.Is(err, ErrCaptchaRequired) {
+		return nil, err
+	}
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if len(plans) == 0 {
+		return []LearningItem{summary}, errors.Join(errs...)
 	}
 
 	items := make([]LearningItem, 0, len(plans))
 	for _, plan := range plans {
-		details := c.resolveTaskEnginePlanDetails(cli, plan, taskUserID, jumpLink)
+		details, err := c.resolveTaskEnginePlanDetails(cli, plan, taskUserID, jumpLink)
+		if errors.Is(err, ErrCaptchaRequired) {
+			return nil, err
+		}
 		items = append(items, taskEnginePlanItem(plan, course, taskID, summary.Title, details))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task plan %s: %w", strVal(plan["planId"]), err))
+		}
 	}
-	return items
+	return items, errors.Join(errs...)
 }
 
-func (c *Client) fetchTaskEnginePlans(cli *http.Client, taskUserID, referer string) ([]map[string]interface{}, bool) {
+func (c *Client) fetchTaskEnginePlans(cli *http.Client, taskUserID, referer string) ([]map[string]interface{}, error) {
 	groupURL := fmt.Sprintf("https://task.chaoxing.com/userStudyPlan/getGroupData?encryTaskUserId=%s", url.QueryEscape(taskUserID))
 	groupResp, err := c.fetchLearningPage(cli, http.MethodPost, groupURL, referer, true)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	groups, err := decodeTaskEngineDataArray(groupResp.Body)
-	if err != nil || len(groups) == 0 {
-		return nil, false
+	if err != nil {
+		return nil, err
 	}
-	groupIDs := make([]string, 0, len(groups))
+	plans := make([]map[string]interface{}, 0, len(groups))
+	var errs []error
 	for _, group := range groups {
-		id := strVal(group["encryptGroupId"])
-		if id == "" {
-			return nil, false
+		groupID := strVal(group["encryptGroupId"])
+		if groupID == "" {
+			errs = append(errs, errors.New("task group missing encryptGroupId"))
+			continue
 		}
-		groupIDs = append(groupIDs, id)
-	}
-	plans := make([]map[string]interface{}, 0, len(groupIDs))
-	for _, groupID := range groupIDs {
 		planURL := fmt.Sprintf("https://task.chaoxing.com/userStudyPlan/getPlanDataByGroupId?encryTaskUserId=%s&encryGroupId=%s", url.QueryEscape(taskUserID), url.QueryEscape(groupID))
 		planResp, err := c.fetchLearningPage(cli, http.MethodPost, planURL, referer, true)
+		if errors.Is(err, ErrCaptchaRequired) {
+			return nil, err
+		}
 		if err != nil {
-			return nil, false
+			errs = append(errs, fmt.Errorf("task group %s: %w", groupID, err))
+			continue
 		}
 		data, err := decodeTaskEngineDataArray(planResp.Body)
 		if err != nil {
-			return nil, false
+			errs = append(errs, fmt.Errorf("task group %s: %w", groupID, err))
+			continue
 		}
 		plans = append(plans, data...)
 	}
-	return plans, true
+	return plans, errors.Join(errs...)
 }
 
 func decodeTaskEngineDataArray(body string) ([]map[string]interface{}, error) {
@@ -248,57 +293,65 @@ func decodeTaskEngineDataArray(body string) ([]map[string]interface{}, error) {
 	return normalizeActiveList(arr), nil
 }
 
-func (c *Client) resolveTaskEnginePlanDetails(cli *http.Client, plan map[string]interface{}, taskUserID, fallbackLink string) taskEnginePlanDetails {
+func (c *Client) resolveTaskEnginePlanDetails(cli *http.Client, plan map[string]interface{}, taskUserID, fallbackLink string) (taskEnginePlanDetails, error) {
 	planFallback := firstNonEmpty(normalizeTaskEngineStudyURL(strVal(firstNonNil(plan["hyperLink"], plan["url"])), ""), fallbackLink)
 	details := taskEnginePlanDetails{TaskLink: planFallback, Finished: isTaskEngineCompletedStudyURL(planFallback)}
 	encryptPlanID := strVal(plan["encryptPlanId"])
 	if encryptPlanID == "" {
-		return details
+		return details, nil
 	}
 	cacheKey := taskUserID + ":" + encryptPlanID
 	if cached, ok := globalTaskEngineDetailCache.get(cacheKey); ok {
-		return cached
+		return cached, nil
 	}
 
 	studyURL := fmt.Sprintf("https://task.chaoxing.com/userStudyPlan/getToStudyUrl?encryptPlanId=%s&encryTaskUserId=%s&studyJumpType=0&isInterface=false", url.QueryEscape(encryptPlanID), url.QueryEscape(taskUserID))
-	if studyResp, err := c.fetchLearningPage(cli, http.MethodPost, studyURL, "https://task.chaoxing.com/", true); err == nil {
-		var payload struct {
-			Result  bool   `json:"result"`
-			Message string `json:"message"`
-			Data    struct {
-				URL        string `json:"url"`
-				DomainName string `json:"domainName"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal([]byte(studyResp.Body), &payload); err == nil && payload.Result {
-			if direct := normalizeTaskEngineStudyURL(payload.Data.URL, payload.Data.DomainName); direct != "" {
-				details.TaskLink = direct
-				details.Finished = details.Finished || isTaskEngineCompletedStudyURL(direct)
-				if _, needDeadline := taskEngineDeadlineTypes[taskEnginePlanTypeName(plan)]; needDeadline &&
-					strVal(plan["endDateStr"]) == "" && !taskEnginePlanIsFinished(plan) && !details.Finished {
-					if u, err := url.Parse(direct); err == nil {
-						if _, allowed := taskEngineDetailHosts[u.Hostname()]; allowed {
-							c.fillTaskEngineDetailTimes(cli, direct, &details)
-						}
+	studyResp, err := c.fetchLearningPage(cli, http.MethodPost, studyURL, "https://task.chaoxing.com/", true)
+	if err != nil {
+		return details, err
+	}
+	var payload struct {
+		Result bool `json:"result"`
+		Data   struct {
+			URL        string `json:"url"`
+			DomainName string `json:"domainName"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(studyResp.Body), &payload); err != nil {
+		return details, err
+	}
+	if !payload.Result {
+		return details, errors.New("task plan details unavailable")
+	}
+	if direct := normalizeTaskEngineStudyURL(payload.Data.URL, payload.Data.DomainName); direct != "" {
+		details.TaskLink = direct
+		details.Finished = details.Finished || isTaskEngineCompletedStudyURL(direct)
+		if _, needDeadline := taskEngineDeadlineTypes[taskEnginePlanTypeName(plan)]; needDeadline &&
+			strVal(plan["endDateStr"]) == "" && !taskEnginePlanIsFinished(plan) && !details.Finished {
+			if u, err := url.Parse(direct); err == nil {
+				if _, allowed := taskEngineDetailHosts[u.Hostname()]; allowed {
+					if err := c.fillTaskEngineDetailTimes(cli, direct, &details); err != nil {
+						return details, err
 					}
 				}
 			}
 		}
 	}
 	globalTaskEngineDetailCache.set(cacheKey, details)
-	return details
+	return details, nil
 }
 
-func (c *Client) fillTaskEngineDetailTimes(cli *http.Client, rawURL string, details *taskEnginePlanDetails) {
+func (c *Client) fillTaskEngineDetailTimes(cli *http.Client, rawURL string, details *taskEnginePlanDetails) error {
 	resp, err := c.fetchLearningPage(cli, http.MethodGet, rawURL, "https://task.chaoxing.com/", false)
 	if err != nil {
-		return
+		return err
 	}
 	if final := normalizeTaskEngineStudyURL(resp.FinalURL, ""); final != "" {
 		details.TaskLink = final
 		details.Finished = details.Finished || isTaskEngineCompletedStudyURL(final)
 	}
 	details.StartTime, details.EndTime = extractTaskEngineDetailTimes(resp.Body)
+	return nil
 }
 
 func extractTaskEngineUserID(resp learningResponse) string {

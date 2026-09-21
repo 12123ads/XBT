@@ -1,26 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ChevronLeft, Clipboard, Loader2, QrCode, RefreshCw, ShieldCheck, Timer } from 'lucide-react';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import axios from 'axios';
+import client, { withAccount, type RequestAccount } from '../api/client';
+import { useAuthStore } from '../store/auth';
 import PullToRefresh from '../components/PullToRefresh';
 import type { ApiResponse, CampusQR as CampusQRData } from '../types';
 import { createQRCodeDataURL } from '../utils/qrgen';
 
-const getErrorMessage = (error: unknown, fallback: string) => (
-  error instanceof Error ? error.message : fallback
-);
-
-const logCampusQRError = (error: unknown) => {
-  const detail = error as Error & { apiResponse?: unknown; response?: unknown };
-  console.error('[CampusQR] fetch failed', {
-    message: error instanceof Error ? error.message : String(error),
-    apiResponse: detail.apiResponse,
-    response: detail.response,
-    raw: error
-  });
-};
 
 const parseExpireTime = (value: string) => {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
@@ -51,53 +40,97 @@ const maskValue = (value: string) => {
 
 const CampusQR = () => {
   const navigate = useNavigate();
-  const [qr, setQR] = useState<CampusQRData | null>(null);
-  const [qrImage, setQRImage] = useState('');
+  const { activeUid, token } = useAuthStore();
+  const owner = useMemo<RequestAccount>(() => ({ uid: activeUid ?? 0, token: token ?? '' }), [activeUid, token]);
+  const [snapshot, setSnapshot] = useState<{ data: CampusQRData; image: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [now, setNow] = useState(Date.now());
+  const [loadError, setLoadError] = useState('');
+  const [now, setNow] = useState(Date.now);
+  const mountedRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const qr = snapshot?.data;
+  const qrImage = snapshot?.image;
 
   const expireAt = useMemo(() => (qr?.expire_time ? parseExpireTime(qr.expire_time) : 0), [qr?.expire_time]);
   const remainingMs = expireAt > 0 ? expireAt - now : 0;
   const expired = expireAt > 0 && remainingMs <= 0;
 
-  const buildQRImage = useCallback(async (content: string) => {
-    return createQRCodeDataURL(content);
-  }, []);
+  const ownsPage = useCallback(() => {
+    const state = useAuthStore.getState();
+    return mountedRef.current && owner.uid > 0 && !!owner.token &&
+      state.activeUid === owner.uid && state.token === owner.token;
+  }, [owner]);
 
-  const fetchQR = useCallback(async () => {
-    setIsLoading(true);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+      requestIdRef.current += 1;
+    };
+  }, [owner]);
+
+  const loadQR = useCallback(async () => {
+    if (!ownsPage()) return;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    controllerRef.current = controller;
+    const isCurrent = () => ownsPage() && !controller.signal.aborted &&
+      requestIdRef.current === requestId && controllerRef.current === controller;
     try {
-      const response = await client.get<ApiResponse<CampusQRData>>('/campus-qr');
+      const response = await client.get<ApiResponse<CampusQRData>>('/campus-qr', withAccount(owner, controller.signal));
+      if (!isCurrent()) return;
       const data = response.data.data;
       if (!data?.qr_content) {
         throw new Error('校园码内容为空');
       }
-      setQR(data);
-      setQRImage(await buildQRImage(data.qr_content));
+      const image = createQRCodeDataURL(data.qr_content);
+      if (!isCurrent()) return;
+      setSnapshot({ data, image });
       setNow(Date.now());
-    } catch (error) {
-      logCampusQRError(error);
-      toast.error(getErrorMessage(error, '获取校园码失败'));
+      setLoadError('');
+    } catch (error: unknown) {
+      if (!isCurrent() || axios.isCancel(error)) return;
+      const message = error instanceof Error ? error.message : '获取校园码失败';
+      const response = axios.isAxiosError<ApiResponse<unknown>>(error) ? error.response : undefined;
+      console.error('[CampusQR] fetch failed', { message, status: response?.status, code: response?.data?.code });
+      setLoadError(message);
+      toast.error(message);
     } finally {
-      setIsLoading(false);
+      if (isCurrent()) {
+        controllerRef.current = null;
+        setIsLoading(false);
+      }
     }
-  }, [buildQRImage]);
+  }, [owner, ownsPage]);
+
+  const fetchQR = useCallback(async () => {
+    if (!ownsPage()) return;
+    setIsLoading(true);
+    await loadQR();
+  }, [loadQR, ownsPage]);
 
   useEffect(() => {
-    fetchQR();
-  }, [fetchQR]);
+    void loadQR();
+  }, [loadQR]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => {
+      if (ownsPage()) setNow(Date.now());
+    }, 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [ownsPage]);
 
   const copyText = async (value: string, label: string) => {
+    if (!ownsPage()) return;
     try {
       await navigator.clipboard.writeText(value);
-      toast.success(`已复制${label}`);
+      if (ownsPage()) toast.success(`已复制${label}`);
     } catch {
-      toast.error('复制失败');
+      if (ownsPage()) toast.error('复制失败');
     }
   };
 
@@ -112,7 +145,7 @@ const CampusQR = () => {
         </button>
         <h2 className="font-bold text-slate-900 text-lg">校园码</h2>
         <button
-          onClick={fetchQR}
+          onClick={() => void fetchQR()}
           disabled={isLoading}
           className="p-2 -mr-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
         >
@@ -133,13 +166,13 @@ const CampusQR = () => {
                   {qr?.full_name || '校园码'}
                 </h3>
                 <p className="text-xs text-slate-500 mt-1 truncate">
-                  {qr?.effect_account ? maskValue(qr.effect_account) : '正在读取'}
+                  {qr?.effect_account ? maskValue(qr.effect_account) : (isLoading ? '正在读取' : '请重试获取校园码')}
                 </p>
               </div>
               <div className={`px-3 py-2 rounded-xl text-xs font-black shrink-0 ${
-                expired ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'
+                !qr ? 'bg-slate-100 text-slate-500' : expired ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'
               }`}>
-                {qr ? (expired ? '已过期' : '可用') : '读取中'}
+                {qr ? (expired ? '已过期' : '可用') : (isLoading ? '读取中' : '获取失败')}
               </div>
             </div>
 
@@ -209,15 +242,21 @@ const CampusQR = () => {
             </button>
           </div>
 
-          {expired && (
+          {!isLoading && loadError && (
+            <div role="alert" className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {snapshot ? `刷新失败，保留上次校园码：${loadError}` : loadError}
+            </div>
+          )}
+
+          {(expired || (!snapshot && !isLoading)) && (
             <motion.button
               whileTap={{ scale: 0.96 }}
-              onClick={fetchQR}
+              onClick={() => void fetchQR()}
               disabled={isLoading}
               className="w-full py-4 rounded-2xl bg-blue-600 text-white text-sm font-black shadow-lg shadow-blue-100 flex items-center justify-center gap-2 disabled:opacity-60"
             >
               {isLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-              刷新校园码
+              {snapshot ? '刷新校园码' : '重试获取校园码'}
             </motion.button>
           )}
         </div>

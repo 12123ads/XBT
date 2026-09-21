@@ -1,4 +1,4 @@
 declare module "*.yaml" {
-  const data: any;
+  const data: { api?: { base_url?: string; timeout?: number } };
   export default data;
 }

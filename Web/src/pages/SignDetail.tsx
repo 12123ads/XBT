@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -17,9 +17,10 @@ import {
   Copy
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import axios from 'axios';
+import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
-import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignShareCreateResponse } from '../types';
+import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse } from '../types';
 import { getBrowserLocation } from '../utils/geolocation';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 
@@ -38,8 +39,11 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 const SignDetail = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user: currentUser } = useAuthStore();
+  const { user: currentUser, activeUid, token } = useAuthStore();
   const locationPresets = useCourseLocationPresets();
+  const owner = useMemo<RequestAccount | null>(() => (
+    activeUid !== null && token ? { uid: activeUid, token } : null
+  ), [activeUid, token]);
   
   const activity = location.state?.activity as SignActivity;
   const course = location.state?.course as CourseActivities;
@@ -65,23 +69,29 @@ const SignDetail = () => {
   
   const isExecutingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      isExecutingRef.current = false;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, [owner]);
+
+  const closeProgress = () => {
+    isExecutingRef.current = false;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsExecuting(false);
+    setShowProgress(false);
+  };
 
   // Lock scroll when progress modal is open
   useEffect(() => {
-    if (showProgress) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-      // Cancel execution when progress modal is closed
-      if (isExecutingRef.current) {
-        isExecutingRef.current = false;
-        if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-          abortControllerRef.current = null;
-        }
-        setIsExecuting(false);
-      }
-    }
+    document.body.style.overflow = showProgress ? 'hidden' : '';
     return () => {
       document.body.style.overflow = '';
     };
@@ -102,49 +112,59 @@ const SignDetail = () => {
     return `${name}代签`;
   };
 
-  const loadClassmateSignStates = async (students: Classmate[]) => {
-    if (!activity || students.length === 0) {
-      setClassmateSignStates({});
-      return;
-    }
+  const loadClassmateSignStates = useCallback(async (students: Classmate[], signal: AbortSignal) => {
+    if (!activity || !owner || students.length === 0) return {};
 
     const response = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
       activity_id: activity.active_id,
+      course_id: activity.course_id,
+      class_id: activity.class_id,
       user_ids: students.map((student) => student.uid),
-    });
+    }, withAccount(owner, signal));
 
-    const nextStates = response.data.data.items.reduce<Record<number, SignCheckItem>>((acc, item) => {
+    return response.data.data.items.reduce<Record<number, SignCheckItem>>((acc, item) => {
       if (item.user_id !== currentUser?.uid) {
         acc[item.user_id] = item;
       }
       return acc;
     }, {});
-
-    setClassmateSignStates(nextStates);
-  };
+  }, [activity, currentUser?.uid, owner]);
 
   useEffect(() => {
     if (!activity) {
       navigate('/');
       return;
     }
+    if (!owner) return;
+    const controller = new AbortController();
+    const isCurrent = () => {
+      const current = useAuthStore.getState();
+      return mountedRef.current && !controller.signal.aborted
+        && current.activeUid === owner.uid && current.token === owner.token;
+    };
     const fetchClassmates = async () => {
       try {
-        const response = await client.get<ApiResponse<Classmate[]>>(`/sign/classmates`, {
+        const response = await client.get<ApiResponse<Classmate[]>>('/sign/classmates', {
+          ...withAccount(owner, controller.signal),
           params: { course_id: activity.course_id, class_id: activity.class_id }
         });
+        if (!isCurrent()) return;
         const data = response.data.data || [];
         setClassmates(data);
         setSelectedUids(data.map(c => c.uid));
-        await loadClassmateSignStates(data);
-      } catch (error: any) {
-        toast.error(error.message || '获取同学列表失败');
+        const states = await loadClassmateSignStates(data, controller.signal);
+        if (isCurrent()) setClassmateSignStates(states);
+      } catch (error: unknown) {
+        if (isCurrent() && !axios.isCancel(error)) {
+          toast.error(getErrorMessage(error, '获取同学列表失败'));
+        }
       } finally {
-        setIsLoadingClassmates(false);
+        if (isCurrent()) setIsLoadingClassmates(false);
       }
     };
-    fetchClassmates();
-  }, [activity, navigate]);
+    void fetchClassmates();
+    return () => controller.abort();
+  }, [activity, navigate, loadClassmateSignStates, owner]);
 
   const toggleClassmate = (uid: number) => {
     setSelectedUids(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]);
@@ -219,6 +239,9 @@ const SignDetail = () => {
   };
 
   const handleExecute = async () => {
+    if (!activity || !owner || !mountedRef.current || isExecutingRef.current) return;
+    const account = useAuthStore.getState();
+    if (account.activeUid !== owner.uid || account.token !== owner.token) return;
     if ((activity.sign_type === 3 || activity.sign_type === 5) && (!signCode || signCode.length < 4)) {
       toast.error('请输入正确位数的签到码 / 手势');
       return;
@@ -229,36 +252,53 @@ const SignDetail = () => {
       return;
     }
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const ownsBatch = () => {
+      const current = useAuthStore.getState();
+      return mountedRef.current && abortControllerRef.current === controller
+        && current.activeUid === owner.uid && current.token === owner.token;
+    };
+    const isCurrent = () => ownsBatch() && !controller.signal.aborted && isExecutingRef.current;
+
     setIsExecuting(true);
     isExecutingRef.current = true;
     setShowProgress(true);
-    setSignStatuses({});
 
-    abortControllerRef.current = new AbortController();
-
-    const targetUids = [currentUser?.uid, ...selectedUids].filter(Boolean) as number[];
-    const initialStatuses: Record<number, any> = {};
+    const targetUids = [...new Set([owner.uid, ...selectedUids])];
+    const initialStatuses: Record<number, Partial<SignStatusMessage>> = {};
     targetUids.forEach(uid => initialStatuses[uid] = { status: 'pending', message: '等待中' });
     setSignStatuses(initialStatuses);
 
-    try {
-      const checkResp = await client.post<ApiResponse<{ items: any[] }>>('/sign/check', {
-        activity_id: activity.active_id,
-        user_ids: selectedUids
-      });
+    const special_params: SignSpecialParams = {};
+    if (activity.sign_type === 3 || activity.sign_type === 5) special_params.sign_code = signCode;
+    else if (activity.sign_type === 4) {
+      special_params.latitude = lat;
+      special_params.longitude = lng;
+      special_params.description = locationStr;
+    }
 
-      const checkItems = checkResp.data.data.items as SignCheckItem[];
+    try {
+      const checkResp = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
+        activity_id: activity.active_id,
+        course_id: activity.course_id,
+        class_id: activity.class_id,
+        user_ids: selectedUids
+      }, withAccount(owner, controller.signal));
+      if (!isCurrent()) return;
+
+      const checkItems = checkResp.data.data.items;
       setClassmateSignStates(prev => {
         const next = { ...prev };
         checkItems.forEach(item => {
-          if (item.user_id !== currentUser?.uid) {
+          if (item.user_id !== owner.uid) {
             next[item.user_id] = item;
           }
         });
         return next;
       });
       const signedUids = new Set(checkItems.filter(item => item.signed).map(item => item.user_id));
-      
+
       checkItems.forEach(item => {
         if (item.signed) {
           setSignStatuses(prev => ({ ...prev, [item.user_id]: { status: 'success', message: item.message || '已签到' } }));
@@ -268,7 +308,6 @@ const SignDetail = () => {
       const toSignUids = targetUids.filter(uid => !signedUids.has(uid));
       if (toSignUids.length === 0) {
         toast.success('所有用户均已签到');
-        setIsExecuting(false);
         return;
       }
 
@@ -276,44 +315,34 @@ const SignDetail = () => {
       await Promise.all(toSignUids.map(async (uid) => {
         const MAX_RETRIES = 5;
         let lastError = '';
-        
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-          if (!isExecutingRef.current) return;
 
-          setSignStatuses(prev => ({ 
-            ...prev, 
-            [uid]: { 
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          if (!isCurrent()) return;
+
+          setSignStatuses(prev => ({
+            ...prev,
+            [uid]: {
               ...prev[uid],
-              status: attempt === 0 ? 'signing' : 'retrying', 
-              attempt, 
+              status: attempt === 0 ? 'signing' : 'retrying',
+              attempt,
               message: attempt === 0 ? '正在尝试签到' : (prev[uid]?.message || '正在重试')
-            } 
+            }
           }));
 
           try {
-            const special_params: Record<string, any> = {};
-            if (activity.sign_type === 3 || activity.sign_type === 5) special_params.sign_code = signCode;
-            else if (activity.sign_type === 4) {
-              special_params.latitude = lat;
-              special_params.longitude = lng;
-              special_params.description = locationStr;
-            }
-
-
-            const execResp = await client.post<ApiResponse<any>>('/sign/execute', {
+            const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
               course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
               activity_name: activity.activity_name,
               course_name: course?.course_name || activity.course_name,
               course_teacher: course?.course_teacher || activity.course_teacher,
               special_params
-            }, {
-              signal: abortControllerRef.current?.signal
-            });
+            }, withAccount(owner, controller.signal));
+            if (!isCurrent()) return;
 
             const res = execResp.data.data;
             if (res.success || res.already_signed) {
-              if (uid !== currentUser?.uid) {
+              if (uid !== owner.uid) {
                 setClassmateSignStates(prev => ({
                   ...prev,
                   [uid]: {
@@ -330,9 +359,13 @@ const SignDetail = () => {
             }
             lastError = res.message || '签到失败';
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
-          } catch (err: any) {
-            if (err.name === 'CanceledError' || err.name === 'AbortError') return;
-            lastError = err.message || '网络连接异常';
+          } catch (error: unknown) {
+            if (axios.isAxiosError<ApiResponse<unknown>>(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+              controller.abort();
+              throw error;
+            }
+            if (!isCurrent() || axios.isCancel(error) || (error instanceof Error && error.name === 'AbortError')) return;
+            lastError = getErrorMessage(error, '网络连接异常');
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           }
 
@@ -342,28 +375,37 @@ const SignDetail = () => {
             else if (attempt >= 3) delay = 2000;
             if (delay > 0) {
               for (let i = 0; i < delay; i += 100) {
-                if (!isExecutingRef.current) return;
+                if (!isCurrent()) return;
                 await new Promise(resolve => setTimeout(resolve, 100));
               }
             }
-          } else {
+          } else if (isCurrent()) {
             // All retries exhausted
-            setSignStatuses(prev => ({ 
-              ...prev, 
-              [uid]: { 
-                status: 'failed', 
-                message: lastError || '多次重试后失败' 
-              } 
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: {
+                status: 'failed',
+                message: lastError || '多次重试后失败'
+              }
             }));
           }
         }
       }));
-    } catch (error: any) {
-      if (error.name !== 'CanceledError' && error.name !== 'AbortError') {
-        toast.error(error.message || '执行过程出错');
+    } catch (error: unknown) {
+      controller.abort();
+      if (ownsBatch() && !axios.isCancel(error) && !(error instanceof Error && error.name === 'AbortError')) {
+        const message = getErrorMessage(error, '执行过程出错');
+        setSignStatuses(prev => {
+          const next = { ...prev };
+          targetUids.forEach(uid => {
+            if (next[uid]?.status !== 'success') next[uid] = { ...next[uid], status: 'failed', message };
+          });
+          return next;
+        });
+        toast.error(message);
       }
     } finally {
-      if (isExecutingRef.current) {
+      if (ownsBatch()) {
         setIsExecuting(false);
         isExecutingRef.current = false;
         abortControllerRef.current = null;
@@ -580,10 +622,10 @@ const SignDetail = () => {
           </motion.div>
         )}
         {showProgress && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end justify-center p-0 bg-slate-900/60 backdrop-blur-md" onClick={() => setShowProgress(false)}>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end justify-center p-0 bg-slate-900/60 backdrop-blur-md" onClick={closeProgress}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] px-8 pt-10 pb-0 shadow-2xl flex flex-col max-h-[85vh] relative" onClick={(e) => e.stopPropagation()}>
               <div className="absolute top-full left-0 right-0 h-screen bg-white" />
-              <div className="flex items-center justify-between mb-8 shrink-0"><h3 className="text-xl font-bold text-slate-900">执行进度</h3><button onClick={() => setShowProgress(false)} className="w-10 h-10 flex items-center justify-center bg-slate-50 text-slate-400 rounded-full font-bold">✕</button></div>
+              <div className="flex items-center justify-between mb-8 shrink-0"><h3 className="text-xl font-bold text-slate-900">执行进度</h3><button onClick={closeProgress} className="w-10 h-10 flex items-center justify-center bg-slate-50 text-slate-400 rounded-full font-bold">✕</button></div>
               <div className="flex-1 overflow-y-auto space-y-1 pr-2 custom-scrollbar pb-[calc(40px+var(--sab))]">
                 <ProgressCard name={currentUser?.name || "本人"} avatar={currentUser?.avatar} mobile={currentUser?.mobile || ""} isHost statusObj={signStatuses[currentUser?.uid || 0]} />
                 {selectedUids.filter(uid => uid !== currentUser?.uid).map(uid => {

@@ -14,16 +14,22 @@ import (
 	"xbt2/server/internal/xxt"
 )
 
+type signClient interface {
+	PreSign(mobile, password string, fixed xxt.FixedParams, code, enc string) error
+	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error)
+	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
+}
+
 type SignService struct {
 	db                  *gorm.DB
-	xxt                 *xxt.Client
+	xxt                 signClient
 	cc                  *CredentialCrypto
 	courseWebhook       *EnterpriseWechatWebhookNotifier
 	courseNotifyMu      sync.Mutex
 	courseNotifyBatches map[courseSignNotificationKey]*courseSignNotificationBatch
 }
 
-func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
+func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
 	return &SignService{
 		db:                  db,
 		xxt:                 xxtClient,
@@ -78,20 +84,92 @@ type SignExecuteResult struct {
 	Message          string `json:"message"`
 }
 
-func (s *SignService) CheckSignStates(activityID int64, userIDs []int64) ([]SignCheckItem, error) {
-	if activityID <= 0 {
-		return nil, errors.New("invalid activity_id")
+func (s *SignService) CheckSignStates(operatorUID, activityID, courseID, classID int64, userIDs []int64) ([]SignCheckItem, error) {
+	targets := make([]int64, 0, len(userIDs)+1)
+	targets = append(targets, operatorUID)
+	targets = append(targets, userIDs...)
+	uniq := dedupeUIDs(targets)
+	if err := s.AuthorizeTargets(operatorUID, activityID, courseID, classID, uniq); err != nil {
+		return nil, err
 	}
-	uniq := dedupeUIDs(userIDs)
 	items := make([]SignCheckItem, 0, len(uniq))
 	for _, uid := range uniq {
-		items = append(items, s.resolveSignState(activityID, uid))
+		state, err := s.resolveSignState(activityID, uid)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, state)
 	}
 	return items, nil
 }
 
-func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) SignExecuteResult {
-	state := s.resolveSignState(req.ActivityID, req.TargetUID)
+func (s *SignService) AuthorizeTargets(operatorUID, activityID, courseID, classID int64, targetUIDs []int64) error {
+	operator, err := LoadActiveUser(s.db, operatorUID)
+	if err != nil {
+		return err
+	}
+	if activityID <= 0 {
+		return ErrSignForbidden
+	}
+	selected, err := UserSelectedCourse(s.db, operatorUID, courseID, classID)
+	if err != nil {
+		return err
+	}
+	if !selected {
+		return ErrSignForbidden
+	}
+	for _, uid := range targetUIDs {
+		if uid <= 0 {
+			return ErrSignForbidden
+		}
+	}
+	targets := dedupeUIDs(targetUIDs)
+	if len(targets) > 0 {
+		var count int64
+		if err := s.db.Table("user_courses uc").
+			Joins("JOIN users u ON u.uid = uc.user_uid").
+			Joins("JOIN whitelists w ON w.mobile = u.mobile").
+			Where("uc.course_id = ? AND uc.class_id = ? AND uc.is_selected = true", courseID, classID).
+			Where("u.uid IN ? AND u.permission > 0 AND w.permission > 0", targets).
+			Distinct("u.uid").Count(&count).Error; err != nil {
+			return err
+		}
+		if count != int64(len(targets)) {
+			return ErrSignForbidden
+		}
+	}
+	var count int64
+	if err := s.db.Model(&model.SignActivityScope{}).
+		Where("activity_id = ? AND course_id = ? AND class_id = ?", activityID, courseID, classID).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	password, err := s.cc.Decrypt(operator.CredentialCipher)
+	if err != nil {
+		return fmt.Errorf("%w: operator credential unavailable", ErrActivityScopeUnavailable)
+	}
+	found, err := s.xxt.HasActivityInCourse(operator.Mobile, password, courseID, classID, activityID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrActivityScopeUnavailable, err)
+	}
+	if !found {
+		return ErrSignForbidden
+	}
+	scope := model.SignActivityScope{ActivityID: activityID, CourseID: courseID, ClassID: classID}
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&scope).Error
+}
+
+func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (SignExecuteResult, error) {
+	if err := s.AuthorizeTargets(operatorUID, req.ActivityID, req.CourseID, req.ClassID, []int64{req.TargetUID}); err != nil {
+		return SignExecuteResult{}, err
+	}
+	state, err := s.resolveSignState(req.ActivityID, req.TargetUID)
+	if err != nil {
+		return SignExecuteResult{}, err
+	}
 	if state.Signed {
 		return SignExecuteResult{
 			UserID:           req.TargetUID,
@@ -100,16 +178,19 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 			RecordSource:     state.RecordSource,
 			RecordSourceName: state.RecordSourceName,
 			Message:          state.Message,
-		}
+		}, nil
 	}
 
-	var target model.User
-	if err := s.db.Where("uid = ?", req.TargetUID).First(&target).Error; err != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未登录或账号不可用"}
+	target, err := LoadActiveUser(s.db, req.TargetUID)
+	if err != nil {
+		if errors.Is(err, ErrAccountInactive) {
+			return SignExecuteResult{}, ErrSignForbidden
+		}
+		return SignExecuteResult{}, err
 	}
 	password, err := s.cc.Decrypt(target.CredentialCipher)
 	if err != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录"}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录"}, nil
 	}
 
 	fixed := xxt.FixedParams{
@@ -123,13 +204,13 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		enc, _ := req.Special["enc"].(string)
 		code, _ := req.Special["c"].(string)
 		if err := s.xxt.PreSign(target.Mobile, password, fixed, code, enc); err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试"}
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试"}, nil
 		}
 	}
 
 	result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
 	if err != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error())}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error())}, nil
 	}
 	result = strings.TrimSpace(result)
 	if result != "success" {
@@ -141,15 +222,15 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 				RecordSource:     -1,
 				RecordSourceName: "学习通",
 				Message:          "该同学已在学习通签到",
-			}
+			}, nil
 		}
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(result)}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(result)}, nil
 	}
 
 	rec := s.signRecordFromRequest(req, operatorUID)
 	dbResult := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec)
 	if dbResult.Error != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "保存签到结果失败，请重试"}
+		return SignExecuteResult{}, dbResult.Error
 	}
 
 	sourceName := s.getSourceName(operatorUID)
@@ -166,7 +247,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		RecordSource:     operatorUID,
 		RecordSourceName: sourceName,
 		Message:          "签到成功",
-	}
+	}, nil
 }
 
 func (s *SignService) enqueueCourseSignSuccess(rec model.SignRecord) {
@@ -366,19 +447,18 @@ func (s *SignService) toUserSignMessage(raw string) string {
 	}
 }
 
-func (s *SignService) resolveSignState(activityID, uid int64) SignCheckItem {
+func (s *SignService) resolveSignState(activityID, uid int64) (SignCheckItem, error) {
 	state := SignCheckItem{UserID: uid, Signed: false, RecordSource: 0, RecordSourceName: "", Message: "未签到"}
 	if activityID <= 0 || uid <= 0 {
-		return state
+		return state, nil
 	}
 
 	var rec model.SignRecord
 	if err := s.db.Where("user_uid = ? AND activity_id = ?", uid, activityID).Take(&rec).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return state
+			return state, nil
 		}
-		state.Message = "查询失败"
-		return state
+		return SignCheckItem{}, err
 	}
 
 	state.Signed = true
@@ -386,7 +466,7 @@ func (s *SignService) resolveSignState(activityID, uid int64) SignCheckItem {
 	if rec.SourceUID == -1 {
 		state.RecordSourceName = "学习通"
 		state.Message = "该同学已在学习通签到"
-		return state
+		return state, nil
 	}
 	if rec.SourceUID == uid {
 		state.RecordSourceName = s.getSourceName(uid)
@@ -394,14 +474,14 @@ func (s *SignService) resolveSignState(activityID, uid int64) SignCheckItem {
 			state.RecordSourceName = "本人"
 		}
 		state.Message = "该同学已本人签到"
-		return state
+		return state, nil
 	}
 	state.RecordSourceName = s.getSourceName(rec.SourceUID)
 	if state.RecordSourceName == "" {
 		state.RecordSourceName = "未知用户"
 	}
 	state.Message = fmt.Sprintf("该同学已被%s代签", state.RecordSourceName)
-	return state
+	return state, nil
 }
 
 func (s *SignService) getSourceName(sourceUID int64) string {

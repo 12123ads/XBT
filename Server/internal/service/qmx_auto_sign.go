@@ -30,10 +30,19 @@ const (
 	qmxAutoSignMaxConcurrency = 3
 )
 
+type qmxAutoSignClient interface {
+	Preview(input qmx.CredentialInput) (qmx.Preview, error)
+	Execute(input qmx.ExecuteInput) (qmx.ExecuteResult, error)
+}
+
+type qmxCookieClient interface {
+	CookieHeader(mobile, password, rawURL string) (string, error)
+}
+
 type QMXAutoSignService struct {
 	db              *gorm.DB
-	client          *qmx.Client
-	xxt             *xxt.Client
+	client          qmxAutoSignClient
+	xxt             qmxCookieClient
 	cc              *CredentialCrypto
 	loc             *time.Location
 	cfgPresets      []config.QMXLocationPreset
@@ -293,8 +302,8 @@ func hasQMXAutoSignLocation(account model.QMXAutoSignAccount) bool {
 }
 
 func (s *QMXAutoSignService) credentialInput(uid int64) (qmx.CredentialInput, error) {
-	var user model.User
-	if err := s.db.Where("uid = ?", uid).Take(&user).Error; err != nil {
+	user, err := LoadActiveUser(s.db, uid)
+	if err != nil {
 		return qmx.CredentialInput{}, err
 	}
 	password, err := s.cc.Decrypt(user.CredentialCipher)

@@ -75,58 +75,63 @@ func (c *Client) GetLearningDashboard(mobile, password string) (LearningDashboar
 	cli := *c.http
 	cli.Jar = s.Jar
 
-	var out LearningDashboard
-	var homework []LearningItem
-	var exams []LearningItem
-	var activities []LearningItem
-	var errorsMu sync.Mutex
-	addErr := func(section string, err error) {
-		if err == nil {
-			return
-		}
-		errorsMu.Lock()
-		out.Errors = append(out.Errors, section+": "+err.Error())
-		errorsMu.Unlock()
-	}
-
-	var wg sync.WaitGroup
+	var (
+		homework    []LearningItem
+		exams       []LearningItem
+		tasks       learningCourseTasks
+		homeworkErr error
+		examsErr    error
+		tasksErr    error
+		wg          sync.WaitGroup
+	)
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		items, err := c.GetLearningHomework(&cli)
-		if err != nil {
-			addErr("homework", err)
-			return
-		}
-		homework = items
+		homework, homeworkErr = c.GetLearningHomework(&cli)
 	}()
 	go func() {
 		defer wg.Done()
-		items, err := c.GetLearningExams(&cli)
-		if err != nil {
-			addErr("exams", err)
-			return
-		}
-		exams = items
+		exams, examsErr = c.GetLearningExams(&cli)
 	}()
 	go func() {
 		defer wg.Done()
-		tasks, err := c.GetLearningActivities(&cli)
-		if err != nil {
-			addErr("activities", err)
-			return
-		}
-		homework = append(homework, tasks.Homework...)
-		exams = append(exams, tasks.Exams...)
-		activities = append(activities, tasks.Activities...)
+		tasks, tasksErr = c.GetLearningActivities(&cli)
 	}()
 	wg.Wait()
+	if errors.Is(homeworkErr, ErrCaptchaRequired) || errors.Is(examsErr, ErrCaptchaRequired) || errors.Is(tasksErr, ErrCaptchaRequired) {
+		return LearningDashboard{}, ErrCaptchaRequired
+	}
 
-	out.Homework = sortLearningItems(homework)
-	out.Exams = sortLearningItems(exams)
-	out.Activities = sortLearningItems(activities)
+	out := LearningDashboard{
+		Homework:   sortLearningItems(append(homework, tasks.Homework...)),
+		Exams:      sortLearningItems(append(exams, tasks.Exams...)),
+		Activities: sortLearningItems(tasks.Activities),
+	}
+	for _, result := range []struct {
+		section string
+		err     error
+	}{
+		{"homework", homeworkErr},
+		{"exams", examsErr},
+		{"activities", tasksErr},
+	} {
+		if result.err != nil {
+			out.Errors = append(out.Errors, result.section+": "+result.err.Error())
+		}
+	}
 	out.Todo = buildLearningTodo(out.Homework, out.Exams, out.Activities)
 	return out, nil
+}
+
+// GetLearningHomeworkFor 供服务端后台任务（如 Vikunja 同步）按账号直接拉取作业列表。
+func (c *Client) GetLearningHomeworkFor(mobile, password string) ([]LearningItem, error) {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return nil, err
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+	return c.GetLearningHomework(&cli)
 }
 
 func (c *Client) GetLearningHomework(cli *http.Client) ([]LearningItem, error) {
@@ -182,27 +187,27 @@ func (c *Client) GetLearningHomework(cli *http.Client) ([]LearningItem, error) {
 
 func (c *Client) GetLearningExams(cli *http.Client) ([]LearningItem, error) {
 	var all []LearningItem
-	var errs []string
+	var errs []error
 
 	doc, err := c.getHTML(cli, "https://mooc1-api.chaoxing.com/exam-ans/exam/phone/examcode", "Mozilla/5.0")
 	if err == nil {
 		all = append(all, extractPhoneExamItems(doc)...)
+	} else if errors.Is(err, ErrCaptchaRequired) {
+		return nil, err
 	} else {
-		errs = append(errs, err.Error())
+		errs = append(errs, fmt.Errorf("phone exams: %w", err))
 	}
 
 	doc2, err := c.getHTML(cli, "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examlist?edition=1&nohead=0&fid=", "Mozilla/5.0")
 	if err == nil {
 		all = append(all, extractTableExamItems(doc2)...)
+	} else if errors.Is(err, ErrCaptchaRequired) {
+		return nil, err
 	} else {
-		errs = append(errs, err.Error())
+		errs = append(errs, fmt.Errorf("table exams: %w", err))
 	}
 
-	all = dedupeLearningItems(all)
-	if len(all) > 0 || len(errs) == 0 {
-		return all, nil
-	}
-	return nil, errors.New(strings.Join(errs, "; "))
+	return dedupeLearningItems(all), errors.Join(errs...)
 }
 
 func extractPhoneExamItems(doc *html.Node) []LearningItem {
@@ -304,45 +309,68 @@ func (c *Client) GetLearningActivities(cli *http.Client) (learningCourseTasks, e
 	}
 	sem := make(chan struct{}, 5)
 	var mu sync.Mutex
+	var blocked bool
+	var errs []error
 	var wg sync.WaitGroup
 	for _, course := range courses {
+		mu.Lock()
+		skip := blocked
+		mu.Unlock()
+		if skip {
+			break
+		}
 		wg.Add(1)
 		go func(course learningCourse) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			tasks := c.getLearningCourseTasks(cli, course)
+			tasks, err := c.getLearningCourseTasks(cli, course)
 			mu.Lock()
 			defer mu.Unlock()
+			if err != nil {
+				if errors.Is(err, ErrCaptchaRequired) {
+					blocked = true
+				}
+				errs = append(errs, fmt.Errorf("course %d/%d: %w", course.CourseID, course.ClassID, err))
+			}
 			all.Homework = append(all.Homework, tasks.Homework...)
 			all.Exams = append(all.Exams, tasks.Exams...)
 			all.Activities = append(all.Activities, tasks.Activities...)
 		}(course)
 	}
 	wg.Wait()
-	return all, nil
+	mu.Lock()
+	defer mu.Unlock()
+	if blocked {
+		return learningCourseTasks{}, ErrCaptchaRequired
+	}
+	return all, errors.Join(errs...)
 }
 
-func (c *Client) getLearningCourseTasks(cli *http.Client, course learningCourse) learningCourseTasks {
+func (c *Client) getLearningCourseTasks(cli *http.Client, course learningCourse) (learningCourseTasks, error) {
 	var (
 		activities []LearningItem
 		engine     []LearningItem
+		activErr   error
+		engineErr  error
 		wg         sync.WaitGroup
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		items, err := c.getLearningActivitiesForCourse(cli, course)
-		if err != nil {
-			return
-		}
-		activities = items
+		activities, activErr = c.getLearningActivitiesForCourse(cli, course)
 	}()
 	go func() {
 		defer wg.Done()
-		engine = c.getTaskEngineTasksForCourse(cli, course)
+		engine, engineErr = c.getTaskEngineTasksForCourse(cli, course)
 	}()
 	wg.Wait()
+	if errors.Is(activErr, ErrCaptchaRequired) {
+		return learningCourseTasks{}, activErr
+	}
+	if errors.Is(engineErr, ErrCaptchaRequired) {
+		return learningCourseTasks{}, engineErr
+	}
 
 	out := learningCourseTasks{Homework: []LearningItem{}, Exams: []LearningItem{}, Activities: activities}
 	if out.Activities == nil {
@@ -358,7 +386,13 @@ func (c *Client) getLearningCourseTasks(cli *http.Client, course learningCourse)
 			out.Activities = append(out.Activities, item)
 		}
 	}
-	return out
+	if activErr != nil {
+		activErr = fmt.Errorf("activities: %w", activErr)
+	}
+	if engineErr != nil {
+		engineErr = fmt.Errorf("task engine: %w", engineErr)
+	}
+	return out, errors.Join(activErr, engineErr)
 }
 
 func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
@@ -370,6 +404,14 @@ func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learnin
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if isAntiSpiderBlocked(resp) {
+		io.Copy(io.Discard, resp.Body)
+		return nil, ErrCaptchaRequired
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("query learning activities failed: HTTP %d", resp.StatusCode)
+	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -427,6 +469,14 @@ func (c *Client) getLearningCourses(cli *http.Client) ([]learningCourse, error) 
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if isAntiSpiderBlocked(resp) {
+		io.Copy(io.Discard, resp.Body)
+		return nil, ErrCaptchaRequired
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("query learning courses failed: HTTP %d", resp.StatusCode)
+	}
 	var payload struct {
 		ChannelList []struct {
 			Key     interface{}            `json:"key"`
@@ -514,6 +564,14 @@ func (c *Client) getHTML(cli *http.Client, rawURL, ua string) (*html.Node, error
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if isAntiSpiderBlocked(resp) {
+		io.Copy(io.Discard, resp.Body)
+		return nil, ErrCaptchaRequired
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("query learning page failed: HTTP %d", resp.StatusCode)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

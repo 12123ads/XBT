@@ -82,10 +82,20 @@ CREATE TABLE IF NOT EXISTS sign_activities (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Trusted activity-to-course/class associations populated from the upstream list.
+CREATE TABLE IF NOT EXISTS sign_activity_scopes (
+  id BIGSERIAL PRIMARY KEY,
+  activity_id BIGINT NOT NULL,
+  course_id BIGINT NOT NULL,
+  class_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 8) 签到分享链接表
 CREATE TABLE IF NOT EXISTS sign_shares (
   id BIGSERIAL PRIMARY KEY,
-  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  token_hash VARCHAR(64) NOT NULL,
   creator_uid BIGINT NOT NULL,
   activity_id BIGINT NOT NULL,
   course_id BIGINT NOT NULL,
@@ -136,7 +146,7 @@ ON CONFLICT (id) DO NOTHING;
 -- 11) Per-account QMX auto sign configuration
 CREATE TABLE IF NOT EXISTS qmx_auto_sign_accounts (
   id BIGSERIAL PRIMARY KEY,
-  user_uid BIGINT NOT NULL UNIQUE,
+  user_uid BIGINT NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   location_name VARCHAR(255) NOT NULL DEFAULT '',
   location_index INTEGER NOT NULL DEFAULT -1,
@@ -166,11 +176,43 @@ CREATE TABLE IF NOT EXISTS qmx_auto_sign_records (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 13) Per-user Vikunja integration settings
+CREATE TABLE IF NOT EXISTS vikunja_settings (
+  id BIGSERIAL PRIMARY KEY,
+  user_uid BIGINT NOT NULL,
+  bound_instance_url VARCHAR(512) NOT NULL DEFAULT '',
+  api_token_cipher TEXT NOT NULL DEFAULT '',
+  project_id BIGINT NOT NULL DEFAULT 0,
+  project_title VARCHAR(255) NOT NULL DEFAULT '',
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  last_sync_at TIMESTAMPTZ,
+  last_sync_message VARCHAR(512) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 14) Learning homework -> Vikunja task mapping
+CREATE TABLE IF NOT EXISTS vikunja_sync_items (
+  id BIGSERIAL PRIMARY KEY,
+  user_uid BIGINT NOT NULL,
+  item_key VARCHAR(128) NOT NULL,
+  instance_url VARCHAR(512) NOT NULL DEFAULT '',
+  vikunja_task_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  title VARCHAR(255) NOT NULL DEFAULT '',
+  due_date BIGINT NOT NULL DEFAULT 0,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 常用查询索引
 CREATE INDEX IF NOT EXISTS idx_user_courses_user_uid ON user_courses (user_uid);
 CREATE INDEX IF NOT EXISTS idx_user_courses_course_class ON user_courses (course_id, class_id);
 CREATE INDEX IF NOT EXISTS idx_class_group_members_group_id ON class_group_members (group_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_class_group_members_user_uid ON class_group_members (user_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sign_activity_scope ON sign_activity_scopes (activity_id, course_id, class_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sign_shares_token_hash ON sign_shares (token_hash);
 CREATE INDEX IF NOT EXISTS idx_sign_shares_creator_uid ON sign_shares (creator_uid);
 CREATE INDEX IF NOT EXISTS idx_sign_shares_activity_id ON sign_shares (activity_id);
 CREATE INDEX IF NOT EXISTS idx_sign_shares_expires_at ON sign_shares (expires_at);
@@ -185,6 +227,12 @@ CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_trigger ON qmx_auto_sign_re
 CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_success ON qmx_auto_sign_records (success);
 CREATE INDEX IF NOT EXISTS idx_qmx_auto_sign_records_executed_at ON qmx_auto_sign_records (executed_at);
 CREATE INDEX IF NOT EXISTS idx_whitelists_permission ON whitelists (permission);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vikunja_settings_user_uid ON vikunja_settings (user_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vikunja_scope_item ON vikunja_sync_items (user_uid, item_key, instance_url, project_id);
+CREATE INDEX IF NOT EXISTS idx_vikunja_sync_items_user_uid ON vikunja_sync_items (user_uid);
+CREATE INDEX IF NOT EXISTS idx_vikunja_sync_items_task_id ON vikunja_sync_items (vikunja_task_id);
+CREATE INDEX IF NOT EXISTS idx_vikunja_settings_enabled ON vikunja_settings (enabled);
 
 COMMIT;
 

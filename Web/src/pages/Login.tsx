@@ -33,8 +33,8 @@ const Login = () => {
       addAccount(user, token);
       toast.success('登录成功');
       navigate('/', { replace: true });
-    } catch (error: any) {
-      toast.error(error.message || '登录失败，请检查账号密码');
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '登录失败，请检查账号密码');
     } finally {
       setIsLoading(false);
     }

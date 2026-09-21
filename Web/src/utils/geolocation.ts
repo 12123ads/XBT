@@ -13,7 +13,7 @@ interface Coordinate {
 const PI = Math.PI;
 const X_PI = (PI * 3000.0) / 180.0;
 const A = 6378245.0;
-const EE = 0.00669342162296594323;
+const EE = 0.006693421622965943;
 
 const isLocalhost = () => (
   window.location.hostname === 'localhost'

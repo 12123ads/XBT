@@ -103,14 +103,14 @@ export interface Classmate {
   avatar: string;
 }
 
-export interface SignParams {
-  activity_id: number;
-  user_ids: number[];
-  sign_type: number;
-  course_id: number;
-  class_id: number;
-  if_refresh_ewm: boolean;
-  special_params: Record<string, any>;
+export interface SignSpecialParams {
+  sign_code?: string;
+  latitude?: string;
+  longitude?: string;
+  description?: string;
+  enc?: string;
+  c?: string;
+  location?: unknown;
 }
 
 export interface SignStatusMessage {
@@ -125,6 +125,15 @@ export interface SignStatusMessage {
 export interface SignCheckItem {
   user_id: number;
   signed: boolean;
+  record_source: number;
+  record_source_name: string;
+  message: string;
+}
+
+export interface SignExecuteResult {
+  user_id: number;
+  success: boolean;
+  already_signed: boolean;
   record_source: number;
   record_source_name: string;
   message: string;
@@ -383,4 +392,27 @@ export interface OwnQMXAutoSignSettings {
   config: OwnQMXAutoSignConfig;
   last_record: AdminQMXAutoSignRecord | null;
   presets: QMXLocationPreset[];
+}
+
+export interface VikunjaSettings {
+  enabled: boolean;
+  base_url: string;
+  token_configured: boolean;
+  token_mask: string;
+  project_id: number;
+  project_title: string;
+  last_sync_at: string | null;
+  last_sync_message: string;
+}
+
+export interface VikunjaProject {
+  id: number;
+  title: string;
+}
+
+export interface VikunjaSyncResult {
+  created: number;
+  updated: number;
+  total: number;
+  message: string;
 }

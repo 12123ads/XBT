@@ -314,6 +314,23 @@ func (c *Client) GetCourses(mobile, password string) ([]Course, error) {
 }
 
 func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([]Active, error) {
+	return c.getActives(mobile, password, courseID, classID, c.activeFetchMax)
+}
+
+func (c *Client) HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error) {
+	actives, err := c.getActives(mobile, password, courseID, classID, 0)
+	if err != nil {
+		return false, err
+	}
+	for _, active := range actives {
+		if active.ActiveID == activityID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) getActives(mobile, password string, courseID, classID int64, limit int) ([]Active, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return nil, err
@@ -329,6 +346,9 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("get activities returned HTTP %d", resp.StatusCode)
+	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -351,7 +371,7 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 		activeType := int64FromAny(firstNonNil(a["activeType"], a["type"], a["atype"]))
 		name := strVal(firstNonNil(a["nameOne"], a["name"], a["activeName"], a["title"]))
 		id := int64FromAny(firstNonNil(a["id"], a["activeId"], a["active_id"]))
-		if id == 0 {
+		if id <= 0 {
 			continue
 		}
 		if _, ok := seen[id]; ok {
@@ -368,7 +388,7 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 			ActiveID: id,
 			Name:     name,
 		})
-		if len(out) >= c.activeFetchMax {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
 	}

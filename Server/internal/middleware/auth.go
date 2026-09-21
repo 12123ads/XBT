@@ -1,14 +1,16 @@
 package middleware
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"xbt2/server/internal/common"
 	"xbt2/server/internal/service"
 )
 
-func Auth(jwtSvc *service.JWTService) gin.HandlerFunc {
+func Auth(jwtSvc *service.JWTService, database *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		auth := c.GetHeader("Authorization")
 		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
@@ -23,9 +25,19 @@ func Auth(jwtSvc *service.JWTService) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		c.Set(common.CtxUserUID, claims.UID)
-		c.Set(common.CtxMobile, claims.Mobile)
-		c.Set(common.CtxPermission, claims.Permission)
+		user, err := service.LoadActiveUser(database.WithContext(c.Request.Context()), claims.UID)
+		if err != nil {
+			if errors.Is(err, service.ErrAccountInactive) {
+				common.Fail(c, 401, "account inactive")
+			} else {
+				common.Fail(c, 500, "query account failed")
+			}
+			c.Abort()
+			return
+		}
+		c.Set(common.CtxUserUID, user.UID)
+		c.Set(common.CtxMobile, user.Mobile)
+		c.Set(common.CtxPermission, user.Permission)
 		c.Next()
 	}
 }

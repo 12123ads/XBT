@@ -26,6 +26,7 @@ var (
 	errSignShareUsed             = errors.New("sign share used")
 	errSignShareExpired          = errors.New("sign share expired")
 	errSignShareCourseUnselected = errors.New("sign share course unselected")
+	errSignShareCreatorInactive  = errors.New("sign share creator inactive")
 )
 
 func (h *SignHandler) CreateShare(c *gin.Context) {
@@ -48,13 +49,8 @@ func (h *SignHandler) CreateShare(c *gin.Context) {
 		common.Fail(c, 400, "该签到已结束，无法生成分享链接")
 		return
 	}
-	ok, err := h.userSelectedCourse(uid, req.CourseID, req.ClassID)
-	if err != nil {
-		common.Fail(c, 500, "query selected course failed")
-		return
-	}
-	if !ok {
-		common.Fail(c, 403, "当前账号未选择该课程，无法生成分享链接")
+	if err := h.signService.AuthorizeTargets(uid, req.ActivityID, req.CourseID, req.ClassID, []int64{uid}); err != nil {
+		h.failSign(c, err)
 		return
 	}
 
@@ -117,13 +113,23 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 		return
 	}
 
+	if err := h.signService.AuthorizeTargets(share.CreatorUID, share.ActivityID, share.CourseID, share.ClassID, []int64{share.CreatorUID}); err != nil {
+		if creatorErr := h.checkShareCreator(share); creatorErr != nil {
+			h.failShare(c, creatorErr)
+		} else {
+			h.failSign(c, err)
+		}
+		return
+	}
+
 	targetUIDs, err := h.signShareTargetUIDs(share)
 	if err != nil {
-		if errors.Is(err, errSignShareCourseUnselected) {
+		switch {
+		case errors.Is(err, errSignShareCourseUnselected), errors.Is(err, errSignShareCreatorInactive):
 			h.failShare(c, err)
-			return
+		default:
+			common.Fail(c, 500, "query sign targets failed")
 		}
-		common.Fail(c, 500, "query sign targets failed")
 		return
 	}
 
@@ -142,7 +148,11 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 	alreadySignedCount := 0
 	failedCount := 0
 	for _, targetUID := range targetUIDs {
-		res := h.signService.ExecuteOne(share.CreatorUID, service.ExecuteSignRequest{
+		if err := h.checkShareCreator(share); err != nil {
+			h.failShare(c, err)
+			return
+		}
+		res, err := h.signService.ExecuteOne(share.CreatorUID, service.ExecuteSignRequest{
 			ActivityID:    share.ActivityID,
 			TargetUID:     targetUID,
 			SignType:      share.SignType,
@@ -154,6 +164,19 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 			CourseTeacher: share.CourseTeacher,
 			Special:       req.Special,
 		})
+		if err != nil {
+			if creatorErr := h.checkShareCreator(share); creatorErr != nil {
+				h.failShare(c, creatorErr)
+				return
+			}
+			if !errors.Is(err, service.ErrSignForbidden) {
+				h.failSign(c, err)
+				return
+			}
+			failedCount++
+			failures = append(failures, "部分账号已不可用或取消了该课程")
+			continue
+		}
 		if res.Success || res.AlreadySigned {
 			if res.AlreadySigned {
 				alreadySignedCount++
@@ -166,6 +189,11 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 		if res.Message != "" {
 			failures = append(failures, res.Message)
 		}
+	}
+
+	if err := h.checkShareCreator(share); err != nil {
+		h.failShare(c, err)
+		return
 	}
 
 	allDone := failedCount == 0
@@ -209,23 +237,25 @@ func (h *SignHandler) loadUsableShare(token string) (model.SignShare, error) {
 	if !share.ExpiresAt.After(time.Now()) {
 		return model.SignShare{}, errSignShareExpired
 	}
-	ok, err := h.userSelectedCourse(share.CreatorUID, share.CourseID, share.ClassID)
-	if err != nil {
+	if err := h.checkShareCreator(share); err != nil {
 		return model.SignShare{}, err
-	}
-	if !ok {
-		return model.SignShare{}, errSignShareCourseUnselected
 	}
 	return share, nil
 }
 
 func (h *SignHandler) signShareTargetUIDs(share model.SignShare) ([]int64, error) {
+	if err := h.checkShareCreator(share); err != nil {
+		return nil, err
+	}
 	var uids []int64
-	if err := h.db.Model(&model.UserCourse{}).
-		Where("course_id = ? AND class_id = ? AND is_selected = true", share.CourseID, share.ClassID).
-		Order("CASE WHEN user_uid = "+fmt.Sprint(share.CreatorUID)+" THEN 0 ELSE 1 END").
-		Order("user_uid ASC").
-		Pluck("user_uid", &uids).Error; err != nil {
+	if err := h.db.Table("user_courses uc").
+		Joins("JOIN users u ON u.uid = uc.user_uid").
+		Joins("JOIN whitelists w ON w.mobile = u.mobile").
+		Where("uc.course_id = ? AND uc.class_id = ? AND uc.is_selected = true", share.CourseID, share.ClassID).
+		Where("u.uid > 0 AND u.permission > 0 AND w.permission > 0").
+		Order("CASE WHEN uc.user_uid = "+fmt.Sprint(share.CreatorUID)+" THEN 0 ELSE 1 END").
+		Order("uc.user_uid ASC").
+		Pluck("uc.user_uid", &uids).Error; err != nil {
 		return nil, err
 	}
 	uids = dedupeUIDTargets(uids, 0)
@@ -237,14 +267,21 @@ func (h *SignHandler) signShareTargetUIDs(share model.SignShare) ([]int64, error
 	return nil, errSignShareCourseUnselected
 }
 
-func (h *SignHandler) userSelectedCourse(uid, courseID, classID int64) (bool, error) {
-	var count int64
-	if err := h.db.Model(&model.UserCourse{}).
-		Where("user_uid = ? AND course_id = ? AND class_id = ? AND is_selected = true", uid, courseID, classID).
-		Count(&count).Error; err != nil {
-		return false, err
+func (h *SignHandler) checkShareCreator(share model.SignShare) error {
+	if _, err := service.LoadActiveUser(h.db, share.CreatorUID); err != nil {
+		if errors.Is(err, service.ErrAccountInactive) {
+			return errSignShareCreatorInactive
+		}
+		return err
 	}
-	return count > 0, nil
+	selected, err := service.UserSelectedCourse(h.db, share.CreatorUID, share.CourseID, share.ClassID)
+	if err != nil {
+		return err
+	}
+	if !selected {
+		return errSignShareCourseUnselected
+	}
+	return nil
 }
 
 func (h *SignHandler) failShare(c *gin.Context, err error) {
@@ -257,6 +294,8 @@ func (h *SignHandler) failShare(c *gin.Context, err error) {
 		common.Fail(c, 410, "分享链接已过期")
 	case errors.Is(err, errSignShareCourseUnselected):
 		common.Fail(c, 410, "分享者已取消该课程，链接已失效")
+	case errors.Is(err, errSignShareCreatorInactive):
+		common.Fail(c, 410, "分享者已停用，链接已失效")
 	default:
 		common.Fail(c, 500, "query share failed")
 	}

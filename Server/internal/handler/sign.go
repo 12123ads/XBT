@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -139,6 +140,19 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 		return nil, err
 	}
 	log.Printf("actives fetched: uid=%d course=%d class=%d count=%d", uid, sc.CourseID, sc.ClassID, len(actives))
+	scopes := make([]model.SignActivityScope, 0, len(actives))
+	for _, active := range actives {
+		scopes = append(scopes, model.SignActivityScope{
+			ActivityID: active.ActiveID,
+			CourseID:   sc.CourseID,
+			ClassID:    sc.ClassID,
+		})
+	}
+	if len(scopes) > 0 {
+		if err := h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&scopes).Error; err != nil {
+			return nil, err
+		}
+	}
 	items := make([]gin.H, 0)
 	for _, a := range actives {
 		var detail xxt.SignDetail
@@ -263,10 +277,24 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 
 func (h *SignHandler) Classmates(c *gin.Context) {
 	uid := common.GetUserUID(c)
-	courseID := c.Query("course_id")
-	classID := c.Query("class_id")
-	if courseID == "" || classID == "" {
-		common.Fail(c, 400, "course_id and class_id are required")
+	courseID, courseErr := strconv.ParseInt(c.Query("course_id"), 10, 64)
+	classID, classErr := strconv.ParseInt(c.Query("class_id"), 10, 64)
+	if courseErr != nil || classErr != nil || courseID <= 0 || classID <= 0 {
+		common.Fail(c, 400, "positive course_id and class_id are required")
+		return
+	}
+	database := h.db.WithContext(c.Request.Context())
+	if _, err := service.LoadActiveUser(database, uid); err != nil {
+		h.failSign(c, err)
+		return
+	}
+	selected, err := service.UserSelectedCourse(database, uid, courseID, classID)
+	if err != nil {
+		h.failSign(c, err)
+		return
+	}
+	if !selected {
+		h.failSign(c, service.ErrSignForbidden)
 		return
 	}
 
@@ -276,9 +304,11 @@ func (h *SignHandler) Classmates(c *gin.Context) {
 		Mobile string
 		Avatar string
 	}
-	err := h.db.Table("users u").
+	err = database.Table("users u").
 		Select("u.uid, u.name, u.mobile, u.avatar").
 		Joins("join user_courses uc on u.uid = uc.user_uid").
+		Joins("join whitelists w on w.mobile = u.mobile").
+		Where("u.uid > 0 and u.permission > 0 and w.permission > 0").
 		Where("uc.course_id = ? and uc.class_id = ? and uc.is_selected = true and u.uid <> ?", courseID, classID, uid).
 		Order("u.name asc").
 		Scan(&mates).Error
@@ -325,7 +355,7 @@ func (h *SignHandler) Execute(c *gin.Context) {
 	if req.Special == nil {
 		req.Special = map[string]interface{}{}
 	}
-	res := h.signService.ExecuteOne(uid, service.ExecuteSignRequest{
+	res, err := h.signService.ExecuteOne(uid, service.ExecuteSignRequest{
 		ActivityID:    req.ActivityID,
 		TargetUID:     targetUID,
 		SignType:      req.SignType,
@@ -337,6 +367,10 @@ func (h *SignHandler) Execute(c *gin.Context) {
 		CourseTeacher: req.CourseTeacher,
 		Special:       req.Special,
 	})
+	if err != nil {
+		h.failSign(c, err)
+		return
+	}
 	common.Success(c, res)
 }
 
@@ -347,17 +381,23 @@ func (h *SignHandler) Check(c *gin.Context) {
 		common.Fail(c, 400, "invalid request")
 		return
 	}
-	if req.ActivityID <= 0 {
-		common.Fail(c, 400, "invalid activity_id")
-		return
-	}
-	targets := make([]int64, 0, len(req.UserIDs)+1)
-	targets = append(targets, uid)
-	targets = append(targets, req.UserIDs...)
-	items, err := h.signService.CheckSignStates(req.ActivityID, targets)
+	items, err := h.signService.CheckSignStates(uid, req.ActivityID, req.CourseID, req.ClassID, req.UserIDs)
 	if err != nil {
-		common.Fail(c, 500, err.Error())
+		h.failSign(c, err)
 		return
 	}
 	common.Success(c, gin.H{"items": items})
+}
+
+func (h *SignHandler) failSign(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrAccountInactive):
+		common.Fail(c, 401, "account inactive")
+	case errors.Is(err, service.ErrSignForbidden):
+		common.Fail(c, 403, "无权操作该课程活动或目标账号")
+	case errors.Is(err, service.ErrActivityScopeUnavailable):
+		common.Fail(c, 502, "暂时无法确认活动所属课程，请稍后重试")
+	default:
+		common.Fail(c, 500, "sign operation failed")
+	}
 }

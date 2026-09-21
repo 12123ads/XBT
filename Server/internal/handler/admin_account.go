@@ -126,9 +126,13 @@ func (h *AdminAccountHandler) SyncUserCourses(c *gin.Context) {
 		return
 	}
 
-	var user model.User
-	if err := h.db.Where("uid = ?", uid).First(&user).Error; err != nil {
-		common.Fail(c, 404, "account not found")
+	user, err := service.LoadActiveUser(h.db.WithContext(c.Request.Context()), uid)
+	if err != nil {
+		if errors.Is(err, service.ErrAccountInactive) {
+			common.Fail(c, 403, "account inactive")
+		} else {
+			common.Fail(c, 500, "query account failed")
+		}
 		return
 	}
 	password, err := h.cc.Decrypt(user.CredentialCipher)
