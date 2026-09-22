@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -509,4 +510,116 @@ func dedupeUIDs(userIDs []int64) []int64 {
 		out = append(out, uid)
 	}
 	return out
+}
+
+type ContributionGroup struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+type ContributionTarget struct {
+	TargetUID  int64  `json:"target_uid"`
+	TargetName string `json:"target_name"`
+	Count      int64  `json:"count"`
+}
+
+type ContributionSource struct {
+	SourceUID    int64                `json:"source_uid"`
+	SourceName   string               `json:"source_name"`
+	SourceAvatar string               `json:"source_avatar"`
+	Total        int64                `json:"total"`
+	Details      []ContributionTarget `json:"details"`
+}
+
+type ContributionBoard struct {
+	Group *ContributionGroup   `json:"group"`
+	Items []ContributionSource `json:"items"`
+}
+
+// ClassContributions builds an in-class proxy-sign leaderboard for the viewer's
+// own class group. Only records where BOTH the proxy signer (source_uid) and the
+// target (user_uid) belong to the viewer's group are counted; self signs
+// (source_uid == user_uid) and 学习通自签 (source_uid == -1) are excluded.
+func (s *SignService) ClassContributions(operatorUID int64) (ContributionBoard, error) {
+	if _, err := LoadActiveUser(s.db, operatorUID); err != nil {
+		return ContributionBoard{}, err
+	}
+
+	var member model.ClassGroupMember
+	if err := s.db.Where("user_uid = ?", operatorUID).Take(&member).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ContributionBoard{Group: nil, Items: []ContributionSource{}}, nil
+		}
+		return ContributionBoard{}, err
+	}
+
+	var group model.ClassGroup
+	if err := s.db.First(&group, member.GroupID).Error; err != nil {
+		return ContributionBoard{}, err
+	}
+
+	var rows []struct {
+		SourceUID    int64
+		SourceName   string
+		SourceAvatar string
+		TargetUID    int64
+		TargetName   string
+		Count        int64
+	}
+	if err := s.db.Table("sign_records sr").
+		Select(`sr.source_uid AS source_uid,
+			COALESCE(NULLIF(su.name, ''), 'UID ' || sr.source_uid::text) AS source_name,
+			COALESCE(su.avatar, '') AS source_avatar,
+			sr.user_uid AS target_uid,
+			COALESCE(NULLIF(tu.name, ''), 'UID ' || sr.user_uid::text) AS target_name,
+			COUNT(*) AS count`).
+		Joins("JOIN class_group_members sm ON sm.user_uid = sr.source_uid AND sm.group_id = ?", member.GroupID).
+		Joins("JOIN class_group_members tm ON tm.user_uid = sr.user_uid AND tm.group_id = ?", member.GroupID).
+		Joins("LEFT JOIN users su ON su.uid = sr.source_uid").
+		Joins("LEFT JOIN users tu ON tu.uid = sr.user_uid").
+		Where("sr.source_uid <> sr.user_uid AND sr.source_uid > 0").
+		Group("sr.source_uid, su.name, su.avatar, sr.user_uid, tu.name").
+		Scan(&rows).Error; err != nil {
+		return ContributionBoard{}, err
+	}
+
+	sourceMap := make(map[int64]*ContributionSource, len(rows))
+	for _, row := range rows {
+		src, ok := sourceMap[row.SourceUID]
+		if !ok {
+			src = &ContributionSource{
+				SourceUID:    row.SourceUID,
+				SourceName:   row.SourceName,
+				SourceAvatar: row.SourceAvatar,
+				Details:      []ContributionTarget{},
+			}
+			sourceMap[row.SourceUID] = src
+		}
+		src.Details = append(src.Details, ContributionTarget{
+			TargetUID:  row.TargetUID,
+			TargetName: row.TargetName,
+			Count:      row.Count,
+		})
+		src.Total += row.Count
+	}
+
+	items := make([]ContributionSource, 0, len(sourceMap))
+	for _, src := range sourceMap {
+		details := src.Details
+		sort.Slice(details, func(i, j int) bool {
+			if details[i].Count != details[j].Count {
+				return details[i].Count > details[j].Count
+			}
+			return details[i].TargetUID < details[j].TargetUID
+		})
+		items = append(items, *src)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Total != items[j].Total {
+			return items[i].Total > items[j].Total
+		}
+		return items[i].SourceUID < items[j].SourceUID
+	})
+
+	return ContributionBoard{Group: &ContributionGroup{ID: group.ID, Name: group.Name}, Items: items}, nil
 }

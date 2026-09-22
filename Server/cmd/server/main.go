@@ -83,6 +83,7 @@ func main() {
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
 			authed.POST("/sign/shares", signHandler.CreateShare)
+			authed.GET("/sign/contributions", signHandler.Contributions)
 			authed.POST("/qmx/room-check/preview", qmxRoomCheckHandler.Preview)
 			authed.POST("/qmx/room-check/execute", qmxRoomCheckHandler.Execute)
 			authed.GET("/qmx/auto-sign/settings", qmxAutoSignHandler.GetOwnSettings)

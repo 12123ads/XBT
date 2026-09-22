@@ -207,3 +207,83 @@ func TestSignDoesNotTurnRecordDatabaseFailureIntoUnsignedState(t *testing.T) {
 		t.Fatalf("database failure proceeded to upstream sign: result=%+v err=%v", result, err)
 	}
 }
+
+func TestClassContributionsScopedToViewerGroup(t *testing.T) {
+	database := newAuthorizationTestDB(t)
+	cc := NewCredentialCrypto("contrib-test")
+	for uid := int64(1); uid <= 6; uid++ {
+		seedAuthorizationUser(t, database, cc, uid)
+	}
+
+	groupA := model.ClassGroup{Name: "Group A"}
+	groupB := model.ClassGroup{Name: "Group B"}
+	if err := database.Create(&groupA).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&groupB).Error; err != nil {
+		t.Fatal(err)
+	}
+	members := []model.ClassGroupMember{
+		{GroupID: groupA.ID, UserUID: 1},
+		{GroupID: groupA.ID, UserUID: 2},
+		{GroupID: groupA.ID, UserUID: 3},
+		{GroupID: groupB.ID, UserUID: 4},
+	}
+	if err := database.Create(&members).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Each record needs a distinct (user_uid, activity_id) per the model's unique index.
+	records := []model.SignRecord{
+		// In-class proxy signs that must be counted.
+		{SourceUID: 1, UserUID: 2, ActivityID: 1001, SignTimeMS: 1},
+		{SourceUID: 1, UserUID: 2, ActivityID: 1002, SignTimeMS: 2},
+		{SourceUID: 1, UserUID: 3, ActivityID: 1003, SignTimeMS: 3},
+		{SourceUID: 2, UserUID: 3, ActivityID: 1004, SignTimeMS: 4},
+		// Excluded: self sign.
+		{SourceUID: 1, UserUID: 1, ActivityID: 1005, SignTimeMS: 5},
+		// Excluded: 学习通自签.
+		{SourceUID: -1, UserUID: 2, ActivityID: 1006, SignTimeMS: 6},
+		// Excluded: source out of group.
+		{SourceUID: 4, UserUID: 2, ActivityID: 1007, SignTimeMS: 7},
+		// Excluded: target out of group.
+		{SourceUID: 1, UserUID: 4, ActivityID: 1008, SignTimeMS: 8},
+		// Excluded: both ungrouped.
+		{SourceUID: 5, UserUID: 6, ActivityID: 1009, SignTimeMS: 9},
+	}
+	if err := database.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewSignService(database, &signAuthorizationUpstream{}, cc, nil)
+
+	board, err := svc.ClassContributions(1)
+	if err != nil {
+		t.Fatalf("ClassContributions(1) error = %v", err)
+	}
+	if board.Group == nil || board.Group.ID != groupA.ID {
+		t.Fatalf("expected group A, got %+v", board.Group)
+	}
+	if len(board.Items) != 2 {
+		t.Fatalf("expected 2 ranked sources, got %+v", board.Items)
+	}
+	if board.Items[0].SourceUID != 1 || board.Items[0].Total != 3 {
+		t.Fatalf("expected top source uid=1 total=3, got %+v", board.Items[0])
+	}
+	if len(board.Items[0].Details) != 2 ||
+		board.Items[0].Details[0].TargetUID != 2 || board.Items[0].Details[0].Count != 2 ||
+		board.Items[0].Details[1].TargetUID != 3 || board.Items[0].Details[1].Count != 1 {
+		t.Fatalf("unexpected details for source 1: %+v", board.Items[0].Details)
+	}
+	if board.Items[1].SourceUID != 2 || board.Items[1].Total != 1 {
+		t.Fatalf("expected second source uid=2 total=1, got %+v", board.Items[1])
+	}
+
+	empty, err := svc.ClassContributions(6)
+	if err != nil {
+		t.Fatalf("ClassContributions(6) error = %v", err)
+	}
+	if empty.Group != nil || len(empty.Items) != 0 {
+		t.Fatalf("ungrouped viewer must get empty board, got %+v", empty)
+	}
+}

@@ -389,6 +389,16 @@ func (h *SignHandler) Check(c *gin.Context) {
 	common.Success(c, gin.H{"items": items})
 }
 
+func (h *SignHandler) Contributions(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	board, err := h.signService.ClassContributions(uid)
+	if err != nil {
+		h.failSign(c, err)
+		return
+	}
+	common.Success(c, board)
+}
+
 func (h *SignHandler) failSign(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrAccountInactive):

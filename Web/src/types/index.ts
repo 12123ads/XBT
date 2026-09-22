@@ -103,6 +103,25 @@ export interface Classmate {
   avatar: string;
 }
 
+export interface ContributionTarget {
+  target_uid: number;
+  target_name: string;
+  count: number;
+}
+
+export interface ContributionSource {
+  source_uid: number;
+  source_name: string;
+  source_avatar: string;
+  total: number;
+  details: ContributionTarget[];
+}
+
+export interface ContributionBoard {
+  group: { id: number; name: string } | null;
+  items: ContributionSource[];
+}
+
 export interface SignSpecialParams {
   sign_code?: string;
   latitude?: string;
