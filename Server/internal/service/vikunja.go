@@ -52,6 +52,12 @@ func (e *VikunjaRequestError) Error() string {
 
 func (e *VikunjaRequestError) Unwrap() error { return e.cause }
 
+// isVikunjaNotFound 判断错误是否为远端任务不存在（已被删除），据此重建映射。
+func isVikunjaNotFound(err error) bool {
+	var httpErr *VikunjaHTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound
+}
+
 type VikunjaClient struct {
 	baseURL       string
 	token         string

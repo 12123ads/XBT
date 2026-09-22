@@ -511,7 +511,6 @@ func TestVikunjaSyncRejectsStaleTaskMappings(t *testing.T) {
 		status int
 		body   string
 	}{
-		{name: "deleted", status: http.StatusNotFound},
 		{name: "forbidden", status: http.StatusForbidden},
 		{name: "different-task", status: http.StatusOK, body: `{"id":99,"project_id":11}`},
 		{name: "moved-project", status: http.StatusOK, body: `{"id":1,"project_id":22}`},
@@ -749,4 +748,37 @@ func TestVikunjaSyncCanceledWhileWaitingDoesNotStartAnotherAccountItem(t *testin
 	if homeworkCalls.Load() != 1 || remoteRequests.Load() != 0 {
 		t.Fatalf("canceled waiter used credentials: homework=%d remote=%d", homeworkCalls.Load(), remoteRequests.Load())
 	}
+}
+
+func TestVikunjaSyncRecreatesDeletedRemoteTaskWithDueDate(t *testing.T) {
+	remote := newVikunjaRemote(t)
+	items := []xxt.LearningItem{{ID: "one", Title: "作业一", EndTime: 1900000000000, Pending: true}}
+	fixture := newVikunjaSyncFixture(t, remote.server.URL, vikunjaHomeworkFunc(func(string, string) ([]xxt.LearningItem, error) {
+		return items, nil
+	}))
+	// 指向一个远端已不存在的任务，模拟用户在 Vikunja 里删除后的失效映射。
+	stale := model.VikunjaSyncItem{UserUID: 42, InstanceURL: remote.server.URL, ProjectID: 11, ItemKey: "homework:one", VikunjaTaskID: 404, Title: "旧标题"}
+	if err := fixture.db.Create(&stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.service.SyncUser(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("deleted remote task must be recreated, not error: %v", err)
+	}
+	if result.Created != 1 || remote.createdIn(11) != 1 {
+		t.Fatalf("expected one recreated task, result=%+v createdIn=%d", result, remote.createdIn(11))
+	}
+	var mapping model.VikunjaSyncItem
+	if err := fixture.db.Where("user_uid = ? AND instance_url = ? AND project_id = ? AND item_key = ?", 42, remote.server.URL, 11, "homework:one").First(&mapping).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mapping.VikunjaTaskID == 404 {
+		t.Fatal("stale task ID was not replaced")
+	}
+	if mapping.DueDate != items[0].EndTime {
+		t.Fatalf("recreated mapping lost the deadline: got %d want %d", mapping.DueDate, items[0].EndTime)
+	}
+	recreated := remote.task(t, mapping.VikunjaTaskID)
+	due, _ := json.Marshal(time.UnixMilli(items[0].EndTime).Format(time.RFC3339))
+	requireVikunjaJSON(t, recreated["due_date"], due)
 }

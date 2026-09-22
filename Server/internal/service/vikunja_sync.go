@@ -147,41 +147,50 @@ func (s *VikunjaSyncService) upsertTask(ctx context.Context, client *VikunjaClie
 	if err == nil {
 		titleChanged := mapping.Title != item.Title
 		dueChanged := item.EndTime > 0 && mapping.DueDate != item.EndTime
-		if !titleChanged && !dueChanged {
+		task, getErr := client.GetTask(ctx, mapping.VikunjaTaskID)
+		if getErr == nil {
+			if !titleChanged && !dueChanged {
+				return nil
+			}
+			var projectID int64
+			if json.Unmarshal(task["project_id"], &projectID) != nil || projectID != settings.ProjectID {
+				return &VikunjaRequestError{method: http.MethodGet, path: fmt.Sprintf("/tasks/%d", mapping.VikunjaTaskID), cause: errors.New("task belongs to another project")}
+			}
+			updates := map[string]interface{}{"last_seen_at": time.Now()}
+			if titleChanged {
+				task["title"], _ = json.Marshal(item.Title)
+				updates["title"] = item.Title
+			}
+			if dueChanged {
+				task["due_date"], _ = json.Marshal(time.UnixMilli(item.EndTime).UTC().Format(time.RFC3339))
+				updates["due_date"] = item.EndTime
+			}
+			if err := client.UpdateTask(ctx, mapping.VikunjaTaskID, task); err != nil {
+				return err
+			}
+			updated := s.db.WithContext(ctx).Model(&mapping).Where(
+				"user_uid = ? AND instance_url = ? AND project_id = ? AND item_key = ?",
+				settings.UserUID, s.baseURL, settings.ProjectID, itemKey,
+			).Updates(updates)
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return errors.New("Vikunja 任务映射已变化")
+			}
+			result.Updated++
 			return nil
 		}
-		task, err := client.GetTask(ctx, mapping.VikunjaTaskID)
-		if err != nil {
-			return err
+		if !isVikunjaNotFound(getErr) {
+			return getErr
 		}
-		var projectID int64
-		if json.Unmarshal(task["project_id"], &projectID) != nil || projectID != settings.ProjectID {
-			return &VikunjaRequestError{method: http.MethodGet, path: fmt.Sprintf("/tasks/%d", mapping.VikunjaTaskID), cause: errors.New("task belongs to another project")}
-		}
-		updates := map[string]interface{}{"last_seen_at": time.Now()}
-		if titleChanged {
-			task["title"], _ = json.Marshal(item.Title)
-			updates["title"] = item.Title
-		}
-		if dueChanged {
-			task["due_date"], _ = json.Marshal(time.UnixMilli(item.EndTime).UTC().Format(time.RFC3339))
-			updates["due_date"] = item.EndTime
-		}
-		if err := client.UpdateTask(ctx, mapping.VikunjaTaskID, task); err != nil {
-			return err
-		}
-		updated := s.db.WithContext(ctx).Model(&mapping).Where(
+		// 远端任务已被删除：清除失效映射后按新建流程重建，保证带上截止日期。
+		if delErr := s.db.WithContext(ctx).Where(
 			"user_uid = ? AND instance_url = ? AND project_id = ? AND item_key = ?",
 			settings.UserUID, s.baseURL, settings.ProjectID, itemKey,
-		).Updates(updates)
-		if updated.Error != nil {
-			return updated.Error
+		).Delete(&model.VikunjaSyncItem{}).Error; delErr != nil {
+			return delErr
 		}
-		if updated.RowsAffected != 1 {
-			return errors.New("Vikunja 任务映射已变化")
-		}
-		result.Updated++
-		return nil
 	}
 
 	labelID, err := s.ensureCourseLabel(ctx, client, item.CourseName, labelCache)
