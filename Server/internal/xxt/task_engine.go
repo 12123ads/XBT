@@ -155,7 +155,7 @@ func (c *Client) getTaskEngineTasksForCourse(cli *http.Client, course learningCo
 		}
 		items = append(items, expanded...)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("task package %s: %w", strVal(pkg["id"]), err))
+			errs = append(errs, fmt.Errorf("task package %s: %w", firstNonEmpty(taskEngineNumericID(pkg["id"]), strVal(pkg["id"])), err))
 		}
 	}
 	return compactLearningItems(items), errors.Join(errs...)
@@ -236,7 +236,7 @@ func (c *Client) expandTaskEnginePackage(cli *http.Client, course learningCourse
 		}
 		items = append(items, taskEnginePlanItem(plan, course, taskID, summary.Title, details))
 		if err != nil {
-			errs = append(errs, fmt.Errorf("task plan %s: %w", strVal(plan["planId"]), err))
+			errs = append(errs, fmt.Errorf("task plan %s: %w", firstNonEmpty(taskEngineNumericID(plan["planId"]), strVal(plan["planId"])), err))
 		}
 	}
 	return items, errors.Join(errs...)
@@ -425,6 +425,13 @@ func taskEngineSummaryItem(pkg map[string]interface{}, course learningCourse, ta
 	}
 }
 
+func taskEngineNumericID(v interface{}) string {
+	if id := int64FromAny(v); id > 0 {
+		return strconv.FormatInt(id, 10)
+	}
+	return ""
+}
+
 func taskEnginePlanItem(plan map[string]interface{}, course learningCourse, taskID, fallbackTitle string, details taskEnginePlanDetails) LearningItem {
 	planType := taskEnginePlanTypeName(plan)
 	finished := taskEnginePlanIsFinished(plan) || details.Finished || isTaskEngineCompletedStudyURL(details.TaskLink)
@@ -457,7 +464,7 @@ func taskEnginePlanItem(plan map[string]interface{}, course learningCourse, task
 		info = formatLearningTime(startTime)
 	}
 	return LearningItem{
-		ID:         fmt.Sprintf("task-engine-%s-plan-%s", taskID, firstNonEmpty(strVal(plan["planId"]), strVal(plan["name"]))),
+		ID:         fmt.Sprintf("task-engine-%s-plan-%s", taskID, firstNonEmpty(taskEngineNumericID(plan["planId"]), strVal(plan["name"]))),
 		Kind:       kind,
 		Type:       planType,
 		Title:      firstNonEmpty(strVal(plan["name"]), fallbackTitle, "未命名任务"),

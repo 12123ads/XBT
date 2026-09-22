@@ -266,3 +266,7 @@ func (c *VikunjaClient) AttachLabel(ctx context.Context, taskID, labelID int64) 
 	path := fmt.Sprintf("/tasks/%d/labels", taskID)
 	return c.do(ctx, http.MethodPut, path, map[string]int64{"label_id": labelID}, nil)
 }
+
+func (c *VikunjaClient) DeleteTask(ctx context.Context, taskID int64) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/tasks/%d", taskID), nil, nil)
+}

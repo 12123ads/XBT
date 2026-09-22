@@ -177,25 +177,25 @@ type VikunjaSettings struct {
 	UserUID          int64      `gorm:"not null;uniqueIndex" json:"user_uid"`
 	BoundInstanceURL string     `gorm:"size:512;not null;default:''" json:"-"`
 	APITokenCipher   string     `gorm:"type:text" json:"-"`
-	ProjectID        int64      `json:"project_id"`
-	ProjectTitle     string     `gorm:"size:255" json:"project_title"`
-	Enabled          bool       `gorm:"not null;default:false" json:"enabled"`
+	ProjectID        int64      `gorm:"not null;default:0" json:"project_id"`
+	ProjectTitle     string     `gorm:"size:255;not null;default:''" json:"project_title"`
+	Enabled          bool       `gorm:"not null;default:false;index:idx_vikunja_settings_enabled" json:"enabled"`
 	LastSyncAt       *time.Time `json:"last_sync_at"`
-	LastSyncMessage  string     `gorm:"size:512" json:"last_sync_message"`
+	LastSyncMessage  string     `gorm:"size:512;not null;default:''" json:"last_sync_message"`
 	CreatedAt        time.Time  `json:"-"`
 	UpdatedAt        time.Time  `json:"-"`
 }
 
 type VikunjaSyncItem struct {
 	ID            uint      `gorm:"primaryKey" json:"-"`
-	UserUID       int64     `gorm:"not null;uniqueIndex:idx_vikunja_scope_item" json:"user_uid"`
+	UserUID       int64     `gorm:"not null;uniqueIndex:idx_vikunja_scope_item;index:idx_vikunja_sync_items_user_uid" json:"user_uid"`
 	ItemKey       string    `gorm:"size:128;not null;uniqueIndex:idx_vikunja_scope_item" json:"item_key"`
 	InstanceURL   string    `gorm:"size:512;not null;default:'';uniqueIndex:idx_vikunja_scope_item" json:"-"`
-	VikunjaTaskID int64     `gorm:"not null" json:"vikunja_task_id"`
+	VikunjaTaskID int64     `gorm:"not null;index:idx_vikunja_sync_items_task_id" json:"vikunja_task_id"`
 	ProjectID     int64     `gorm:"not null;uniqueIndex:idx_vikunja_scope_item" json:"project_id"`
-	Title         string    `gorm:"size:255" json:"title"`
-	DueDate       int64     `json:"due_date"`
-	LastSeenAt    time.Time `json:"last_seen_at"`
+	Title         string    `gorm:"size:255;not null;default:''" json:"title"`
+	DueDate       int64     `gorm:"not null;default:0" json:"due_date"`
+	LastSeenAt    time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"last_seen_at"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
 }

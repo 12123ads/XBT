@@ -73,7 +73,10 @@ const CampusQR = () => {
   }, [owner]);
 
   const loadQR = useCallback(async () => {
-    if (!ownsPage()) return;
+    if (!ownsPage()) {
+      if (mountedRef.current) setIsLoading(false);
+      return;
+    }
     controllerRef.current?.abort();
     const controller = new AbortController();
     const requestId = ++requestIdRef.current;

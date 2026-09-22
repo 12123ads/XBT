@@ -8,9 +8,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
 	"gorm.io/gorm"
 
 	"xbt2/server/internal/config"
@@ -30,7 +30,7 @@ type VikunjaSyncService struct {
 	cc      *CredentialCrypto
 	baseURL string
 	loc     *time.Location
-	mu      sync.Mutex
+	sem     *semaphore.Weighted
 }
 
 func NewVikunjaSyncService(db *gorm.DB, xxtClient learningHomeworkClient, cc *CredentialCrypto, baseURL string) (*VikunjaSyncService, error) {
@@ -42,7 +42,7 @@ func NewVikunjaSyncService(db *gorm.DB, xxtClient learningHomeworkClient, cc *Cr
 	if err != nil {
 		loc = time.FixedZone("CST", 8*3600)
 	}
-	return &VikunjaSyncService{db: db, xxt: xxtClient, cc: cc, baseURL: baseURL, loc: loc}, nil
+	return &VikunjaSyncService{db: db, xxt: xxtClient, cc: cc, baseURL: baseURL, loc: loc, sem: semaphore.NewWeighted(1)}, nil
 }
 
 type VikunjaSyncResult struct {
@@ -54,11 +54,10 @@ type VikunjaSyncResult struct {
 
 // SyncUser 将该账号学习仪表盘中未提交的作业 upsert 到其配置的 Vikunja 项目。
 func (s *VikunjaSyncService) SyncUser(ctx context.Context, uid int64) (result *VikunjaSyncResult, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if err := s.sem.Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
+	defer s.sem.Release(1)
 	if s.baseURL == "" {
 		return nil, ErrVikunjaNotConfigured
 	}
@@ -210,6 +209,13 @@ func (s *VikunjaSyncService) upsertTask(ctx context.Context, client *VikunjaClie
 	if err != nil {
 		return err
 	}
+	if labelID > 0 {
+		if err := client.AttachLabel(ctx, created.ID, labelID); err != nil {
+			// 标签失败会导致课程标签永久丢失；删除刚建的任务，下次同步整体重建。
+			_ = client.DeleteTask(context.WithoutCancel(ctx), created.ID)
+			return err
+		}
+	}
 	mapping = model.VikunjaSyncItem{
 		UserUID:       settings.UserUID,
 		InstanceURL:   s.baseURL,
@@ -222,14 +228,10 @@ func (s *VikunjaSyncService) upsertTask(ctx context.Context, client *VikunjaClie
 	if item.EndTime > 0 {
 		mapping.DueDate = item.EndTime
 	}
-	// 先保存已创建的任务映射；后续标签失败也不能在下次同步重复创建任务。
 	if err := s.db.WithContext(ctx).Create(&mapping).Error; err != nil {
+		// 远端已建但本地映射未落库，删除远端避免下次重复创建。
+		_ = client.DeleteTask(context.WithoutCancel(ctx), created.ID)
 		return err
-	}
-	if labelID > 0 {
-		if err := client.AttachLabel(ctx, created.ID, labelID); err != nil {
-			return err
-		}
 	}
 	result.Created++
 	return nil

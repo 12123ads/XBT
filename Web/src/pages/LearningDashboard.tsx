@@ -140,6 +140,7 @@ const LearningDashboard = () => {
   const challengeIdRef = useRef(0);
   const challengeRef = useRef<CaptchaChallenge | null>(null);
   const settingsCycleIdRef = useRef(0);
+  const ignoredUidRef = useRef(activeUid);
   const [ignored, setIgnored] = useState<Record<string, LearningItem>>(() => {
     const raw = localStorage.getItem(`learning_ignored_${activeUid || 'default'}`);
     if (!raw) return {};
@@ -171,8 +172,9 @@ const LearningDashboard = () => {
   }, [owner]);
 
   useEffect(() => {
-    localStorage.setItem(`learning_ignored_${activeUid || 'default'}`, JSON.stringify(ignored));
-  }, [ignored, activeUid]);
+    if (!ownsPage()) return;
+    localStorage.setItem(`learning_ignored_${ignoredUidRef.current || 'default'}`, JSON.stringify(ignored));
+  }, [ignored, ownsPage]);
 
   const requireCaptcha = useCallback((action: CaptchaAction) => {
     if (!ownsPage()) return;

@@ -38,7 +38,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	database := h.db.WithContext(c.Request.Context())
-	_, allowed, err := h.resolveWhitelist(database, req.Mobile)
+	wlOuter, allowed, err := h.resolveWhitelist(database, req.Mobile)
 	if err != nil {
 		common.Fail(c, 500, err.Error())
 		return
@@ -62,9 +62,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	var user model.User
 	var token string
+	needsLock := wlOuter.ID == 0
 	err = database.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("LOCK TABLE whitelists IN SHARE ROW EXCLUSIVE MODE").Error; err != nil {
-			return err
+		if needsLock {
+			if err := tx.Exec("LOCK TABLE whitelists IN SHARE ROW EXCLUSIVE MODE").Error; err != nil {
+				return err
+			}
 		}
 		wl, allowed, err := h.resolveWhitelist(tx, req.Mobile)
 		if err != nil {

@@ -159,18 +159,21 @@ func newVikunjaSyncFixture(t *testing.T, baseURL string, homework learningHomewo
 }
 
 type vikunjaRemote struct {
-	server  *httptest.Server
-	mu      sync.Mutex
-	nextID  int64
-	tasks   map[int64]map[string]json.RawMessage
-	created map[int64]int
-	updated map[int64]int
-	tokens  []string
+	server      *httptest.Server
+	mu          sync.Mutex
+	nextID      int64
+	nextLabelID int64
+	tasks       map[int64]map[string]json.RawMessage
+	created     map[int64]int
+	updated     map[int64]int
+	deleted     map[int64]int
+	attachFail  bool
+	tokens      []string
 }
 
 func newVikunjaRemote(t *testing.T) *vikunjaRemote {
 	t.Helper()
-	remote := &vikunjaRemote{nextID: 1, tasks: make(map[int64]map[string]json.RawMessage), created: make(map[int64]int), updated: make(map[int64]int)}
+	remote := &vikunjaRemote{nextID: 1, nextLabelID: 1, tasks: make(map[int64]map[string]json.RawMessage), created: make(map[int64]int), updated: make(map[int64]int), deleted: make(map[int64]int)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/v1/projects/{project}/tasks", func(w http.ResponseWriter, r *http.Request) {
 		var task map[string]json.RawMessage
@@ -219,6 +222,34 @@ func newVikunjaRemote(t *testing.T) *vikunjaRemote {
 		remote.updated[id]++
 		_ = json.NewEncoder(w).Encode(task)
 	})
+	mux.HandleFunc("GET /api/v1/labels", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+	})
+	mux.HandleFunc("PUT /api/v1/labels", func(w http.ResponseWriter, r *http.Request) {
+		remote.mu.Lock()
+		id := remote.nextLabelID
+		remote.nextLabelID++
+		remote.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": id, "title": "label"})
+	})
+	mux.HandleFunc("PUT /api/v1/tasks/{task}/labels", func(w http.ResponseWriter, r *http.Request) {
+		remote.mu.Lock()
+		fail := remote.attachFail
+		remote.mu.Unlock()
+		if fail {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("DELETE /api/v1/tasks/{task}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("task"), 10, 64)
+		remote.mu.Lock()
+		delete(remote.tasks, id)
+		remote.deleted[id]++
+		remote.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
 	remote.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		remote.mu.Lock()
 		remote.tokens = append(remote.tokens, r.Header.Get("Authorization"))
@@ -252,6 +283,22 @@ func (r *vikunjaRemote) createdIn(projectID int64) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.created[projectID]
+}
+
+func (r *vikunjaRemote) deletedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	total := 0
+	for _, n := range r.deleted {
+		total += n
+	}
+	return total
+}
+
+func (r *vikunjaRemote) setAttachFail(fail bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attachFail = fail
 }
 
 func requireVikunjaJSON(t *testing.T, actual, expected json.RawMessage) {
@@ -781,4 +828,48 @@ func TestVikunjaSyncRecreatesDeletedRemoteTaskWithDueDate(t *testing.T) {
 	recreated := remote.task(t, mapping.VikunjaTaskID)
 	due, _ := json.Marshal(time.UnixMilli(items[0].EndTime).Format(time.RFC3339))
 	requireVikunjaJSON(t, recreated["due_date"], due)
+}
+
+func TestVikunjaSyncLabelFailureLeavesNoOrphanAndRetries(t *testing.T) {
+	remote := newVikunjaRemote(t)
+	items := []xxt.LearningItem{{ID: "labeled", Title: "作业一", CourseName: "高等数学", EndTime: 1900000000000, Pending: true}}
+	fixture := newVikunjaSyncFixture(t, remote.server.URL, vikunjaHomeworkFunc(func(string, string) ([]xxt.LearningItem, error) {
+		return items, nil
+	}))
+
+	// 首次同步：标签附加失败，创建的远端任务须被删除、映射不落库、计数为零。
+	remote.setAttachFail(true)
+	result, err := fixture.service.SyncUser(context.Background(), 42)
+	if err == nil {
+		t.Fatal("label attach failure must surface as an error")
+	}
+	if result != nil && result.Created != 0 {
+		t.Fatalf("failed create must not be counted: created=%d", result.Created)
+	}
+	if remote.deletedCount() != 1 {
+		t.Fatalf("orphaned remote task was not deleted: deletes=%d", remote.deletedCount())
+	}
+	var count int64
+	if err := fixture.db.Model(&model.VikunjaSyncItem{}).Where("user_uid = ?", 42).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("failed create must not persist a mapping: rows=%d", count)
+	}
+
+	// 第二次同步：标签端点恢复，须恰好新建一个任务。
+	remote.setAttachFail(false)
+	result, err = fixture.service.SyncUser(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("retry after label recovery failed: %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("retry did not create exactly one task: result=%+v", result)
+	}
+	if err := fixture.db.Model(&model.VikunjaSyncItem{}).Where("user_uid = ?", 42).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("retry must persist exactly one mapping: rows=%d", count)
+	}
 }

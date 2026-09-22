@@ -398,3 +398,12 @@ func TestTaskEngineDetailFailurePreservesPlanResults(t *testing.T) {
 	assertLearningIDs(t, out.Homework, "101", "task-engine-30-plan-301")
 	assertLearningIDs(t, out.Exams, "201", "task-engine-30-plan-302")
 }
+
+func TestTaskEnginePlanIDAvoidsScientificNotation(t *testing.T) {
+	// JSON numbers decode to float64; a 7+ digit planId must not become "6.00123456e+08".
+	plan := map[string]interface{}{"planId": float64(600123456), "name": "大号任务", "planType": 4}
+	item := taskEnginePlanItem(plan, learningCourse{CourseID: 10, ClassID: 20}, "30", "", taskEnginePlanDetails{})
+	if item.ID != "task-engine-30-plan-600123456" {
+		t.Fatalf("plan ID = %q, want task-engine-30-plan-600123456", item.ID)
+	}
+}

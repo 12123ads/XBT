@@ -107,7 +107,10 @@ func (c *Client) campusQRRedirect(cli *http.Client) (string, error) {
 }
 
 func (c *Client) campusQRRedirectURL(cli *http.Client, rawURL, referer string) (string, error) {
-	req, _ := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("campus qr redirect build request: %w", err)
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	if referer != "" {
 		req.Header.Set("Referer", referer)
@@ -207,7 +210,10 @@ func (c *Client) campusQRJSON(cli *http.Client, method, rawURL, token string, pa
 		}
 		body = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, rawURL, body)
+	req, err := http.NewRequest(method, rawURL, body)
+	if err != nil {
+		return fmt.Errorf("campus qr request build: %w", err)
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Origin", campusQRPortalURL[:len(campusQRPortalURL)-1])

@@ -398,7 +398,10 @@ func (c *Client) getLearningCourseTasks(cli *http.Client, course learningCourse)
 
 func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learningCourse) ([]LearningItem, error) {
 	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist?fid=0&courseId=%d&classId=%d&showNotStartedActive=0&_=%d", course.CourseID, course.ClassID, time.Now().UnixMilli())
-	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", c.mobileUA)
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -463,7 +466,10 @@ func (c *Client) getLearningActivitiesForCourse(cli *http.Client, course learnin
 }
 
 func (c *Client) getLearningCourses(cli *http.Client) ([]learningCourse, error) {
-	req, _ := http.NewRequest(http.MethodGet, "https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&mcode=", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&mcode=", nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -558,7 +564,10 @@ func (c *Client) getLearningCourses(cli *http.Client) ([]learningCourse, error) 
 }
 
 func (c *Client) getHTML(cli *http.Client, rawURL, ua string) (*html.Node, error) {
-	req, _ := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", ua)
 	resp, err := cli.Do(req)
 	if err != nil {
