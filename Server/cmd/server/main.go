@@ -44,6 +44,10 @@ func main() {
 		authed := api.Group("")
 		authed.Use(middleware.Auth(jwtSvc))
 		{
+			authed.GET("/user/face", authHandler.GetFace)
+			authed.POST("/user/face", authHandler.UploadFace)
+			authed.DELETE("/user/face", authHandler.DeleteFace)
+
 			authed.GET("/courses", courseHandler.List)
 			authed.POST("/courses/sync", courseHandler.Sync)
 			authed.PUT("/courses/selection", courseHandler.UpdateSelection)

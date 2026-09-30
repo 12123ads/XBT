@@ -10,6 +10,7 @@ type User struct {
 	Avatar           string    `gorm:"size:1024" json:"avatar"`
 	CredentialCipher string    `gorm:"type:text;not null" json:"-"`
 	Permission       int       `gorm:"not null;default:1" json:"permission"`
+	FacePhoto        []byte    `gorm:"type:bytea" json:"-"`
 	LastLoginAt      time.Time `json:"-"`
 	CreatedAt        time.Time `json:"-"`
 	UpdatedAt        time.Time `json:"-"`
@@ -52,6 +53,7 @@ type SignActivity struct {
 	SignType     int       `gorm:"not null" json:"sign_type"`
 	IfRefreshEWM bool      `gorm:"not null;default:false" json:"if_refresh_ewm"`
 	IfPhoto      bool      `gorm:"not null;default:false" json:"if_photo"`
+	IfFace       bool      `gorm:"not null;default:false" json:"if_face"`
 	CreatedAt    time.Time `json:"-"`
 	UpdatedAt    time.Time `json:"-"`
 }

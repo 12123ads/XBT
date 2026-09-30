@@ -110,6 +110,29 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		}
 	}
 
+	if ifFace, _ := req.Special["if_face"].(bool); ifFace {
+		if len(target.FacePhoto) == 0 {
+			var fresh model.User
+			if err := s.db.Select("face_photo").Where("uid = ?", req.TargetUID).First(&fresh).Error; err == nil {
+				target.FacePhoto = fresh.FacePhoto
+			}
+		}
+		if len(target.FacePhoto) == 0 {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未设置人脸照片，请先在主页上传"}
+		}
+		objectID, err := s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "人脸照片上传失败：" + err.Error()}
+		}
+		faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: err.Error()}
+		}
+		req.Special["current_face_id"] = faceResult.CurrentFaceID
+		req.Special["face_enc"] = faceResult.FaceEnc
+		req.Special["face_code"] = faceResult.FaceCode
+	}
+
 	result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
 	if err != nil {
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error())}

@@ -8,6 +8,7 @@ import Whitelist from './pages/Whitelist';
 import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
 import FullPhoto from './pages/FullPhoto';
+import FaceCapture from './pages/FaceCapture';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -64,6 +65,7 @@ function App() {
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
               <Route path="/photo-capture" element={<FullPhoto />} />
+              <Route path="/face-capture" element={<FaceCapture />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

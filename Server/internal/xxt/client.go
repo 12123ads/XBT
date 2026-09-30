@@ -75,6 +75,7 @@ type SignDetail struct {
 	SignType     int
 	IfRefreshEWM bool
 	IfPhoto      bool
+	IfFace       bool
 }
 
 type FixedParams struct {
@@ -344,7 +345,7 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 	return out, nil
 }
 
-func (c *Client) GetSignDetail(mobile, password string, activityID int64) (SignDetail, error) {
+func (c *Client) GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (SignDetail, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return SignDetail{}, err
@@ -371,13 +372,55 @@ func (c *Client) GetSignDetail(mobile, password string, activityID int64) (SignD
 	if end == 0 {
 		end = 64060559999000
 	}
+
+	ifFace := boolFromAny(deepFindFirst(payload, "ifFaceCheck", "needFace", "ifFace", "faceCheck", "openCheckFaceFlag"))
+	if !ifFace {
+		ifFace = c.GetFaceFlag(mobile, password, activityID, courseID, classID, uid)
+	}
+
 	return SignDetail{
 		StartTime:    parseTimeMillis(payload["startTime"]),
 		EndTime:      end,
 		SignType:     int(int64FromAny(payload["otherId"])),
 		IfRefreshEWM: boolFromAny(payload["ifRefreshEwm"]),
 		IfPhoto:      boolFromAny(deepFindFirst(payload, "ifphoto", "ifPhoto")),
+		IfFace:       ifFace,
 	}, nil
+}
+
+func (c *Client) GetFaceFlag(mobile, password string, activityID, courseID, classID, uid int64) bool {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return false
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+
+	vals := url.Values{}
+	vals.Set("courseId", strconv.FormatInt(courseID, 10))
+	vals.Set("classId", strconv.FormatInt(classID, 10))
+	vals.Set("activePrimaryId", strconv.FormatInt(activityID, 10))
+	vals.Set("general", "1")
+	vals.Set("sys", "1")
+	vals.Set("ls", "1")
+	vals.Set("appType", "15")
+	vals.Set("uid", strconv.FormatInt(uid, 10))
+	vals.Set("isTeacherViewOpen", "0")
+
+	req, _ := http.NewRequest(http.MethodGet, "https://mobilelearn.chaoxing.com/newsign/preSign?"+vals.Encode(), nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	re := regexp.MustCompile(`openCheckFaceFlag\s*=\s*["']?(\d+)["']?`)
+	if m := re.FindSubmatch(body); len(m) == 2 {
+		return string(m[1]) == "1"
+	}
+	return false
 }
 
 func (c *Client) PreSign(mobile, password string, fixed FixedParams, code, enc string) error {
@@ -531,6 +574,143 @@ func (c *Client) UploadPanFile(mobile, password, filename, contentType string, d
 	return objectID, nil
 }
 
+type FaceCheckResult struct {
+	CurrentFaceID string
+	FaceEnc       string
+	FaceCode      string
+}
+
+func (c *Client) UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("face photo is empty")
+	}
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	token, err := c.GetPanUploadToken(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(filename) == "" {
+		filename = "face.jpg"
+	}
+	filename = sanitizeMultipartFilename(filename)
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	partHeader := textproto.MIMEHeader{}
+	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeMultipartFilename(filename)))
+	partHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(partHeader)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := writer.WriteField("puid", strconv.FormatInt(s.UID, 10)); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	cli := *c.http
+	cli.Jar = s.Jar
+	uploadParams := url.Values{}
+	uploadParams.Set("_from", "mobilelearn")
+	uploadParams.Set("uploadtype", "face_temp")
+	uploadParams.Set("_token", token)
+	uploadURL := "https://pan-yz.chaoxing.com/upload?" + uploadParams.Encode()
+	req, _ := http.NewRequest(http.MethodPost, uploadURL, &body)
+	req.Header.Set("User-Agent", c.mobileUA)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := cli.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("face_temp upload failed: http %d %s", resp.StatusCode, truncateForLog(string(respBody), 200))
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("face_temp upload decode failed: %w", err)
+	}
+	objectID := strings.TrimSpace(strVal(deepFindFirst(payload, "objectId", "objectid")))
+	if objectID == "" {
+		return "", fmt.Errorf("face_temp upload objectId missing: %s", truncateForLog(string(respBody), 200))
+	}
+	return objectID, nil
+}
+
+func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceObjectID string) (FaceCheckResult, error) {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return FaceCheckResult{}, err
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+
+	cxtime := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	faceResult := map[string]interface{}{
+		"currentFaceId":       faceObjectID,
+		"LiveDetectionStatus": 1,
+		"collectStatus":       1,
+		"cxtime":              cxtime,
+	}
+	faceResultJSON, err := json.Marshal(faceResult)
+	if err != nil {
+		return FaceCheckResult{}, fmt.Errorf("marshal faceResult failed: %w", err)
+	}
+
+	params := url.Values{}
+	params.Set("DB_STRATEGY", "PRIMARY_KEY")
+	params.Set("STRATEGY_PARA", "activeId")
+	params.Set("activeId", strconv.FormatInt(activeID, 10))
+	params.Set("faceResult", string(faceResultJSON))
+
+	reqURL := "https://mobilelearn.chaoxing.com/pptSign/check-face-result?" + params.Encode()
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return FaceCheckResult{}, fmt.Errorf("check-face-result request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return FaceCheckResult{}, fmt.Errorf("check-face-result decode failed: %w", err)
+	}
+
+	faceEnc := strings.TrimSpace(strVal(deepFindFirst(payload, "enc", "faceEnc", "face_enc")))
+	if faceEnc == "" {
+		log.Printf("check-face-result no enc activeID=%d faceObjectID=%s response=%s", activeID, faceObjectID, truncateForLog(string(respBody), 500))
+		msg := strVal(firstNonNil(payload["errorMsg"], payload["msg"], payload["message"], payload["code"]))
+		if msg == "" {
+			msg = truncateForLog(string(respBody), 200)
+		}
+		return FaceCheckResult{}, fmt.Errorf("人脸识别失败: %s", msg)
+	}
+
+	faceCode := strings.TrimSpace(strVal(payload["code"]))
+
+	return FaceCheckResult{
+		CurrentFaceID: faceObjectID,
+		FaceEnc:       faceEnc,
+		FaceCode:      faceCode,
+	}, nil
+}
+
+
 func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID string) (string, error) {
 	objectID = strings.TrimSpace(objectID)
 	if objectID == "" {
@@ -560,7 +740,18 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		params.Set("latitude", "-1")
 		params.Set("longitude", "-1")
 	}
-	// 先空 validate 发起一次请求；仅在学习通明确要求时再走验证码。
+	if faceID := strings.TrimSpace(strVal(special["current_face_id"])); faceID != "" {
+		params.Set("currentFaceId", faceID)
+		params.Set("ifCFP", "0")
+		params.Set("vpProbability", "-1")
+		params.Set("vpStrategy", "")
+	}
+	if faceEnc := strings.TrimSpace(strVal(special["face_enc"])); faceEnc != "" {
+		params.Set("faceEnc", faceEnc)
+	}
+	if faceCode := strings.TrimSpace(strVal(special["face_code"])); faceCode != "" {
+		params.Set("faceCode", faceCode)
+	}
 	params.Set("validate", "")
 
 	switch signType {

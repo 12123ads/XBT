@@ -41,6 +41,7 @@ export interface SignActivity {
   sign_type: number;
   if_refresh_ewm: boolean;
   if_photo: boolean;
+  if_face: boolean;
   record_source_name: string;
   record_source: number;
   record_sign_time: number;
