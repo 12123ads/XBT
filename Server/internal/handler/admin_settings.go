@@ -63,12 +63,22 @@ func (h *AdminSettingsHandler) Update(c *gin.Context) {
 		common.Fail(c, 400, err.Error())
 		return
 	}
+	current, err := h.settings.Settings()
+	if err != nil {
+		common.Fail(c, 500, "query settings failed")
+		return
+	}
+	contributionsEnabled := current.ContributionsEnabled
+	if req.ContributionsEnabled != nil {
+		contributionsEnabled = *req.ContributionsEnabled
+	}
 
 	settings, err := h.settings.Update(service.RuntimeSettings{
 		CourseSignWebhookURL:  courseWebhook,
 		QMXAutoSignWebhookURL: qmxWebhook,
 		QMXLocationPresets:    presets,
 		CourseLocationPresets: coursePresets,
+		ContributionsEnabled:  contributionsEnabled,
 	})
 	if err != nil {
 		common.Fail(c, 500, "save settings failed")
@@ -94,7 +104,7 @@ func normalizeAdminWebhookURL(raw, field string) (string, error) {
 
 func normalizeAdminQMXLocationPresets(reqs []dto.AdminQMXLocationPresetRequest) ([]config.QMXLocationPreset, error) {
 	if len(reqs) > maxAdminQMXLocationPresetCount {
-		return nil, fmt.Errorf("too many QMX location presets")
+		return nil, fmt.Errorf("宿舍在寝签到定位点过多")
 	}
 
 	presets := make([]config.QMXLocationPreset, 0, len(reqs))

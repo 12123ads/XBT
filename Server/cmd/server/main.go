@@ -80,6 +80,7 @@ func main() {
 			authed.POST("/vikunja/test", vikunjaHandler.TestConnection)
 			authed.POST("/vikunja/sync", vikunjaHandler.SyncNow)
 
+			authed.GET("/features", signHandler.Features)
 			authed.GET("/sign/activities", signHandler.Activities)
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)

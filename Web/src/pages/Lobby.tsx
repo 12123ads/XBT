@@ -31,7 +31,7 @@ import axios from 'axios';
 import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { getChineseStringByDatetime } from '../utils/datetime';
-import type { ApiResponse, CourseActivities } from '../types';
+import type { ApiResponse, CourseActivities, FeatureSettings } from '../types';
 import PullToRefresh from '../components/PullToRefresh';
 
 type PendingActivityEntry = {
@@ -125,6 +125,7 @@ const Lobby = () => {
   const [now, setNow] = useState(Date.now());
   const [pendingEntry, setPendingEntry] = useState<PendingActivityEntry | null>(null);
 
+  const [contributionsEnabled, setContributionsEnabled] = useState(true);
   const [showFacePanel, setShowFacePanel] = useState(false);
   const [hasFace, setHasFace] = useState<boolean | null>(null);
   const [faceDataUrl, setFaceDataUrl] = useState<string>('');
@@ -181,6 +182,19 @@ const Lobby = () => {
     }
   }, []);
 
+  const fetchFeatures = useCallback(async () => {
+    if (!owner) return;
+    try {
+      const res = await client.get<ApiResponse<FeatureSettings>>('/features', withAccount(owner));
+      const account = useAuthStore.getState();
+      if (account.activeUid === owner.uid && account.token === owner.token) {
+        setContributionsEnabled(res.data.data?.contributions_enabled !== false);
+      }
+    } catch {
+      // Keep the previous value when the feature endpoint is unavailable.
+    }
+  }, [owner]);
+
   const fetchFaceImage = useCallback(async () => {
     setIsFaceLoading(true);
     try {
@@ -232,6 +246,7 @@ const Lobby = () => {
     mountedRef.current = true;
     void fetchActivities();
     void fetchFaceFlag();
+    void fetchFeatures();
     return () => {
       mountedRef.current = false;
       requestIdRef.current += 1;
@@ -239,7 +254,7 @@ const Lobby = () => {
       abortControllerRef.current = null;
       inFlightRef.current = false;
     };
-  }, [fetchActivities, fetchFaceFlag]);
+  }, [fetchActivities, fetchFaceFlag, fetchFeatures]);
 
   const toggleCourse = (courseId: number, classId: number) => {
     const key = `${courseId}-${classId}`;
@@ -322,14 +337,16 @@ const Lobby = () => {
         </div>
         <div className="min-w-0 overflow-x-auto overscroll-x-contain [touch-action:pan-x] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="flex w-max items-center gap-2 pr-1">
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => navigate('/contributions')}
-              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="贡献榜"
-            >
-              <Trophy size={20} />
-            </motion.button>
+            {contributionsEnabled && (
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => navigate('/contributions')}
+                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
+                title="贡献榜"
+              >
+                <Trophy size={20} />
+              </motion.button>
+            )}
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/learning')}
@@ -342,7 +359,7 @@ const Lobby = () => {
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/room-check')}
               className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="查寝定位打卡"
+              title="宿舍在寝签到"
             >
               <Building2 size={20} />
             </motion.button>

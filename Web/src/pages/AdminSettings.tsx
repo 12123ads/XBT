@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bell, BookOpen, Loader2, MapPin, Plus, Save, Settings2, Trash2 } from 'lucide-react';
+import { Bell, BookOpen, Loader2, MapPin, Plus, Save, Settings2, Trash2, Trophy } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminShell from '../components/admin/AdminShell';
 import client from '../api/client';
@@ -11,6 +11,7 @@ const emptySettings: AdminRuntimeSettings = {
   qmx_auto_sign_webhook_url: '',
   qmx_location_presets: [],
   course_location_presets: [],
+  contributions_enabled: true,
 };
 
 const newQMXPreset = (): QMXLocationPreset => ({
@@ -190,7 +191,7 @@ const AdminSettings = () => {
                   <p className="mt-1 text-sm font-black">{settings.course_sign_webhook_url ? '已配置' : '关闭'}</p>
                 </div>
                 <div className="rounded-2xl bg-white/10 p-3">
-                  <p className="text-[10px] font-bold text-slate-400">QMX 推送</p>
+                  <p className="text-[10px] font-bold text-slate-400">在寝签到推送</p>
                   <p className="mt-1 text-sm font-black">{settings.qmx_auto_sign_webhook_url ? '已配置' : '关闭'}</p>
                 </div>
                 <div className="rounded-2xl bg-white/10 p-3">
@@ -198,10 +199,35 @@ const AdminSettings = () => {
                   <p className="mt-1 text-sm font-black">{settings.course_location_presets.length}</p>
                 </div>
                 <div className="rounded-2xl bg-white/10 p-3">
-                  <p className="text-[10px] font-bold text-slate-400">QMX 定位点</p>
+                  <p className="text-[10px] font-bold text-slate-400">在寝签到定位点</p>
                   <p className="mt-1 text-sm font-black">{settings.qmx_location_presets.length}</p>
                 </div>
               </div>
+            </section>
+
+            <section className="rounded-[1.75rem] bg-white border border-slate-100 shadow-sm p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Trophy size={18} className="text-amber-500 shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-900">功能开关</h3>
+                    <p className="text-[10px] text-slate-400 font-medium">控制主页是否展示贡献榜入口</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.contributions_enabled}
+                  onClick={() => setSettings((current) => ({ ...current, contributions_enabled: !current.contributions_enabled }))}
+                  className={`relative h-7 w-12 rounded-full transition-colors shrink-0 ${settings.contributions_enabled ? 'bg-blue-600' : 'bg-slate-200'}`}
+                  title={settings.contributions_enabled ? '关闭贡献榜' : '开启贡献榜'}
+                >
+                  <span className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${settings.contributions_enabled ? 'translate-x-5' : ''}`} />
+                </button>
+              </div>
+              <p className="mt-3 text-xs text-slate-400 font-medium leading-relaxed">
+                关闭后主页隐藏贡献榜入口，贡献榜接口同时拒绝访问。
+              </p>
             </section>
 
             <section className="rounded-[1.75rem] bg-white border border-slate-100 shadow-sm p-4">
@@ -222,7 +248,7 @@ const AdminSettings = () => {
                   />
                 </label>
                 <label className="block">
-                  <span className="text-xs font-bold text-slate-500">QMX 自动签到 webhook</span>
+                  <span className="text-xs font-bold text-slate-500">宿舍在寝签到 webhook</span>
                   <input
                     type="url"
                     value={settings.qmx_auto_sign_webhook_url}
@@ -329,7 +355,7 @@ const AdminSettings = () => {
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <MapPin size={18} className="text-cyan-600" />
-                  <h3 className="font-black text-slate-900">QMX 预设定位点</h3>
+                  <h3 className="font-black text-slate-900">宿舍在寝签到预设定位点</h3>
                 </div>
                 <button
                   type="button"
@@ -343,7 +369,7 @@ const AdminSettings = () => {
 
               {settings.qmx_location_presets.length === 0 ? (
                 <div className="rounded-2xl bg-slate-50 py-10 text-center text-sm font-semibold text-slate-400">
-                  暂无 QMX 预设定位点
+                  暂无宿舍在寝签到预设定位点
                 </div>
               ) : (
                 <div className="space-y-3">

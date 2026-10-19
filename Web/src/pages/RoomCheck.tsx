@@ -106,7 +106,7 @@ const RoomCheck = () => {
       const response = await client.get<ApiResponse<OwnQMXAutoSignSettings>>('/qmx/auto-sign/settings');
       setSettings(response.data.data);
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '获取 QMX 自动签到配置失败'));
+      toast.error(getErrorMessage(error, '获取宿舍在寝签到配置失败'));
     } finally {
       setIsLoading(false);
     }
@@ -159,7 +159,7 @@ const RoomCheck = () => {
     if (!settings?.config) return;
     const nextEnabled = !settings.config.enabled;
     if (nextEnabled && !hasSavedLocation(settings.config)) {
-      toast.error('请先选择 QMX 定位点');
+      toast.error('请先选择宿舍在寝签到定位点');
       return;
     }
 
@@ -215,9 +215,9 @@ const RoomCheck = () => {
       });
       setSettings((current) => (current ? { ...current, config: response.data.data } : current));
       setIsPickerOpen(false);
-      toast.success('已保存 QMX 定位点');
+      toast.success('已保存宿舍在寝签到定位点');
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '保存 QMX 定位点失败'));
+      toast.error(getErrorMessage(error, '保存宿舍在寝签到定位点失败'));
     } finally {
       setIsSavingLocationKey(null);
     }
@@ -225,7 +225,7 @@ const RoomCheck = () => {
 
   const handleRunNow = async () => {
     if (!canRun) {
-      toast.error('请先选择 QMX 定位点');
+      toast.error('请先选择宿舍在寝签到定位点');
       return;
     }
 
@@ -235,9 +235,9 @@ const RoomCheck = () => {
       const record = response.data.data;
       setSettings((current) => (current ? { ...current, last_record: record } : current));
       if (record.success) {
-        toast.success(record.message || 'QMX 签到成功');
+        toast.success(record.message || '宿舍在寝签到成功');
       } else {
-        toast.error(record.message || 'QMX 返回未成功');
+        toast.error(record.message || '宿舍在寝签到未成功');
       }
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, '立即执行失败'));
@@ -291,8 +291,8 @@ const RoomCheck = () => {
           <ArrowLeft size={20} />
         </motion.button>
         <div className="min-w-0">
-          <h1 className="font-black text-slate-900">QMX 自动签到</h1>
-          <p className="text-xs text-slate-500">个人查寝签到配置</p>
+          <h1 className="font-black text-slate-900">宿舍在寝签到</h1>
+          <p className="text-xs text-slate-500">个人宿舍在寝签到配置</p>
         </div>
       </div>
 
@@ -313,8 +313,8 @@ const RoomCheck = () => {
                       <ShieldCheck size={22} />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-xs font-black text-cyan-200 uppercase tracking-[0.18em]">QMX Scheduler</p>
-                      <h2 className="mt-1 text-xl font-black truncate">晚上十点自动查寝</h2>
+                      <p className="text-xs font-black text-cyan-200 uppercase tracking-[0.18em]">DORM CHECK-IN</p>
+                      <h2 className="mt-1 text-xl font-black truncate">晚上十点自动在寝签到</h2>
                     </div>
                   </div>
                   <button
@@ -455,7 +455,7 @@ const RoomCheck = () => {
             >
               <div className="w-12 h-1.5 rounded-full bg-slate-200 mx-auto mb-5 shrink-0" />
               <div className="flex items-center justify-between mb-5 shrink-0">
-                <h3 className="text-lg font-black text-slate-900">选择 QMX 定位点</h3>
+                <h3 className="text-lg font-black text-slate-900">选择宿舍在寝签到定位点</h3>
                 <button
                   type="button"
                   onClick={loadPreviewLocations}

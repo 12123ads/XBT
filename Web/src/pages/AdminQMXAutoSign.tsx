@@ -64,7 +64,7 @@ const AdminQMXAutoSign = () => {
       const response = await client.get<ApiResponse<AdminQMXAutoSignOverview>>('/admin/qmx-auto-sign');
       setOverview(response.data.data);
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '获取 QMX 自动签到配置失败'));
+      toast.error(getErrorMessage(error, '获取宿舍在寝签到配置失败'));
     } finally {
       setIsLoading(false);
     }
@@ -81,7 +81,7 @@ const AdminQMXAutoSign = () => {
       setTotal(data.total || 0);
       setTotalPages(data.total_pages || 0);
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '获取 QMX 自动签到记录失败'));
+      toast.error(getErrorMessage(error, '获取宿舍在寝签到记录失败'));
     } finally {
       setIsLoadingRecords(false);
     }
@@ -105,7 +105,7 @@ const AdminQMXAutoSign = () => {
     setIsSavingSettings(true);
     try {
       await client.put('/admin/qmx-auto-sign/settings', { enabled: nextEnabled });
-      toast.success(nextEnabled ? '已开启 QMX 定时签到' : '已关闭 QMX 定时签到');
+      toast.success(nextEnabled ? '已开启宿舍在寝签到定时任务' : '已关闭宿舍在寝签到定时任务');
       await loadOverview();
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, '更新全局开关失败'));
@@ -120,7 +120,7 @@ const AdminQMXAutoSign = () => {
       const response = await client.post<ApiResponse<QMXRoomCheckPreview>>(`/admin/qmx-auto-sign/accounts/${account.uid}/locations/preview`);
       setPicker({ account, preview: response.data.data });
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '读取 QMX 定位点失败'));
+      toast.error(getErrorMessage(error, '读取宿舍在寝签到定位点失败'));
     } finally {
       setPreviewingUid(null);
     }
@@ -140,11 +140,11 @@ const AdminQMXAutoSign = () => {
           range: location.range,
         },
       });
-      toast.success('已保存 QMX 定位点');
+      toast.success('已保存宿舍在寝签到定位点');
       setPicker(null);
       await loadOverview();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '保存 QMX 定位点失败'));
+      toast.error(getErrorMessage(error, '保存宿舍在寝签到定位点失败'));
     } finally {
       setBusyUid(null);
     }
@@ -153,7 +153,7 @@ const AdminQMXAutoSign = () => {
   const handleToggleAccount = async (account: AdminQMXAutoSignAccount) => {
     const nextEnabled = !account.config.enabled;
     if (nextEnabled && !account.config.location_name) {
-      toast.error('请先选择 QMX 定位点');
+      toast.error('请先选择宿舍在寝签到定位点');
       return;
     }
 
@@ -174,12 +174,12 @@ const AdminQMXAutoSign = () => {
     try {
       const response = await client.post<ApiResponse<AdminQMXAutoSignRecord>>(`/admin/qmx-auto-sign/accounts/${account.uid}/run`);
       if (response.data.data.success) {
-        toast.success(response.data.data.message || 'QMX 签到成功');
+        toast.success(response.data.data.message || '宿舍在寝签到成功');
       } else {
-        toast.error(response.data.data.message || 'QMX 返回未成功');
+        toast.error(response.data.data.message || '宿舍在寝签到未成功');
       }
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'QMX 立即执行失败'));
+      toast.error(getErrorMessage(error, '宿舍在寝签到立即执行失败'));
     } finally {
       setBusyUid(null);
       await Promise.all([loadOverview(), loadRecords(page)]);
@@ -191,8 +191,8 @@ const AdminQMXAutoSign = () => {
 
   return (
     <AdminShell
-      title="QMX 自动签到"
-      subtitle="每天北京时间 22:00 自动查寝"
+      title="宿舍在寝签到"
+      subtitle="每天北京时间 22:00 自动在寝签到"
       action={(
         <button
           onClick={refreshAll}
@@ -206,8 +206,8 @@ const AdminQMXAutoSign = () => {
       <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(16px+var(--sab))] space-y-4 custom-scrollbar">
         <section className="rounded-[2rem] bg-slate-950 p-5 text-white shadow-xl shadow-slate-200 overflow-hidden relative">
           <AlarmClock size={84} className="absolute -right-5 -bottom-5 text-white/10" />
-          <p className="text-xs font-black text-cyan-200 uppercase tracking-[0.2em]">QMX Scheduler</p>
-          <h3 className="mt-2 text-2xl font-black">晚上十点，自动完成查寝签到</h3>
+          <p className="text-xs font-black text-cyan-200 uppercase tracking-[0.2em]">DORM CHECK-IN</p>
+          <h3 className="mt-2 text-2xl font-black">晚上十点，自动完成宿舍在寝签到</h3>
           <p className="mt-3 text-sm leading-relaxed text-slate-300">
             全局开关控制每天 22:00 的定时任务；单账号开关和定位点在下方分别配置。
           </p>
@@ -289,7 +289,7 @@ const AdminQMXAutoSign = () => {
                           <p className="mt-0.5 text-[11px] text-slate-400">
                             {hasLocation
                               ? `${formatCoordinate(account.config.longitude)}, ${formatCoordinate(account.config.latitude)} · 范围 ${account.config.range}m`
-                              : '开启前必须先读取并选择 QMX 返回的允许定位点'}
+                              : '开启前必须先读取并选择宿舍在寝签到返回的允许定位点'}
                           </p>
                         </div>
                       </div>
@@ -407,10 +407,10 @@ const AdminQMXAutoSign = () => {
 
       <AnimatePresence>
         {picker && (
-          <AdminModal title="选择 QMX 定位点" onClose={() => setPicker(null)}>
+          <AdminModal title="选择宿舍在寝签到定位点" onClose={() => setPicker(null)}>
             <div className="space-y-3">
               <div className="rounded-2xl bg-slate-50 border border-slate-100 p-3">
-                <p className="text-sm font-black text-slate-900">{picker.preview.batch_name || '当前查寝批次'}</p>
+                <p className="text-sm font-black text-slate-900">{picker.preview.batch_name || '当前在寝签到批次'}</p>
                 <p className="mt-1 text-xs text-slate-500">
                   {picker.preview.check_date} {picker.preview.start_time}-{picker.preview.end_time}
                 </p>

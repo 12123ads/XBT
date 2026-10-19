@@ -25,7 +25,7 @@ activity_list_limit: 5
 # 课程签到成功企业微信群机器人 webhook（留空则不推送）
 course_sign_webhook_url: ""
 
-# QMX 自动签到结果企业微信群机器人 webhook（留空则不推送）
+# 宿舍在寝签到结果企业微信群机器人 webhook（留空则不推送）
 qmx_auto_sign_webhook_url: ""
 
 # 全站唯一 Vikunja 实例地址；留空禁用。用户只能配置自己的 Token 和项目。
@@ -50,7 +50,7 @@ course_location_presets:
     lat: "35.462135"
     description: "中国山东省日照市东港区秦楼街道"
 
-# QMX 查寝预设坐标（在线获取不可用时使用）
+# 宿舍在寝签到预设坐标（在线获取不可用时使用）
 qmx_location_presets:
   - name: "山东外国语职业技术大学-一号学生宿舍楼"
     lng: 119.54337851097671

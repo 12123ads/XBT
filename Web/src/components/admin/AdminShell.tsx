@@ -7,10 +7,9 @@ type AdminShellProps = {
   subtitle: string;
   children: ReactNode;
   action?: ReactNode;
-  backTo?: string;
 };
 
-const AdminShell = ({ title, subtitle, children, action, backTo = '/admin/panel' }: AdminShellProps) => {
+const AdminShell = ({ title, subtitle, children, action }: AdminShellProps) => {
   const navigate = useNavigate();
 
   return (
@@ -18,7 +17,7 @@ const AdminShell = ({ title, subtitle, children, action, backTo = '/admin/panel'
       <div className="bg-white border-b border-slate-100 px-4 h-[calc(80px+var(--sat))] pt-[var(--sat)] flex items-center justify-between shrink-0">
         <div className="flex items-center min-w-0">
           <button
-            onClick={() => navigate(backTo)}
+            onClick={() => navigate('/')}
             className="p-2 -ml-2 text-slate-600 hover:bg-slate-50 rounded-lg"
           >
             <ChevronLeft size={24} />

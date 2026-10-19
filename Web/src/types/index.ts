@@ -384,11 +384,16 @@ export interface CourseLocationPreset {
   description: string;
 }
 
+export interface FeatureSettings {
+  contributions_enabled: boolean;
+}
+
 export interface AdminRuntimeSettings {
   course_sign_webhook_url: string;
   qmx_auto_sign_webhook_url: string;
   qmx_location_presets: QMXLocationPreset[];
   course_location_presets: CourseLocationPreset[];
+  contributions_enabled: boolean;
 }
 
 export interface OwnQMXAutoSignConfig {

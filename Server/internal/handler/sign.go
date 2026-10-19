@@ -493,7 +493,25 @@ func (h *SignHandler) Check(c *gin.Context) {
 	common.Success(c, gin.H{"items": items})
 }
 
+func (h *SignHandler) Features(c *gin.Context) {
+	settings, err := h.settings.Settings()
+	if err != nil {
+		common.Fail(c, 500, "query features failed")
+		return
+	}
+	common.Success(c, gin.H{"contributions_enabled": settings.ContributionsEnabled})
+}
+
 func (h *SignHandler) Contributions(c *gin.Context) {
+	settings, err := h.settings.Settings()
+	if err != nil {
+		common.Fail(c, 500, "query settings failed")
+		return
+	}
+	if !settings.ContributionsEnabled {
+		common.Fail(c, 403, "贡献榜未开启")
+		return
+	}
 	uid := common.GetUserUID(c)
 	board, err := h.signService.ClassContributions(uid)
 	if err != nil {

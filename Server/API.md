@@ -476,6 +476,21 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 说明：签到时若活动 `if_face=true`，后端会为目标账号上传该照片并换取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。
 
+### 5.8 功能开关
+- Method: `GET`
+- Path: `/api/features`
+- Auth: 是
+
+响应体 `data`:
+
+```json
+{
+  "contributions_enabled": true
+}
+```
+
+说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。
+
 ---
 
 ## 6. 白名单管理接口（管理员）
@@ -835,9 +850,9 @@ DELETE /api/admin/whitelist/users/12
 - 同一 `activity_id/course_id/class_id/sign_type` 会合并为一条记录，`target_count` 表示本次合并后的目标人数。
 - 历史旧记录可能缺少课程或活动快照，接口会返回 `未知课程` 或 `未知活动`。
 
-### 6.8 QMX 自动签到（管理员）
+### 6.8 宿舍在寝签到（管理员）
 
-QMX 自动签到用于每天北京时间 `22:00` 自动执行查寝定位签到。它独立于学习通课程签到记录，不写入 `sign_records`。
+宿舍在寝签到用于每天北京时间 `22:00` 自动执行在寝定位签到。它独立于学习通课程签到记录，不写入 `sign_records`。
 
 #### 6.8.1 获取自动签到总览
 - Method: `GET`
@@ -859,12 +874,12 @@ QMX 自动签到用于每天北京时间 `22:00` 自动执行查寝定位签到�
 }
 ```
 
-#### 6.8.3 读取账号 QMX 定位点
+#### 6.8.3 读取账号宿舍在寝签到定位点
 - Method: `POST`
 - Path: `/api/admin/qmx-auto-sign/accounts/:uid/locations/preview`
 - Auth: 是（管理员）
 
-说明：后端使用该账号保存的学习通凭据换取 QMX 凭据，并返回当前查寝批次和允许定位点。
+说明：后端使用该账号保存的学习通凭据换取宿舍在寝签到凭据，并返回当前在寝签到批次和允许定位点。
 
 #### 6.8.4 更新账号自动签到配置
 - Method: `PUT`
@@ -886,7 +901,7 @@ QMX 自动签到用于每天北京时间 `22:00` 自动执行查寝定位签到�
 }
 ```
 
-说明：开启单账号自动签到前必须已选择定位点。定时执行时优先按 `location_name` 匹配当前 QMX 定位点，找不到再按 `location_index` 兜底。
+说明：开启单账号自动签到前必须已选择定位点。定时执行时优先按 `location_name` 匹配当前宿舍在寝签到定位点，找不到再按 `location_index` 兜底。
 
 #### 6.8.5 单账号立即执行
 - Method: `POST`
@@ -905,7 +920,7 @@ QMX 自动签到用于每天北京时间 `22:00` 自动执行查寝定位签到�
   - `user_uid`: 可选，按账号过滤
   - `trigger`: 可选，`scheduled` 或 `manual`
 
-记录包含账号、触发方式、成功状态、QMX 返回码/消息、批次、定位点和执行时间。
+记录包含账号、触发方式、成功状态、宿舍在寝签到返回码/消息、批次、定位点和执行时间。
 
 ---
 

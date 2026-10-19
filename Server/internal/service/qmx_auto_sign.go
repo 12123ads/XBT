@@ -129,7 +129,7 @@ func (s *QMXAutoSignService) StartScheduler(ctx context.Context) {
 			if wait < 0 {
 				wait = 0
 			}
-			log.Printf("QMX auto sign next run at %s", next.Format(time.RFC3339))
+			log.Printf("dorm check-in next run at %s", next.Format(time.RFC3339))
 			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
@@ -137,7 +137,7 @@ func (s *QMXAutoSignService) StartScheduler(ctx context.Context) {
 				return
 			case <-timer.C:
 				if err := s.RunScheduled(ctx); err != nil {
-					log.Printf("QMX auto sign scheduled run failed: %v", err)
+					log.Printf("dorm check-in scheduled run failed: %v", err)
 				}
 			}
 		}
@@ -150,7 +150,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		return err
 	}
 	if !setting.Enabled {
-		log.Printf("QMX auto sign skipped: global switch is disabled")
+		log.Printf("dorm check-in skipped: global switch is disabled")
 		return nil
 	}
 
@@ -162,7 +162,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		return err
 	}
 	if len(accounts) == 0 {
-		log.Printf("QMX auto sign skipped: no enabled accounts")
+		log.Printf("dorm check-in skipped: no enabled accounts")
 		return nil
 	}
 
@@ -182,7 +182,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			delay := time.Duration(rand.Intn(300)) * time.Second
-			log.Printf("QMX auto sign account %d waiting %v", uid, delay)
+			log.Printf("dorm check-in account %d waiting %v", uid, delay)
 			select {
 			case <-ctx.Done():
 				return
@@ -190,11 +190,11 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 			}
 			exists, err := s.qmxAutoSignRecordExists(runID, uid)
 			if err != nil {
-				log.Printf("QMX auto sign account %d skipped: query scheduled record failed: %v", uid, err)
+				log.Printf("dorm check-in account %d skipped: query scheduled record failed: %v", uid, err)
 				return
 			}
 			if exists {
-				log.Printf("QMX auto sign account %d skipped: scheduled record already exists for %s", uid, runID)
+				log.Printf("dorm check-in account %d skipped: scheduled record already exists for %s", uid, runID)
 				return
 			}
 			record, err := s.runAccount(uid, QMXAutoSignTriggerScheduled, true, runID)
@@ -204,13 +204,13 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 				mu.Unlock()
 			}
 			if err != nil {
-				log.Printf("QMX auto sign account %d failed: %v", uid, err)
+				log.Printf("dorm check-in account %d failed: %v", uid, err)
 			}
 		}(account.UserUID)
 	}
 	wg.Wait()
 	if savedRecords == 0 {
-		log.Printf("QMX auto sign scheduled run %s saved no new records", runID)
+		log.Printf("dorm check-in scheduled run %s saved no new records", runID)
 	}
 	s.notifyQMXAutoSignScheduledRun(runID)
 	return nil
@@ -281,15 +281,15 @@ func (s *QMXAutoSignService) configuredAccount(uid int64, requireEnabled bool) (
 	var account model.QMXAutoSignAccount
 	if err := s.db.Where("user_uid = ?", uid).Take(&account).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return account, errors.New("QMX auto sign is not configured for this account")
+			return account, errors.New("该账号未配置宿舍在寝签到")
 		}
 		return account, err
 	}
 	if requireEnabled && !account.Enabled {
-		return account, errors.New("QMX auto sign is disabled for this account")
+		return account, errors.New("该账号未开启宿舍在寝签到")
 	}
 	if !hasQMXAutoSignLocation(account) {
-		return account, errors.New("QMX auto sign location is not configured")
+		return account, errors.New("未配置宿舍在寝签到定位点")
 	}
 	return account, nil
 }
@@ -327,13 +327,13 @@ func (s *QMXAutoSignService) saveResultRecord(uid int64, trigger, runID string, 
 		message = runErr.Error()
 	}
 	if len(result.Unsupported) > 0 {
-		message = "unsupported QMX room check requirements: " + strings.Join(result.Unsupported, ", ")
+		message = "宿舍在寝签到要求暂不支持: " + strings.Join(result.Unsupported, ", ")
 	}
 	if message == "" {
 		if result.Success {
 			message = "success"
 		} else {
-			message = "QMX returned unsuccessful response"
+			message = "宿舍在寝签到返回未成功"
 		}
 	}
 
@@ -386,17 +386,17 @@ func (s *QMXAutoSignService) notifyQMXAutoSignScheduledRun(runID string) {
 	go func() {
 		notified, err := s.qmxAutoSignRunAlreadyNotified(runID)
 		if err != nil {
-			log.Printf("QMX auto sign webhook state failed: %v", err)
+			log.Printf("dorm check-in webhook state failed: %v", err)
 			return
 		}
 		if notified {
-			log.Printf("QMX auto sign webhook skipped: %s has already been notified", runID)
+			log.Printf("dorm check-in webhook skipped: %s has already been notified", runID)
 			return
 		}
 
 		content, err := s.qmxAutoSignRunMarkdown(runID)
 		if err != nil {
-			log.Printf("QMX auto sign webhook summary failed: %v", err)
+			log.Printf("dorm check-in webhook summary failed: %v", err)
 			return
 		}
 		if strings.TrimSpace(content) == "" {
@@ -406,11 +406,11 @@ func (s *QMXAutoSignService) notifyQMXAutoSignScheduledRun(runID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), enterpriseWechatWebhookTimeout)
 		defer cancel()
 		if err := s.qmxWebhook.SendMarkdown(ctx, content); err != nil {
-			log.Printf("QMX auto sign webhook failed: %v", err)
+			log.Printf("dorm check-in webhook failed: %v", err)
 			return
 		}
 		if err := s.markQMXAutoSignRunNotified(runID, QMXAutoSignTriggerScheduled); err != nil {
-			log.Printf("QMX auto sign webhook state save failed: %v", err)
+			log.Printf("dorm check-in webhook state save failed: %v", err)
 		}
 	}()
 }
@@ -424,7 +424,7 @@ func (s *QMXAutoSignService) notifyQMXAutoSignRun(runID string) {
 	go func() {
 		content, err := s.qmxAutoSignRunMarkdown(runID)
 		if err != nil {
-			log.Printf("QMX auto sign webhook summary failed: %v", err)
+			log.Printf("dorm check-in webhook summary failed: %v", err)
 			return
 		}
 		if strings.TrimSpace(content) == "" {
@@ -434,7 +434,7 @@ func (s *QMXAutoSignService) notifyQMXAutoSignRun(runID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), enterpriseWechatWebhookTimeout)
 		defer cancel()
 		if err := s.qmxWebhook.SendMarkdown(ctx, content); err != nil {
-			log.Printf("QMX auto sign webhook failed: %v", err)
+			log.Printf("dorm check-in webhook failed: %v", err)
 		}
 	}()
 }
@@ -539,10 +539,10 @@ func qmxAutoSignRunTitle(runID, trigger, status string) string {
 	if normalizeQMXAutoSignTrigger(trigger) == QMXAutoSignTriggerScheduled {
 		rawDate := strings.TrimPrefix(strings.TrimSpace(runID), QMXAutoSignTriggerScheduled+"-")
 		if t, err := time.Parse("20060102", rawDate); err == nil {
-			return fmt.Sprintf("### QMX 自动签到 %s（%s）", t.Format("2006-01-02"), status)
+			return fmt.Sprintf("### 宿舍在寝签到 %s（%s）", t.Format("2006-01-02"), status)
 		}
 	}
-	return fmt.Sprintf("### QMX 自动签到%s", status)
+	return fmt.Sprintf("### 宿舍在寝签到%s", status)
 }
 
 func (s *QMXAutoSignService) qmxAutoSignUserMap(records []model.QMXAutoSignRecord) (map[int64]model.User, error) {

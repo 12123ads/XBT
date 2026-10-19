@@ -24,15 +24,15 @@ const entries = [
     tone: 'bg-emerald-600',
   },
   {
-    title: 'QMX 自动签到',
-    description: '配置晚上十点自动查寝、单账号定位点和执行记录。',
+    title: '宿舍在寝签到',
+    description: '配置晚上十点自动在寝签到、单账号定位点和执行记录。',
     path: '/admin/qmx-auto-sign',
     icon: AlarmClock,
     tone: 'bg-cyan-600',
   },
   {
     title: '后台设置',
-    description: '维护企业微信推送和 QMX 预设定位点。',
+    description: '维护企业微信推送和宿舍在寝签到定位点。',
     path: '/admin/settings',
     icon: Settings2,
     tone: 'bg-violet-600',
@@ -53,7 +53,7 @@ const AdminPanel = () => {
     <div className="h-full min-h-0 flex flex-col bg-slate-50 overflow-hidden">
       <div className="bg-white border-b border-slate-100 px-4 h-[calc(80px+var(--sat))] pt-[var(--sat)] flex items-center justify-between shrink-0">
         <div className="flex items-center min-w-0">
-          <button onClick={() => navigate(-1)} className="p-2 -ml-2 text-slate-600 hover:bg-slate-50 rounded-lg">
+          <button onClick={() => navigate('/')} className="p-2 -ml-2 text-slate-600 hover:bg-slate-50 rounded-lg">
             <ChevronLeft size={24} />
           </button>
           <div className="ml-2 min-w-0">

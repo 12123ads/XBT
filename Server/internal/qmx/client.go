@@ -215,7 +215,7 @@ func (c *Client) Execute(input ExecuteInput) (ExecuteResult, error) {
 	}
 	var resp apiResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return ExecuteResult{}, fmt.Errorf("decode QMX clockIn response failed: %w", err)
+		return ExecuteResult{}, fmt.Errorf("解析宿舍在寝签到响应失败: %w", err)
 	}
 	return ExecuteResult{
 		Success:      resp.Success,
@@ -237,14 +237,14 @@ func (c *Client) getStudentInfo(cred credential) (studentInfoData, apiResponse, 
 	}
 	var resp apiResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return studentInfoData{}, apiResponse{}, fmt.Errorf("decode QMX preview response failed: %w", err)
+		return studentInfoData{}, apiResponse{}, fmt.Errorf("解析宿舍在寝签到预览失败: %w", err)
 	}
 	if !resp.Success {
 		return studentInfoData{}, resp, errors.New(formatQMXPreviewError(resp))
 	}
 	var info studentInfoData
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
-		return studentInfoData{}, resp, fmt.Errorf("decode QMX student info failed: %w", err)
+		return studentInfoData{}, resp, fmt.Errorf("解析宿舍在寝签到账号信息失败: %w", err)
 	}
 	return info, resp, nil
 }
@@ -255,20 +255,20 @@ func formatQMXPreviewError(resp apiResponse) string {
 	if code == "20001" || strings.Contains(message, "未到查寝时间") {
 		timeRange := qmxMessageTimeRange(message)
 		if timeRange != "" {
-			return fmt.Sprintf("当前未到查寝时间%s，暂时无法读取在线定位点，可先使用预设定位点", timeRange)
+			return fmt.Sprintf("当前未到宿舍在寝签到时间%s，暂时无法读取在线定位点，可先使用预设定位点", timeRange)
 		}
-		return "当前未到查寝时间，暂时无法读取在线定位点，可先使用预设定位点"
+		return "当前未到宿舍在寝签到时间，暂时无法读取在线定位点，可先使用预设定位点"
 	}
 	if message != "" && code != "" && code != "<nil>" {
-		return fmt.Sprintf("读取 QMX 在线定位点失败：%s（code=%s）", message, code)
+		return fmt.Sprintf("读取宿舍在寝签到在线定位点失败：%s（code=%s）", message, code)
 	}
 	if message != "" {
-		return fmt.Sprintf("读取 QMX 在线定位点失败：%s", message)
+		return fmt.Sprintf("读取宿舍在寝签到在线定位点失败：%s", message)
 	}
 	if code != "" && code != "<nil>" {
-		return fmt.Sprintf("读取 QMX 在线定位点失败（code=%s）", code)
+		return fmt.Sprintf("读取宿舍在寝签到在线定位点失败（code=%s）", code)
 	}
-	return "读取 QMX 在线定位点失败"
+	return "读取宿舍在寝签到在线定位点失败"
 }
 
 func qmxMessageTimeRange(message string) string {
@@ -311,7 +311,7 @@ func (c *Client) doJSON(method, endpoint string, cred credential, reqBody []byte
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("QMX http status %d: %s", resp.StatusCode, truncate(string(body), 240))
+		return nil, fmt.Errorf("宿舍在寝签到接口 HTTP 状态 %d: %s", resp.StatusCode, truncate(string(body), 240))
 	}
 	return body, nil
 }
@@ -355,7 +355,7 @@ func (c *Client) resolveCredential(input CredentialInput) (credential, error) {
 		if loginErr != nil {
 			return credential{}, loginErr
 		}
-		return credential{}, errors.New("missing QMX X-Token or cx_qmx_token cookie")
+		return credential{}, errors.New("缺少宿舍在寝签到凭据")
 	}
 	return credential{token: token, cookie: cookie}, nil
 }
@@ -379,7 +379,7 @@ func (c *Client) ermLogin(cookie string) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("QMX ermLogin http status %d", resp.StatusCode)
+		return "", fmt.Errorf("宿舍在寝签到登录 HTTP 状态 %d", resp.StatusCode)
 	}
 	var payload struct {
 		Success bool   `json:"success"`
@@ -393,7 +393,7 @@ func (c *Client) ermLogin(cookie string) (string, error) {
 		return "", err
 	}
 	if !payload.Success || payload.Data.Token == "" {
-		return "", fmt.Errorf("QMX ermLogin failed: code=%v message=%s", payload.Code, payload.Message)
+		return "", fmt.Errorf("宿舍在寝签到登录失败: code=%v message=%s", payload.Code, payload.Message)
 	}
 	return payload.Data.Token, nil
 }
@@ -451,7 +451,7 @@ func buildPreview(info studentInfoData, raw apiResponse) (Preview, error) {
 
 func parseLocations(raw json.RawMessage) ([]Location, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return nil, errors.New("QMX response has no location list")
+		return nil, errors.New("宿舍在寝签到未返回定位点列表")
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
@@ -459,7 +459,7 @@ func parseLocations(raw json.RawMessage) ([]Location, error) {
 	}
 	var locations []Location
 	if err := json.Unmarshal([]byte(text), &locations); err != nil {
-		return nil, fmt.Errorf("decode QMX location list failed: %w", err)
+		return nil, fmt.Errorf("解析宿舍在寝签到定位点失败: %w", err)
 	}
 	return locations, nil
 }
@@ -492,7 +492,7 @@ func hasMeaningfulJSON(raw json.RawMessage) bool {
 func selectLocation(locations []Location, input ExecuteInput) (Location, error) {
 	if input.UseProvidedLocation {
 		if strings.TrimSpace(input.LocationName) == "" || input.Longitude == 0 || input.Latitude == 0 {
-			return Location{}, errors.New("provided QMX location is incomplete")
+			return Location{}, errors.New("宿舍在寝签到定位点不完整")
 		}
 		return Location{
 			Name: input.LocationName,
@@ -501,7 +501,7 @@ func selectLocation(locations []Location, input ExecuteInput) (Location, error) 
 		}, nil
 	}
 	if len(locations) == 0 {
-		return Location{}, errors.New("no allowed QMX locations")
+		return Location{}, errors.New("没有可用的宿舍在寝签到定位点")
 	}
 	if input.LocationName != "" {
 		for _, loc := range locations {
@@ -529,7 +529,7 @@ func selectLocation(locations []Location, input ExecuteInput) (Location, error) 
 		return best, nil
 	}
 	if input.RequireLocationMatch {
-		return Location{}, errors.New("saved QMX location is not available, please choose again")
+		return Location{}, errors.New("已保存的宿舍在寝签到定位点不可用，请重新选择")
 	}
 	return locations[0], nil
 }

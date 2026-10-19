@@ -139,6 +139,7 @@ type AdminRuntimeSettingsRequest struct {
 	QMXAutoSignWebhookURL string                             `json:"qmx_auto_sign_webhook_url"`
 	QMXLocationPresets    []AdminQMXLocationPresetRequest    `json:"qmx_location_presets"`
 	CourseLocationPresets []AdminCourseLocationPresetRequest `json:"course_location_presets"`
+	ContributionsEnabled  *bool                              `json:"contributions_enabled"`
 }
 
 type AdminQMXAutoSignSettingsRequest struct {

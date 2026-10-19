@@ -47,7 +47,7 @@ func NewAdminQMXAutoSignHandler(db *gorm.DB, svc *service.QMXAutoSignService) *A
 func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 	settings, err := h.service.EnsureSettings()
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign settings failed")
+		common.Fail(c, 500, "获取宿舍在寝签到配置失败")
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 
 	configs, err := h.accountConfigMap()
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign accounts failed")
+		common.Fail(c, 500, "获取宿舍在寝签到账号失败")
 		return
 	}
 
@@ -67,7 +67,7 @@ func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 	for _, user := range users {
 		lastRecord, err := h.lastRecord(user.UID)
 		if err != nil {
-			common.Fail(c, 500, "query QMX auto sign records failed")
+			common.Fail(c, 500, "获取宿舍在寝签到记录失败")
 			return
 		}
 		accounts = append(accounts, h.accountView(user, configs[user.UID], lastRecord))
@@ -89,7 +89,7 @@ func (h *AdminQMXAutoSignHandler) UpdateSettings(c *gin.Context) {
 
 	settings, err := h.service.UpdateSettingsEnabled(*req.Enabled)
 	if err != nil {
-		common.Fail(c, 500, "update QMX auto sign settings failed")
+		common.Fail(c, 500, "更新宿舍在寝签到配置失败")
 		return
 	}
 	common.Success(c, h.settingsView(settings))
@@ -131,7 +131,7 @@ func (h *AdminQMXAutoSignHandler) UpdateAccount(c *gin.Context) {
 
 	account, err := h.loadOrInitAccount(uid)
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign account failed")
+		common.Fail(c, 500, "获取宿舍在寝签到账号失败")
 		return
 	}
 
@@ -143,17 +143,17 @@ func (h *AdminQMXAutoSignHandler) UpdateAccount(c *gin.Context) {
 	}
 	account.Enabled = *req.Enabled
 	if account.Enabled && !hasConfiguredQMXLocation(account) {
-		common.Fail(c, 400, "please choose a QMX location before enabling this account")
+		common.Fail(c, 400, "请先选择宿舍在寝签到定位点后再开启")
 		return
 	}
 
 	if account.ID == 0 {
 		if err := h.db.Create(&account).Error; err != nil {
-			common.Fail(c, 500, "save QMX auto sign account failed")
+			common.Fail(c, 500, "保存宿舍在寝签到账号失败")
 			return
 		}
 	} else if err := h.db.Save(&account).Error; err != nil {
-		common.Fail(c, 500, "save QMX auto sign account failed")
+		common.Fail(c, 500, "保存宿舍在寝签到账号失败")
 		return
 	}
 	common.Success(c, h.accountConfigView(account))
@@ -189,7 +189,7 @@ func (h *AdminQMXAutoSignHandler) Records(c *gin.Context) {
 		Group(qmxAutoSignRecordRunIDExpr() + ", qar.trigger")
 	var total int64
 	if err := h.db.Table("(?) AS grouped_qmx_auto_sign_records", groupQuery).Count(&total).Error; err != nil {
-		common.Fail(c, 500, "query QMX auto sign records failed")
+		common.Fail(c, 500, "获取宿舍在寝签到记录失败")
 		return
 	}
 
@@ -201,7 +201,7 @@ func (h *AdminQMXAutoSignHandler) Records(c *gin.Context) {
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
 		Scan(&rows).Error; err != nil {
-		common.Fail(c, 500, "query QMX auto sign records failed")
+		common.Fail(c, 500, "获取宿舍在寝签到记录失败")
 		return
 	}
 
@@ -297,18 +297,18 @@ func (h *AdminQMXAutoSignHandler) GetOwnSettings(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	settings, err := h.service.EnsureSettings()
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign settings failed")
+		common.Fail(c, 500, "获取宿舍在寝签到配置失败")
 		return
 	}
 
 	account, err := h.loadOrInitAccount(uid)
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign account failed")
+		common.Fail(c, 500, "获取宿舍在寝签到账号失败")
 		return
 	}
 	lastRecord, err := h.lastRecord(uid)
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign records failed")
+		common.Fail(c, 500, "获取宿舍在寝签到记录失败")
 		return
 	}
 
@@ -330,7 +330,7 @@ func (h *AdminQMXAutoSignHandler) UpdateOwnSettings(c *gin.Context) {
 
 	account, err := h.loadOrInitAccount(uid)
 	if err != nil {
-		common.Fail(c, 500, "query QMX auto sign account failed")
+		common.Fail(c, 500, "获取宿舍在寝签到账号失败")
 		return
 	}
 
@@ -342,17 +342,17 @@ func (h *AdminQMXAutoSignHandler) UpdateOwnSettings(c *gin.Context) {
 	}
 	account.Enabled = *req.Enabled
 	if account.Enabled && !hasConfiguredQMXLocation(account) {
-		common.Fail(c, 400, "please choose a QMX location before enabling this account")
+		common.Fail(c, 400, "请先选择宿舍在寝签到定位点后再开启")
 		return
 	}
 
 	if account.ID == 0 {
 		if err := h.db.Create(&account).Error; err != nil {
-			common.Fail(c, 500, "save QMX auto sign account failed")
+			common.Fail(c, 500, "保存宿舍在寝签到账号失败")
 			return
 		}
 	} else if err := h.db.Save(&account).Error; err != nil {
-		common.Fail(c, 500, "save QMX auto sign account failed")
+		common.Fail(c, 500, "保存宿舍在寝签到账号失败")
 		return
 	}
 	common.Success(c, h.accountConfigView(account))

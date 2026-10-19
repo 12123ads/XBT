@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	appSettingQMXAutoSignWebhookURL = "qmx_auto_sign_webhook_url"
 	appSettingQMXLocationPresets    = "qmx_location_presets"
 	appSettingCourseLocationPresets = "course_location_presets"
+	appSettingContributionsEnabled  = "contributions_enabled"
 )
 
 type RuntimeSettings struct {
@@ -25,6 +27,7 @@ type RuntimeSettings struct {
 	QMXAutoSignWebhookURL string                        `json:"qmx_auto_sign_webhook_url"`
 	QMXLocationPresets    []config.QMXLocationPreset    `json:"qmx_location_presets"`
 	CourseLocationPresets []config.CourseLocationPreset `json:"course_location_presets"`
+	ContributionsEnabled  bool                          `json:"contributions_enabled"`
 }
 
 type RuntimeSettingsService struct {
@@ -40,6 +43,7 @@ func NewRuntimeSettingsService(db *gorm.DB, cfg config.Config) *RuntimeSettingsS
 			QMXAutoSignWebhookURL: strings.TrimSpace(cfg.QMXAutoSignWebhookURL),
 			QMXLocationPresets:    copyQMXLocationPresets(cfg.QMXLocationPresets),
 			CourseLocationPresets: copyCourseLocationPresets(cfg.CourseLocationPresets),
+			ContributionsEnabled:  true,
 		},
 	}
 }
@@ -50,6 +54,7 @@ func (s *RuntimeSettingsService) Settings() (RuntimeSettings, error) {
 		QMXAutoSignWebhookURL: s.defaults.QMXAutoSignWebhookURL,
 		QMXLocationPresets:    copyQMXLocationPresets(s.defaults.QMXLocationPresets),
 		CourseLocationPresets: copyCourseLocationPresets(s.defaults.CourseLocationPresets),
+		ContributionsEnabled:  s.defaults.ContributionsEnabled,
 	}
 
 	if value, ok, err := s.settingValue(appSettingCourseSignWebhookURL); err != nil {
@@ -79,6 +84,13 @@ func (s *RuntimeSettingsService) Settings() (RuntimeSettings, error) {
 			return settings, err
 		}
 		settings.CourseLocationPresets = copyCourseLocationPresets(presets)
+	}
+	if value, ok, err := s.settingValue(appSettingContributionsEnabled); err != nil {
+		return settings, err
+	} else if ok {
+		if enabled, parseErr := strconv.ParseBool(strings.TrimSpace(value)); parseErr == nil {
+			settings.ContributionsEnabled = enabled
+		}
 	}
 	return settings, nil
 }
@@ -118,6 +130,10 @@ func (s *RuntimeSettingsService) Update(settings RuntimeSettings) (RuntimeSettin
 		tx.Rollback()
 		return settings, err
 	}
+	if err := setRuntimeSettingValue(tx, appSettingContributionsEnabled, strconv.FormatBool(settings.ContributionsEnabled)); err != nil {
+		tx.Rollback()
+		return settings, err
+	}
 	if err := tx.Commit().Error; err != nil {
 		return settings, err
 	}
@@ -136,7 +152,7 @@ func (s *RuntimeSettingsService) CourseSignWebhookURL() string {
 func (s *RuntimeSettingsService) QMXAutoSignWebhookURL() string {
 	settings, err := s.Settings()
 	if err != nil {
-		log.Printf("read QMX auto sign webhook setting failed: %v", err)
+		log.Printf("read dorm check-in webhook setting failed: %v", err)
 		return s.defaults.QMXAutoSignWebhookURL
 	}
 	return settings.QMXAutoSignWebhookURL
@@ -145,7 +161,7 @@ func (s *RuntimeSettingsService) QMXAutoSignWebhookURL() string {
 func (s *RuntimeSettingsService) QMXLocationPresets() []config.QMXLocationPreset {
 	settings, err := s.Settings()
 	if err != nil {
-		log.Printf("read QMX location presets setting failed: %v", err)
+		log.Printf("read dorm check-in location presets setting failed: %v", err)
 		return copyQMXLocationPresets(s.defaults.QMXLocationPresets)
 	}
 	return copyQMXLocationPresets(settings.QMXLocationPresets)

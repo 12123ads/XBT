@@ -63,7 +63,7 @@ func (h *QMXRoomCheckHandler) Execute(c *gin.Context) {
 	})
 	if err != nil {
 		if len(result.Unsupported) > 0 {
-			common.Fail(c, 400, "unsupported QMX room check requirements: "+strings.Join(result.Unsupported, ", "))
+			common.Fail(c, 400, "unsupported dorm check-in requirements: "+strings.Join(result.Unsupported, ", "))
 			return
 		}
 		common.Fail(c, 400, err.Error())
