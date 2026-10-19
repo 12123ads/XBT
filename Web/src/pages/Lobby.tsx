@@ -249,11 +249,8 @@ const Lobby = () => {
     }));
   };
 
-  const isPhotoActivity = (activity: CourseActivities['activities'][number]) => activity.sign_type === 0 && activity.if_photo;
-  const isFaceActivity = (activity: CourseActivities['activities'][number]) => activity.if_face === true;
-
   const getSignTypeIcon = (activity: CourseActivities['activities'][number]) => {
-    if (isPhotoActivity(activity)) return <Camera size={18} />;
+    if (activity.sign_type === 0 && activity.if_photo) return <Camera size={18} />;
 
     switch (activity.sign_type) {
       case 2: return <QrCode size={18} />;
@@ -265,7 +262,7 @@ const Lobby = () => {
   };
 
   const getSignTypeName = (activity: CourseActivities['activities'][number]) => {
-    if (isPhotoActivity(activity)) return '拍照';
+    if (activity.sign_type === 0 && activity.if_photo) return '拍照';
 
     switch (activity.sign_type) {
       case 2: return '二维码';
@@ -536,7 +533,7 @@ const Lobby = () => {
                                             <span className={`text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md font-medium uppercase flex-shrink-0`}>
                                               {getSignTypeName(activity)}
                                             </span>
-                                            {isFaceActivity(activity) && (
+                                            {activity.if_face && (
                                               <span className="text-[10px] px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded-md font-medium flex-shrink-0 flex items-center gap-0.5">
                                                 <ScanFace size={10} />人脸
                                               </span>
