@@ -161,6 +161,8 @@ private class NativeCameraPunchController(
     private var imageCapture: androidx.camera.core.ImageCapture? = null
     private var isScannerActive = false
     private var requestedFacing = CameraSelector.LENS_FACING_BACK
+    private var permissionRetryCount = 0
+    private var pendingTakePhoto = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bindRunnable = Runnable { bindCamera() }
     private val cameraExecutor = Executors.newSingleThreadExecutor()
@@ -192,6 +194,7 @@ private class NativeCameraPunchController(
 
     fun onDestroy() {
         mainHandler.removeCallbacks(bindRunnable)
+        imageCapture = null
         cameraProvider?.unbindAll()
         previewView.visibility = View.GONE
         barcodeScanner.close()
@@ -207,6 +210,10 @@ private class NativeCameraPunchController(
     private fun bindCamera() {
         val provider = cameraProvider ?: return
         if (!isScannerActive) {
+            mainHandler.removeCallbacks(bindRunnable)
+            permissionRetryCount = 0
+            pendingTakePhoto = false
+            imageCapture = null
             provider.unbindAll()
             previewView.visibility = View.GONE
             return
@@ -214,9 +221,16 @@ private class NativeCameraPunchController(
         if (!hasCameraPermission()) {
             previewView.visibility = View.GONE
             emitCameraState(false, "no-camera-permission")
-            requestCameraPermission()
+            if (permissionRetryCount == 0) {
+                requestCameraPermission()
+            }
+            permissionRetryCount += 1
+            if (permissionRetryCount <= 60) {
+                mainHandler.postDelayed(bindRunnable, 500)
+            }
             return
         }
+        permissionRetryCount = 0
 
         val selector = CameraSelector.Builder()
             .requireLensFacing(requestedFacing)
@@ -244,11 +258,17 @@ private class NativeCameraPunchController(
             camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
             previewView.visibility = View.VISIBLE
             emitCameraState(true, null)
+            if (pendingTakePhoto) {
+                pendingTakePhoto = false
+                mainHandler.post { takePhoto() }
+            }
         }.onFailure {
+            imageCapture = null
             if (requestedFacing == CameraSelector.LENS_FACING_FRONT) {
                 requestedFacing = CameraSelector.LENS_FACING_BACK
                 bindCamera()
             } else {
+                pendingTakePhoto = false
                 previewView.visibility = View.GONE
                 val detail = "${it.javaClass.simpleName}:${it.message ?: "bind-failed"}"
                 emitCameraState(false, detail)
@@ -262,6 +282,9 @@ private class NativeCameraPunchController(
         }
         isScannerActive = active
         if (!active) {
+            mainHandler.removeCallbacks(bindRunnable)
+            permissionRetryCount = 0
+            pendingTakePhoto = false
             emitCameraState(false, "inactive")
         }
         scheduleBind()
@@ -350,19 +373,32 @@ private class NativeCameraPunchController(
     }
 
     private fun takePhoto() {
-        val capture = imageCapture ?: return
+        val capture = imageCapture
+        if (capture == null || !lastCameraActive) {
+            pendingTakePhoto = true
+            isScannerActive = true
+            scheduleBind()
+            emitCameraState(lastCameraActive, "camera-not-ready")
+            return
+        }
+        pendingTakePhoto = false
         capture.takePicture(
             ContextCompat.getMainExecutor(context),
             object : androidx.camera.core.ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    val bitmap = imageProxyToBitmap(image)
-                    val base64 = bitmapToBase64(bitmap)
-                    image.close()
-                    emitPhoto(base64)
+                    try {
+                        val bitmap = imageProxyToBitmap(image)
+                        emitPhoto(bitmapToBase64(bitmap))
+                    } catch (t: Throwable) {
+                        emitCameraState(true, "photo-decode-failed:${t.message ?: "unknown"}")
+                    } finally {
+                        image.close()
+                    }
                 }
 
                 override fun onError(exception: androidx.camera.core.ImageCaptureException) {
-                    // handle error
+                    pendingTakePhoto = false
+                    emitCameraState(lastCameraActive, "photo-capture-failed:${exception.message ?: "unknown"}")
                 }
             }
         )
@@ -373,6 +409,7 @@ private class NativeCameraPunchController(
         val bytes = ByteArray(buffer.remaining())
         buffer.get(bytes)
         val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: throw IllegalStateException("photo decode failed")
         val matrix = android.graphics.Matrix()
         matrix.postRotate(image.imageInfo.rotationDegrees.toFloat())
         return android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
@@ -742,7 +779,6 @@ fun MainScreen(
                     }
 
                     setInitialScale(0)
-                    loadUrl(url)
                     webView = this
                 }
 
@@ -764,6 +800,7 @@ fun MainScreen(
 
                 root.addView(preview)
                 root.addView(innerWebView)
+                innerWebView.loadUrl(url)
                 root
             },
             update = {

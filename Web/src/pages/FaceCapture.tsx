@@ -82,6 +82,15 @@ const FaceCapture = () => {
   useEffect(() => {
     if (!isNativeBridgeMode) return;
 
+    const scannerRoot = readerRef.current?.parentElement ?? null;
+    const touchedElements: Array<{ el: HTMLElement; bg: string }> = [];
+    let cursor = scannerRoot;
+    while (cursor) {
+      touchedElements.push({ el: cursor, bg: cursor.style.backgroundColor });
+      cursor.style.backgroundColor = 'transparent';
+      cursor = cursor.parentElement;
+    }
+
     const root = document.getElementById('root');
     const prevHtml = document.documentElement.style.backgroundColor;
     const prevBody = document.body.style.backgroundColor;
@@ -99,6 +108,9 @@ const FaceCapture = () => {
     window.addEventListener('xbt-native-camera-state', onCameraState);
 
     return () => {
+      touchedElements.forEach(({ el, bg }) => {
+        el.style.backgroundColor = bg;
+      });
       document.documentElement.style.backgroundColor = prevHtml;
       document.body.style.backgroundColor = prevBody;
       if (root) root.style.backgroundColor = prevRoot;
