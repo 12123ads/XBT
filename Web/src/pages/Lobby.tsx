@@ -5,7 +5,6 @@ import {
   User as UserIcon,
   Users,
   Settings,
-  ShieldCheck,
   RefreshCw,
   Clock,
   ChevronRight,
@@ -126,6 +125,8 @@ const Lobby = () => {
   const [pendingEntry, setPendingEntry] = useState<PendingActivityEntry | null>(null);
 
   const [contributionsEnabled, setContributionsEnabled] = useState(true);
+  const [classAdminGroupId, setClassAdminGroupId] = useState(0);
+  const [classAdminGroupName, setClassAdminGroupName] = useState('');
   const [showFacePanel, setShowFacePanel] = useState(false);
   const [hasFace, setHasFace] = useState<boolean | null>(null);
   const [faceDataUrl, setFaceDataUrl] = useState<string>('');
@@ -189,6 +190,8 @@ const Lobby = () => {
       const account = useAuthStore.getState();
       if (account.activeUid === owner.uid && account.token === owner.token) {
         setContributionsEnabled(res.data.data?.contributions_enabled !== false);
+        setClassAdminGroupId(res.data.data?.class_admin_group_id ?? 0);
+        setClassAdminGroupName(res.data.data?.class_admin_group_name || '');
       }
     } catch {
       // Keep the previous value when the feature endpoint is unavailable.
@@ -388,25 +391,25 @@ const Lobby = () => {
             >
               <RefreshIndicator spinning={isLoading} />
             </motion.button>
+            {classAdminGroupId > 0 && (
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => navigate('/class-admin')}
+                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
+                title={classAdminGroupName ? `班级管理：${classAdminGroupName}` : '班级管理'}
+              >
+                <Users size={20} />
+              </motion.button>
+            )}
             {user && user.permission >= 2 && (
-              <>
-                <motion.button
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => navigate('/admin/panel')}
-                  className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-                  title="管理面板"
-                >
-                  <Users size={20} />
-                </motion.button>
-                <motion.button
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => navigate('/admin/whitelist')}
-                  className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-                  title="白名单管理"
-                >
-                  <ShieldCheck size={20} />
-                </motion.button>
-              </>
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => navigate('/admin/panel')}
+                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
+                title="管理面板"
+              >
+                <Users size={20} />
+              </motion.button>
             )}
           </div>
         </div>

@@ -499,7 +499,13 @@ func (h *SignHandler) Features(c *gin.Context) {
 		common.Fail(c, 500, "query features failed")
 		return
 	}
-	common.Success(c, gin.H{"contributions_enabled": settings.ContributionsEnabled})
+	resp := gin.H{"contributions_enabled": settings.ContributionsEnabled}
+	var group model.ClassGroup
+	if err := h.db.Where("admin_uid = ?", common.GetUserUID(c)).Order("id asc").First(&group).Error; err == nil {
+		resp["class_admin_group_id"] = group.ID
+		resp["class_admin_group_name"] = group.Name
+	}
+	common.Success(c, resp)
 }
 
 func (h *SignHandler) Contributions(c *gin.Context) {

@@ -485,11 +485,13 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 ```json
 {
-  "contributions_enabled": true
+  "contributions_enabled": true,
+  "class_admin_group_id": 1,
+  "class_admin_group_name": "计科 2301"
 }
 ```
 
-说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。
+说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。`class_admin_group_id/name` 仅当当前账号是某个班级的班级管理员时返回。
 
 ---
 
@@ -921,6 +923,40 @@ DELETE /api/admin/whitelist/users/12
   - `trigger`: 可选，`scheduled` 或 `manual`
 
 记录包含账号、触发方式、成功状态、宿舍在寝签到返回码/消息、批次、定位点和执行时间。
+
+### 6.9 班级管理员
+
+班级管理员是低于全局管理员的角色，由管理员在班级成员设置中通过 `admin_uid` 指定，且必须属于该班级。
+
+#### 6.9.1 获取本班信息
+- Method: `GET`
+- Path: `/api/class-admin/overview`
+- Auth: 是（班级管理员）
+
+返回当前班级和成员列表。
+
+#### 6.9.2 添加本班账号
+- Method: `POST`
+- Path: `/api/class-admin/accounts`
+- Auth: 是（班级管理员）
+
+请求体：
+
+```json
+{
+  "mobile": "13800000000",
+  "password": "学习通密码"
+}
+```
+
+行为：
+- 校验学习通账号密码
+- 新账号以普通用户权限加入白名单
+- 自动加入班级管理员的班级（已属于其他班级的账号会被拒绝）
+- 同步新账号的学习通课程
+- 默认把班级管理员已选课程追加给新账号
+
+响应体 `data` 包含 `account`、`sync_count`、`sync_message`、`copied_relations`、`course_count`、`copy_message`。
 
 ---
 

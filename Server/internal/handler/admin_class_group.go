@@ -168,29 +168,63 @@ func (h *AdminAccountHandler) UpdateClassGroupMembers(c *gin.Context) {
 		}
 	}
 
+	adminUID := group.AdminUID
+	if req.AdminUID != nil {
+		adminUID = *req.AdminUID
+	} else if adminUID > 0 {
+		found := false
+		for _, uid := range validUIDs {
+			if uid == adminUID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			adminUID = 0
+		}
+	}
+	if adminUID != 0 {
+		found := false
+		for _, uid := range validUIDs {
+			if uid == adminUID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			common.Fail(c, 400, "班级管理员必须是本班成员")
+			return
+		}
+	}
+
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("group_id = ?", group.ID).Delete(&model.ClassGroupMember{}).Error; err != nil {
 			return err
 		}
-		if len(validUIDs) == 0 {
-			return nil
-		}
-		if err := tx.Where("user_uid IN ?", validUIDs).Delete(&model.ClassGroupMember{}).Error; err != nil {
-			return err
-		}
-		for _, uid := range validUIDs {
-			member := model.ClassGroupMember{GroupID: group.ID, UserUID: uid}
-			if err := tx.Create(&member).Error; err != nil {
+		if len(validUIDs) > 0 {
+			if err := tx.Where("user_uid IN ?", validUIDs).Delete(&model.ClassGroupMember{}).Error; err != nil {
 				return err
 			}
+			if err := tx.Model(&model.ClassGroup{}).
+				Where("admin_uid IN ? AND id <> ?", validUIDs, group.ID).
+				Update("admin_uid", 0).Error; err != nil {
+				return err
+			}
+			for _, uid := range validUIDs {
+				member := model.ClassGroupMember{GroupID: group.ID, UserUID: uid}
+				if err := tx.Create(&member).Error; err != nil {
+					return err
+				}
+			}
 		}
-		return nil
+		return tx.Model(&model.ClassGroup{}).Where("id = ?", group.ID).Update("admin_uid", adminUID).Error
 	})
 	if err != nil {
 		common.Fail(c, 500, "update class group members failed")
 		return
 	}
 
+	group.AdminUID = adminUID
 	common.Success(c, classGroupView(group, validUIDs))
 }
 
@@ -260,6 +294,7 @@ func classGroupView(group model.ClassGroup, memberUIDs []int64) gin.H {
 		"id":           group.ID,
 		"name":         group.Name,
 		"description":  group.Description,
+		"admin_uid":    group.AdminUID,
 		"member_count": len(memberUIDs),
 		"member_uids":  memberUIDs,
 	}

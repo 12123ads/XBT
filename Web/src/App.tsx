@@ -17,6 +17,7 @@ import SharedSign from './pages/SharedSign';
 import RoomCheck from './pages/RoomCheck';
 import LearningDashboard from './pages/LearningDashboard';
 import Contributions from './pages/Contributions';
+import ClassAdmin from './pages/ClassAdmin';
 import FullPhoto from './pages/FullPhoto';
 import FaceCapture from './pages/FaceCapture';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -84,6 +85,7 @@ function App() {
               <Route path="/room-check" element={<RoomCheck />} />
               <Route path="/learning" element={<LearningDashboard />} />
               <Route path="/contributions" element={<Contributions />} />
+              <Route path="/class-admin" element={<ClassAdmin />} />
               <Route path="/photo-capture" element={<FullPhoto />} />
               <Route path="/face-capture" element={<FaceCapture />} />
             </Route>

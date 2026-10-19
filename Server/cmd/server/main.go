@@ -81,6 +81,8 @@ func main() {
 			authed.POST("/vikunja/sync", vikunjaHandler.SyncNow)
 
 			authed.GET("/features", signHandler.Features)
+			authed.GET("/class-admin/overview", adminAccountHandler.ClassAdminOverview)
+			authed.POST("/class-admin/accounts", adminAccountHandler.CreateClassAccount)
 			authed.GET("/sign/activities", signHandler.Activities)
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)

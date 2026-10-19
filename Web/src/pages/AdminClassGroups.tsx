@@ -28,8 +28,15 @@ const AdminClassGroups = () => {
   const [syncMode, setSyncMode] = useState<AdminClassGroupSyncMode>('replace');
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
   const [memberDraftUids, setMemberDraftUids] = useState<number[]>([]);
+  const [memberAdminUid, setMemberAdminUid] = useState<number | null>(null);
 
   const accountByUid = useMemo(() => new Map(accounts.map((account) => [account.uid, account])), [accounts]);
+
+  useEffect(() => {
+    if (memberAdminUid !== null && !memberDraftUids.includes(memberAdminUid)) {
+      setMemberAdminUid(null);
+    }
+  }, [memberAdminUid, memberDraftUids]);
 
   const loadAccounts = useCallback(async () => {
     const response = await client.get<ApiResponse<AdminAccount[]>>('/admin/accounts');
@@ -116,6 +123,7 @@ const AdminClassGroups = () => {
   const openMembersPanel = (group: AdminClassGroup) => {
     setMemberGroup(group);
     setMemberDraftUids(group.member_uids || []);
+    setMemberAdminUid(group.admin_uid && group.member_uids.includes(group.admin_uid) ? group.admin_uid : null);
   };
 
   const handleSaveGroupMembers = async () => {
@@ -123,10 +131,14 @@ const AdminClassGroups = () => {
 
     setIsSavingGroup(true);
     try {
-      await client.put(`/admin/class-groups/${memberGroup.id}/members`, { user_uids: memberDraftUids });
+      await client.put(`/admin/class-groups/${memberGroup.id}/members`, {
+        user_uids: memberDraftUids,
+        admin_uid: memberAdminUid ?? 0,
+      });
       toast.success('班级成员已更新');
       setMemberGroup(null);
       setMemberDraftUids([]);
+      setMemberAdminUid(null);
       await loadClassGroups();
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, '保存班级成员失败'));
@@ -228,6 +240,9 @@ const AdminClassGroups = () => {
                   <p className="mt-2 text-[11px] text-slate-500 truncate">
                     成员：{groupMemberSummary(group)}
                   </p>
+                  <p className="mt-1 text-[11px] text-cyan-600 font-bold truncate">
+                    班级管理员：{group.admin_uid ? (accountByUid.get(group.admin_uid)?.name || `UID ${group.admin_uid}`) : '未设置'}
+                  </p>
                   <div className="grid grid-cols-4 gap-2 mt-3">
                     <button onClick={() => openEditGroup(group)} className="py-2.5 rounded-xl bg-white text-slate-700 text-xs font-black flex items-center justify-center gap-1">
                       <Pencil size={13} />
@@ -297,7 +312,13 @@ const AdminClassGroups = () => {
         )}
 
         {memberGroup && (
-          <AdminModal title={`设置成员：${memberGroup.name}`} onClose={() => setMemberGroup(null)}>
+          <AdminModal
+            title={`设置成员：${memberGroup.name}`}
+            onClose={() => {
+              setMemberGroup(null);
+              setMemberAdminUid(null);
+            }}
+          >
             <div className="space-y-3">
               <p className="text-xs text-slate-500 leading-relaxed">
                 一个账号只能属于一个班级；选择后保存，会自动从原班级移动到这里。
@@ -328,6 +349,24 @@ const AdminClassGroups = () => {
                     </button>
                   );
                 })}
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-3">
+                <p className="text-xs font-black text-slate-500">班级管理员</p>
+                <select
+                  value={memberAdminUid ?? ''}
+                  onChange={(event) => setMemberAdminUid(event.target.value ? Number(event.target.value) : null)}
+                  className="mt-2 w-full h-11 rounded-xl border border-slate-100 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">不设置</option>
+                  {memberDraftUids.map((uid) => (
+                    <option key={uid} value={uid}>
+                      {accountByUid.get(uid)?.name || `UID ${uid}`}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-[10px] text-slate-400 leading-relaxed">
+                  班级管理员可以添加新账号；新账号自动加入本班，并默认套用其已选课程。
+                </p>
               </div>
               <button
                 onClick={handleSaveGroupMembers}

@@ -113,6 +113,7 @@ type AdminClassGroupRequest struct {
 
 type AdminClassGroupMembersRequest struct {
 	UserUIDs []int64 `json:"user_uids"`
+	AdminUID *int64  `json:"admin_uid"`
 }
 
 type AdminClassGroupCopySelectionRequest struct {

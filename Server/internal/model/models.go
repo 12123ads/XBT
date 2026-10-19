@@ -49,6 +49,7 @@ type ClassGroup struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Name        string    `gorm:"size:128;not null" json:"name"`
 	Description string    `gorm:"size:512" json:"description"`
+	AdminUID    int64     `gorm:"not null;default:0;index" json:"admin_uid"`
 	CreatedAt   time.Time `json:"-"`
 	UpdatedAt   time.Time `json:"-"`
 }

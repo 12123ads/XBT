@@ -210,6 +210,7 @@ export interface AdminClassGroup {
   id: number;
   name: string;
   description: string;
+  admin_uid: number;
   member_count: number;
   member_uids: number[];
 }
@@ -386,6 +387,22 @@ export interface CourseLocationPreset {
 
 export interface FeatureSettings {
   contributions_enabled: boolean;
+  class_admin_group_id?: number;
+  class_admin_group_name?: string;
+}
+
+export interface ClassAdminOverview {
+  group: AdminClassGroup;
+  members: AdminAccount[];
+}
+
+export interface ClassAdminCreateResponse {
+  account: AdminAccount;
+  sync_count: number;
+  sync_message: string;
+  copied_relations: number;
+  course_count: number;
+  copy_message: string;
 }
 
 export interface AdminRuntimeSettings {
