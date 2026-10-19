@@ -122,7 +122,7 @@ const QuickAction = ({ icon, label, onClick, tone, badge = false, title }: Quick
     className="relative flex flex-col items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-100/70 active:bg-slate-100 transition-colors"
   >
     <span className={`w-9 h-9 rounded-xl flex items-center justify-center ${tone}`}>{icon}</span>
-    <span className="text-[10px] font-bold text-slate-500 leading-none">{label}</span>
+    <span className="text-[10px] font-bold text-slate-500 leading-none whitespace-nowrap">{label}</span>
     {badge && <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500" />}
   </motion.button>
 );
@@ -384,28 +384,28 @@ const Lobby = () => {
             <div className="grid grid-cols-4 gap-2">
               <QuickAction
                 icon={<Settings size={18} />}
-                label="课程"
+                label="课程配置"
                 tone="bg-blue-50 text-blue-600"
                 onClick={() => navigate('/courses')}
                 title="课程配置"
               />
               <QuickAction
                 icon={<BarChart3 size={18} />}
-                label="学习"
+                label="学习面板"
                 tone="bg-violet-50 text-violet-600"
                 onClick={() => navigate('/learning')}
                 title="学习仪表盘"
               />
               <QuickAction
                 icon={<Building2 size={18} />}
-                label="在寝"
+                label="在寝签到"
                 tone="bg-cyan-50 text-cyan-600"
                 onClick={() => navigate('/room-check')}
                 title="宿舍在寝签到"
               />
               <QuickAction
                 icon={<ScanFace size={18} />}
-                label="人脸"
+                label="人脸照片"
                 tone={hasFace === false ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}
                 badge={hasFace === false}
                 onClick={handleFacePanelOpen}
@@ -414,7 +414,7 @@ const Lobby = () => {
               {contributionsEnabled && (
                 <QuickAction
                   icon={<Trophy size={18} />}
-                  label="贡献"
+                  label="贡献榜"
                   tone="bg-amber-50 text-amber-600"
                   onClick={() => navigate('/contributions')}
                   title="贡献榜"
@@ -423,7 +423,7 @@ const Lobby = () => {
               {classAdminGroupId > 0 && (
                 <QuickAction
                   icon={<Users size={18} />}
-                  label="班级"
+                  label="班级管理"
                   tone="bg-emerald-50 text-emerald-600"
                   onClick={() => navigate('/class-admin')}
                   title={classAdminGroupName ? `班级管理：${classAdminGroupName}` : '班级管理'}
@@ -432,7 +432,7 @@ const Lobby = () => {
               {user && user.permission >= 2 && (
                 <QuickAction
                   icon={<ShieldCheck size={18} />}
-                  label="管理"
+                  label="管理面板"
                   tone="bg-slate-100 text-slate-700"
                   onClick={() => navigate('/admin/panel')}
                   title="管理面板"
