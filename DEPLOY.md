@@ -264,6 +264,21 @@ cd Android
 `build-apk.sh` 会先构建 Web 并同步到 `Android/app/src/main/assets/web/`，再编译 APK，产物在 `dist/xbt-debug.apk`。
 如果机器上没有 `npm`，脚本会直接使用仓库中已提交的 Web 构建产物。
 
+### 11.1 生产签名 APK
+
+```bash
+./Android/build-release.sh
+```
+
+脚本会执行 R8 压缩、资源收缩、zipalign，并使用发布证书签名，产物在 `dist/xbt-release.apk`。
+
+发布证书默认读取：
+
+- `$HOME/.xbt-keystore/xbt-release.jks`
+- `$HOME/.xbt-keystore/keystore.properties`（包含 `STORE_PASS` / `KEY_PASS`）
+
+这两个文件**不要提交到仓库**。证书一旦更换，已安装的旧版本将无法覆盖升级。
+
 > 前端 API 基地址是 `/api`，所以 `target_url` 必须指向同时提供页面和 API 的同一站点。
 > 如果 API 部署在另一个域名，需要额外给后端配置 CORS。
 
