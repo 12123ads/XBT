@@ -81,7 +81,8 @@
 ### Android (`/Android`)
 
 - Kotlin + Jetpack Compose
-- WebView 容器化
+- WebView 容器化，Web 构建产物内置到 APK `assets/web`，启动不依赖远端页面
+- 仅前端 `/api` 请求走网络，与 `target_url` 同源
 - CameraX + ML Kit（原生扫码）
 - JavaScript Bridge（原生相机与 Web 页面通信）
 

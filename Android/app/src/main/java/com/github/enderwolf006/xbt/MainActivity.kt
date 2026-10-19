@@ -58,9 +58,45 @@ import com.github.enderwolf006.xbt.ui.theme.XBTTheme
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+
+private const val LOCAL_WEB_ASSET_ROOT = "web"
+
+private fun localWebMimeType(assetPath: String): String = when (assetPath.substringAfterLast('.', "").lowercase()) {
+    "html" -> "text/html"
+    "js", "mjs" -> "application/javascript"
+    "css" -> "text/css"
+    "json", "map" -> "application/json"
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "svg" -> "image/svg+xml"
+    "ico" -> "image/x-icon"
+    "woff" -> "font/woff"
+    "woff2" -> "font/woff2"
+    "ttf" -> "font/ttf"
+    else -> "application/octet-stream"
+}
+
+private fun openLocalWebAsset(context: Context, assetPath: String): WebResourceResponse? {
+    val stream = try {
+        context.assets.open(assetPath)
+    } catch (_: IOException) {
+        return null
+    }
+    val mime = localWebMimeType(assetPath)
+    val encoding = if (mime.startsWith("text/") || mime == "application/javascript" || mime == "application/json") {
+        "utf-8"
+    } else {
+        null
+    }
+    return WebResourceResponse(mime, encoding, stream).apply {
+        setStatusCodeAndReasonPhrase(200, "OK")
+        setResponseHeaders(mapOf("Cache-Control" to "no-cache"))
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -425,6 +461,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val url = context.getString(R.string.target_url)
+    val targetUri = remember(url) { Uri.parse(url) }
     val exitMessage = context.getString(R.string.exit_press_again)
 
     var webView: WebView? by remember { mutableStateOf(null) }
@@ -651,6 +688,22 @@ fun MainScreen(
                                 errorMessage = "加载失败: ${error?.description}"
                                 isFirstLoadComplete = true
                             }
+                        }
+
+                        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                            val req = request ?: return null
+                            if (req.method != "GET") return null
+                            val reqUrl = req.url
+                            if (reqUrl.host != targetUri.host || reqUrl.port != targetUri.port) return null
+                            val path = reqUrl.path ?: return null
+                            if (path == "/api" || path.startsWith("/api/")) return null
+                            if (path.contains("..") || path.contains("%2e", ignoreCase = true) || path.contains("%2f", ignoreCase = true)) return null
+                            val assetPath = if (path.isEmpty() || path == "/" || path == "/index.html") {
+                                "$LOCAL_WEB_ASSET_ROOT/index.html"
+                            } else {
+                                "$LOCAL_WEB_ASSET_ROOT$path"
+                            }
+                            return openLocalWebAsset(ctx, assetPath)
                         }
                     }
 

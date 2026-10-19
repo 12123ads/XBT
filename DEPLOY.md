@@ -234,35 +234,38 @@ docker compose exec web wget -qO- http://server:3030/api/health
 
 ## 11. Android APK 中 Web 地址修改位置
 
-Android 壳内加载的前端地址在以下文件：
-
-- `Android/app/src/main/res/values/strings.xml`
+Web 前端已经打包进 APK 的 `assets/web/`，启动时由 WebView 直接加载本地资源，不再依赖远端页面。
+`target_url` 同时作为 WebView 的页面 origin 和 API 同源地址（前端默认请求 `/api`）。
 
 修改字段：
+
+- `Android/app/src/main/res/values/strings.xml`（本地文件，已 gitignore）
+- 模板：`Android/strings_example.xml`
 
 ```xml
 <string name="target_url">https://your-domain.example/</string>
 ```
 
-如果项目里还没有 `strings.xml`（只有 `strings_example.xml`），先复制：
+首次构建：
 
 ```bash
-cp Android/app/src/main/res/values/strings_example.xml Android/app/src/main/res/values/strings.xml
+cp Android/strings_example.xml Android/app/src/main/res/values/strings.xml
 ```
 
-> 复制后请将 `strings_example.xml` 移出 `res/values`（或删除），否则会出现 `Duplicate resources`。
+重新构建 APK：
 
 ```bash
-mv Android/app/src/main/res/values/strings_example.xml Android/strings_example.xml.bak
-# 或者：rm -f Android/app/src/main/res/values/strings_example.xml
-```
-
-修改后重新构建 APK：
-
-```bash
+./Android/build-apk.sh
+# 或者
 cd Android
 ./gradlew assembleDebug
 ```
+
+`build-apk.sh` 会先构建 Web 并同步到 `Android/app/src/main/assets/web/`，再编译 APK，产物在 `dist/xbt-debug.apk`。
+如果机器上没有 `npm`，脚本会直接使用仓库中已提交的 Web 构建产物。
+
+> 前端 API 基地址是 `/api`，所以 `target_url` 必须指向同时提供页面和 API 的同一站点。
+> 如果 API 部署在另一个域名，需要额外给后端配置 CORS。
 
 ---
 
