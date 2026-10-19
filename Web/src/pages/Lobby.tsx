@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import {
   User as UserIcon,
   Users,
   Settings,
+  ShieldCheck,
   RefreshCw,
   Clock,
   ChevronRight,
@@ -102,6 +103,29 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
 
   return <RefreshCw ref={iconRef} size={20} />;
 };
+
+type QuickActionProps = {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  tone: string;
+  badge?: boolean;
+  title?: string;
+};
+
+const QuickAction = ({ icon, label, onClick, tone, badge = false, title }: QuickActionProps) => (
+  <motion.button
+    type="button"
+    whileTap={{ scale: 0.95 }}
+    onClick={onClick}
+    title={title || label}
+    className="relative flex flex-col items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-100/70 active:bg-slate-100 transition-colors"
+  >
+    <span className={`w-9 h-9 rounded-xl flex items-center justify-center ${tone}`}>{icon}</span>
+    <span className="text-[10px] font-bold text-slate-500 leading-none">{label}</span>
+    {badge && <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500" />}
+  </motion.button>
+);
 
 const Lobby = () => {
   const { user, activeUid, token } = useAuthStore();
@@ -313,106 +337,37 @@ const Lobby = () => {
   return (
     <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
       {/* Header */}
-      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 min-h-[calc(88px+var(--sat))] pt-[calc(12px+var(--sat))] pb-3 grid grid-cols-[minmax(132px,1fr)_minmax(0,1.35fr)] items-center gap-3 shrink-0">
-        <div className="flex items-center min-w-0">
-          <motion.div
-            whileTap={{ scale: 0.92 }}
-            onClick={() => navigate('/accounts')}
-            className="flex items-center space-x-3 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
-          >
-            <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm shrink-0">
-              {user?.avatar ? (
-                <img src={user.avatar} alt={user.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-slate-400">
-                  <UserIcon size={24} />
-                </div>
-              )}
-            </div>
-            <div className="min-w-0">
-              <h2 className="font-bold text-slate-900 flex items-center min-w-0">
-                <span className="truncate">{user?.name || '未登录'}</span>
-                <ChevronRight size={14} className="ml-1 text-slate-400 shrink-0" />
-              </h2>
-              <p className="text-xs text-slate-500 truncate">{user?.mobile}</p>
-            </div>
-          </motion.div>
-        </div>
-        <div className="min-w-0 overflow-x-auto overscroll-x-contain [touch-action:pan-x] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <div className="flex w-max items-center gap-2 pr-1">
-            {contributionsEnabled && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => navigate('/contributions')}
-                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-                title="贡献榜"
-              >
-                <Trophy size={20} />
-              </motion.button>
-            )}
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => navigate('/learning')}
-              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="学习仪表盘"
-            >
-              <BarChart3 size={20} />
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => navigate('/room-check')}
-              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="宿舍在寝签到"
-            >
-              <Building2 size={20} />
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={handleFacePanelOpen}
-              className={`p-2 rounded-lg transition-colors flex flex-col items-center ${hasFace === false ? 'text-red-500 hover:bg-red-50' : 'text-slate-600 hover:bg-slate-50'}`}
-              title="人脸照片"
-            >
-              <ScanFace size={20} />
-              {hasFace === false && <span className="text-[8px] font-medium leading-none mt-0.5 whitespace-nowrap">未上传人脸照片</span>}
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => navigate('/courses')}
-              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="课程配置"
-            >
-              <Settings size={20} />
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={fetchActivities}
-              className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-              title="刷新活动"
-            >
-              <RefreshIndicator spinning={isLoading} />
-            </motion.button>
-            {classAdminGroupId > 0 && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => navigate('/class-admin')}
-                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-                title={classAdminGroupName ? `班级管理：${classAdminGroupName}` : '班级管理'}
-              >
-                <Users size={20} />
-              </motion.button>
-            )}
-            {user && user.permission >= 2 && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => navigate('/admin/panel')}
-                className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
-                title="管理面板"
-              >
-                <Users size={20} />
-              </motion.button>
+      <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 h-[calc(88px+var(--sat))] pt-[var(--sat)] flex items-center justify-between gap-3 shrink-0">
+        <motion.div
+          whileTap={{ scale: 0.92 }}
+          onClick={() => navigate('/accounts')}
+          className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer hover:opacity-80 transition-opacity"
+        >
+          <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm shrink-0">
+            {user?.avatar ? (
+              <img src={user.avatar} alt={user.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-slate-400">
+                <UserIcon size={24} />
+              </div>
             )}
           </div>
-        </div>
+          <div className="min-w-0">
+            <h2 className="font-bold text-slate-900 flex items-center min-w-0">
+              <span className="truncate">{user?.name || '未登录'}</span>
+              <ChevronRight size={14} className="ml-1 text-slate-400 shrink-0" />
+            </h2>
+            <p className="text-xs text-slate-500 truncate">{user?.mobile}</p>
+          </div>
+        </motion.div>
+        <motion.button
+          whileTap={{ scale: 0.92 }}
+          onClick={fetchActivities}
+          className="w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-50 rounded-xl transition-colors shrink-0"
+          title="刷新活动"
+        >
+          <RefreshIndicator spinning={isLoading} />
+        </motion.button>
       </div>
 
       {/* Main Content */}
@@ -422,6 +377,69 @@ const Lobby = () => {
         className="p-4"
       >
         <div className="pb-[calc(80px+var(--sab))] space-y-4">
+          <section className="rounded-[1.75rem] bg-white border border-slate-100 shadow-sm p-3">
+            <div className="flex items-center justify-between px-1 mb-2">
+              <h3 className="text-[10px] font-black text-slate-400 tracking-[0.16em] uppercase">快捷功能</h3>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              <QuickAction
+                icon={<Settings size={18} />}
+                label="课程"
+                tone="bg-blue-50 text-blue-600"
+                onClick={() => navigate('/courses')}
+                title="课程配置"
+              />
+              <QuickAction
+                icon={<BarChart3 size={18} />}
+                label="学习"
+                tone="bg-violet-50 text-violet-600"
+                onClick={() => navigate('/learning')}
+                title="学习仪表盘"
+              />
+              <QuickAction
+                icon={<Building2 size={18} />}
+                label="在寝"
+                tone="bg-cyan-50 text-cyan-600"
+                onClick={() => navigate('/room-check')}
+                title="宿舍在寝签到"
+              />
+              <QuickAction
+                icon={<ScanFace size={18} />}
+                label="人脸"
+                tone={hasFace === false ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}
+                badge={hasFace === false}
+                onClick={handleFacePanelOpen}
+                title={hasFace === false ? '人脸照片（未上传）' : '人脸照片'}
+              />
+              {contributionsEnabled && (
+                <QuickAction
+                  icon={<Trophy size={18} />}
+                  label="贡献"
+                  tone="bg-amber-50 text-amber-600"
+                  onClick={() => navigate('/contributions')}
+                  title="贡献榜"
+                />
+              )}
+              {classAdminGroupId > 0 && (
+                <QuickAction
+                  icon={<Users size={18} />}
+                  label="班级"
+                  tone="bg-emerald-50 text-emerald-600"
+                  onClick={() => navigate('/class-admin')}
+                  title={classAdminGroupName ? `班级管理：${classAdminGroupName}` : '班级管理'}
+                />
+              )}
+              {user && user.permission >= 2 && (
+                <QuickAction
+                  icon={<ShieldCheck size={18} />}
+                  label="管理"
+                  tone="bg-slate-100 text-slate-700"
+                  onClick={() => navigate('/admin/panel')}
+                  title="管理面板"
+                />
+              )}
+            </div>
+          </section>
           {isLoading && activities.length === 0 ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
