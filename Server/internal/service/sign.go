@@ -20,6 +20,8 @@ type signClient interface {
 	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error)
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
 	UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error)
+	UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error)
+	CheckFaceResult(mobile, password string, activeID int64, faceObjectID string) (xxt.FaceCheckResult, error)
 }
 
 type SignService struct {
@@ -75,6 +77,7 @@ type ExecutePhotoSignRequest struct {
 	CourseID      int64
 	ClassID       int64
 	IfRefreshEWM  bool
+	IfFace        bool
 	ActivityName  string
 	CourseName    string
 	CourseTeacher string
@@ -183,6 +186,15 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	if err := s.AuthorizeTargets(operatorUID, req.ActivityID, req.CourseID, req.ClassID, []int64{req.TargetUID}); err != nil {
 		return SignExecuteResult{}, err
 	}
+	if req.Special == nil {
+		req.Special = map[string]interface{}{}
+	}
+	if _, provided := req.Special["if_face"]; !provided {
+		var activity model.SignActivity
+		if err := s.db.Select("if_face").Where("activity_id = ?", req.ActivityID).First(&activity).Error; err == nil && activity.IfFace {
+			req.Special["if_face"] = true
+		}
+	}
 	state, err := s.resolveSignState(req.ActivityID, req.TargetUID)
 	if err != nil {
 		return SignExecuteResult{}, err
@@ -223,6 +235,29 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		if err := s.xxt.PreSign(target.Mobile, password, fixed, code, enc); err != nil {
 			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试"}, nil
 		}
+	}
+
+	if ifFace, _ := req.Special["if_face"].(bool); ifFace {
+		if len(target.FacePhoto) == 0 {
+			var fresh model.User
+			if err := s.db.Select("face_photo").Where("uid = ?", req.TargetUID).First(&fresh).Error; err == nil {
+				target.FacePhoto = fresh.FacePhoto
+			}
+		}
+		if len(target.FacePhoto) == 0 {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未设置人脸照片，请先在主页上传"}, nil
+		}
+		objectID, err := s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "人脸照片上传失败：" + err.Error()}, nil
+		}
+		faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: err.Error()}, nil
+		}
+		req.Special["current_face_id"] = faceResult.CurrentFaceID
+		req.Special["face_enc"] = faceResult.FaceEnc
+		req.Special["face_code"] = faceResult.FaceCode
 	}
 
 	result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
@@ -479,6 +514,10 @@ func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignReques
 		}
 	}
 
+	special := map[string]interface{}{"object_id": objectID}
+	if req.IfFace {
+		special["if_face"] = true
+	}
 	return s.ExecuteOne(operatorUID, ExecuteSignRequest{
 		ActivityID:    req.ActivityID,
 		TargetUID:     req.TargetUID,
@@ -489,9 +528,7 @@ func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignReques
 		ActivityName:  req.ActivityName,
 		CourseName:    req.CourseName,
 		CourseTeacher: req.CourseTeacher,
-		Special: map[string]interface{}{
-			"object_id": objectID,
-		},
+		Special:       special,
 	})
 }
 

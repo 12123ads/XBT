@@ -11,8 +11,10 @@ type NativeCameraBridge = {
   setLensFacing?: (mode: 'user' | 'environment') => void;
   zoomByPinchDelta?: (delta: number) => number;
   syncPunchHole?: (left: number, top: number, width: number, height: number) => void;
-  takePhoto?: () => void;
+  takePhoto?: () => void | Promise<string>;
 };
+
+type CameraOption = { id: string; label: string };
 
 type WindowWithBridge = Window & {
   XBTCameraBridge?: NativeCameraBridge;
@@ -50,7 +52,7 @@ const FullPhoto = () => {
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
   const [isCapturing, setIsCapturing] = useState(false);
 
-  const [cameras, setCameras] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<CameraOption[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [showCameraList, setShowCameraList] = useState(false);
 
@@ -412,7 +414,7 @@ const FullPhoto = () => {
       if (isNativeBridgeMode) {
         const bridge = getNativeBridge();
         if (bridge && typeof bridge.takePhoto === 'function') {
-          const possibleResult = (bridge.takePhoto as any)();
+          const possibleResult = bridge.takePhoto();
           
           if (possibleResult instanceof Promise) {
             const base64 = await possibleResult;
@@ -431,8 +433,8 @@ const FullPhoto = () => {
                 resolve(null);
               }, 6000);
 
-              const onPhoto = (e: any) => {
-                const base64 = e.detail?.base64 || e.base64 || (typeof e === 'string' ? e : null);
+              const onPhoto = (event: Event) => {
+                const base64 = (event as CustomEvent<{ base64?: string }>).detail?.base64;
                 if (typeof base64 === 'string' && base64.length > 100) {
                   clearTimeout(timeout);
                   cleanup();
@@ -443,7 +445,9 @@ const FullPhoto = () => {
                 }
               };
 
-              (window as any).onXBTNativePhoto = onPhoto;
+              type WindowWithPhotoCallback = Window & { onXBTNativePhoto?: (event: Event) => void };
+              const photoWindow = window as WindowWithPhotoCallback;
+              photoWindow.onXBTNativePhoto = onPhoto;
 
               const events = ['xbt-native-photo', 'xbt-native-camera-photo', 'native-photo'];
               const targets = [window, document];
@@ -453,7 +457,7 @@ const FullPhoto = () => {
               });
 
               function cleanup() {
-                delete (window as any).onXBTNativePhoto;
+                delete photoWindow.onXBTNativePhoto;
                 events.forEach(ev => {
                   targets.forEach(target => target.removeEventListener(ev, onPhoto));
                 });

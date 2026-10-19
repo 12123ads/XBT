@@ -183,6 +183,7 @@ Authorization: Bearer <JWT>
         "sign_type": 2,
         "if_refresh_ewm": false,
         "if_photo": false,
+        "if_face": false,
         "record_source": 0,
         "record_source_name": "",
         "record_sign_time": 1760000500000,
@@ -214,7 +215,7 @@ Authorization: Bearer <JWT>
 - `4` 位置签到
 - `5` 签到码签到
 
-说明：当 `sign_type=0` 且 `if_photo=true` 时，该活动为拍照签到，应调用 `/api/sign/photo`。
+说明：当 `sign_type=0` 且 `if_photo=true` 时，该活动为拍照签到，应调用 `/api/sign/photo`。当 `if_face=true` 时，签到时需要携带 `if_face=true`（`/api/sign/execute` 的 `special_params` 或 `/api/sign/photo` 的表单字段），后端会自动使用该用户已上传的人脸照片完成验证。
 
 说明：
 - 每门课程默认最多返回最新 `5` 条签到活动（可通过后端 `Server/config.yaml` 中的 `activity_list_limit` 配置）。
@@ -423,6 +424,7 @@ GET /api/sign/classmates?course_id=222&class_id=111
 - `class_id` (required): 班级 ID
 - `target_uid` (optional): 代签目标用户；不传则默认当前登录用户
 - `if_refresh_ewm` (optional): 与活动详情中的 `if_refresh_ewm` 一致
+- `if_face` (optional): 活动要求人脸验证时传 `true`
 - `file` (optional): 照片文件，字段名固定为 `file`，最大 20MB
 - `object_id` (optional): 已上传到超星云盘的图片 `objectId`；传了 `object_id` 时可以不传 `file`
 
@@ -442,6 +444,37 @@ curl -X POST http://localhost:3030/api/sign/photo \
   -F "target_uid=10001" \
   -F "file=@photo.jpg"
 ```
+
+### 5.7 人脸照片接口
+人脸照片用于需要人脸验证的签到活动。照片保存在 `users.face_photo`，上传时会自动压缩到 720×1280 以内并尽量控制在 100KB 以下。
+
+#### 5.7.1 查询人脸照片
+- Method: `GET`
+- Path: `/api/user/face`
+- Auth: 是
+
+可选参数 `status_only=1` 只返回是否存在照片：
+
+```json
+{ "has_face": true }
+```
+
+不传 `status_only` 时额外返回 `face_data`（JPEG data URL）。
+
+#### 5.7.2 上传/替换人脸照片
+- Method: `POST`
+- Path: `/api/user/face`
+- Auth: 是
+- Content-Type: `multipart/form-data`
+
+字段：`file`（必填，图片，最大 20MB）。
+
+#### 5.7.3 删除人脸照片
+- Method: `DELETE`
+- Path: `/api/user/face`
+- Auth: 是
+
+说明：签到时若活动 `if_face=true`，后端会为目标账号上传该照片并换取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。
 
 ---
 

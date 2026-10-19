@@ -42,6 +42,18 @@ func (u *handlerSignUpstream) Sign(_ string, _ string, fixed xxt.FixedParams, _ 
 	return "success", nil
 }
 
+func (u *handlerSignUpstream) UploadPanFile(string, string, string, string, []byte) (string, error) {
+	return "object-id", nil
+}
+
+func (u *handlerSignUpstream) UploadFaceTemp(string, string, string, string, []byte) (string, error) {
+	return "face-object-id", nil
+}
+
+func (u *handlerSignUpstream) CheckFaceResult(string, string, int64, string) (xxt.FaceCheckResult, error) {
+	return xxt.FaceCheckResult{}, nil
+}
+
 func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstream) {
 	t.Helper()
 	database := newHandlerAccessDB(t)

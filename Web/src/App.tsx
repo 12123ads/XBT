@@ -19,6 +19,7 @@ import LearningDashboard from './pages/LearningDashboard';
 import CampusQR from './pages/CampusQR';
 import Contributions from './pages/Contributions';
 import FullPhoto from './pages/FullPhoto';
+import FaceCapture from './pages/FaceCapture';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -86,6 +87,7 @@ function App() {
               <Route path="/campus-qr" element={<CampusQR />} />
               <Route path="/contributions" element={<Contributions />} />
               <Route path="/photo-capture" element={<FullPhoto />} />
+              <Route path="/face-capture" element={<FaceCapture />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

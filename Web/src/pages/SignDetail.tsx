@@ -83,6 +83,7 @@ const SignDetail = () => {
   const activity = location.state?.activity as SignActivity;
   const course = location.state?.course as CourseActivities;
   const isPhotoSign = activity?.sign_type === 0 && activity.if_photo;
+  const isFaceSign = activity?.if_face === true;
 
   const [classmates, setClassmates] = useState<Classmate[]>([]);
   const [selectedUids, setSelectedUids] = useState<number[]>([]);
@@ -378,6 +379,7 @@ const SignDetail = () => {
       special_params.longitude = lng;
       special_params.description = locationStr;
     }
+    if (isFaceSign) special_params.if_face = true;
 
     try {
       const checkResp = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
@@ -445,6 +447,7 @@ const SignDetail = () => {
                 formData.append('class_id', String(activity.class_id));
                 formData.append('target_uid', String(uid));
                 formData.append('if_refresh_ewm', String(activity.if_refresh_ewm));
+                formData.append('if_face', String(!!isFaceSign));
                 formData.append('activity_name', activity.activity_name);
                 formData.append('course_name', course?.course_name || activity.course_name);
                 formData.append('course_teacher', course?.course_teacher || activity.course_teacher);
@@ -537,15 +540,19 @@ const SignDetail = () => {
   if (!activity) return null;
 
   const getSignTypeName = () => {
-    if (isPhotoSign) return '拍照签到';
-    switch (activity.sign_type) {
-      case 0: return '普通签到';
-      case 2: return '二维码签到';
-      case 3: return '手势签到';
-      case 4: return '位置签到';
-      case 5: return '签到码签到';
-      default: return '其他签到';
+    let base: string;
+    if (isPhotoSign) base = '拍照签到';
+    else {
+      switch (activity.sign_type) {
+        case 0: base = '普通签到'; break;
+        case 2: base = '二维码签到'; break;
+        case 3: base = '手势签到'; break;
+        case 4: base = '位置签到'; break;
+        case 5: base = '签到码签到'; break;
+        default: base = '其他签到';
+      }
     }
+    return isFaceSign ? `${base}·人脸验证` : base;
   };
 
   const getSignIcon = (size: number = 24) => {
@@ -644,6 +651,17 @@ const SignDetail = () => {
                 onClear={clearPhotos}
                 onOpenCamera={() => navigate('/photo-capture', { state: { activity, course, selectedUids, classmates, existingPhotos: photoFiles } })}
               />
+            )}
+            {isFaceSign && (
+              <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-2xl">
+                <Fingerprint size={20} className="text-blue-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-bold text-blue-800">需要人脸验证</p>
+                  <p className="text-xs text-blue-600 mt-0.5 leading-5">
+                    将自动使用您在主页设置的人脸照片完成验证。如未设置，请先在主页上传人脸照片。
+                  </p>
+                </div>
+              </div>
             )}
             {activity.sign_type === 0 && !isPhotoSign && <NormalInput />}
           </div>

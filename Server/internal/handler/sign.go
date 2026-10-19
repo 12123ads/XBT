@@ -171,9 +171,16 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 				SignType:     cache.SignType,
 				IfRefreshEWM: cache.IfRefreshEWM,
 				IfPhoto:      cache.IfPhoto,
+				IfFace:       cache.IfFace,
+			}
+			if !cache.IfFace {
+				if h.xxt.GetFaceFlag(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid) {
+					detail.IfFace = true
+					h.db.Model(&model.SignActivity{}).Where("activity_id = ?", a.ActiveID).Update("if_face", true)
+				}
 			}
 		} else {
-			remoteDetail, err := h.xxt.GetSignDetail(user.Mobile, password, a.ActiveID)
+			remoteDetail, err := h.xxt.GetSignDetail(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid)
 			if err == nil {
 				detail = remoteDetail
 				cacheRow := model.SignActivity{
@@ -183,6 +190,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 					SignType:     detail.SignType,
 					IfRefreshEWM: detail.IfRefreshEWM,
 					IfPhoto:      detail.IfPhoto,
+					IfFace:       detail.IfFace,
 				}
 				_ = h.db.Clauses(clause.OnConflict{
 					Columns:   []clause.Column{{Name: "activity_id"}},
@@ -197,6 +205,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 						SignType:     cache.SignType,
 						IfRefreshEWM: cache.IfRefreshEWM,
 						IfPhoto:      cache.IfPhoto,
+						IfFace:       cache.IfFace,
 					}
 				} else {
 					continue
@@ -212,6 +221,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 					SignType:     cache.SignType,
 					IfRefreshEWM: cache.IfRefreshEWM,
 					IfPhoto:      cache.IfPhoto,
+					IfFace:       cache.IfFace,
 				}
 			} else {
 				continue
@@ -255,6 +265,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			"sign_type":          detail.SignType,
 			"if_refresh_ewm":     detail.IfRefreshEWM,
 			"if_photo":           detail.IfPhoto,
+			"if_face":            detail.IfFace,
 			"record_source":      recordSource,
 			"record_source_name": recordSourceName,
 			"record_sign_time":   recordSignTime,
@@ -451,6 +462,7 @@ func (h *SignHandler) Photo(c *gin.Context) {
 		CourseID:      courseID,
 		ClassID:       classID,
 		IfRefreshEWM:  optionalBoolForm(c, "if_refresh_ewm"),
+		IfFace:        optionalBoolForm(c, "if_face"),
 		ActivityName:  strings.TrimSpace(c.PostForm("activity_name")),
 		CourseName:    strings.TrimSpace(c.PostForm("course_name")),
 		CourseTeacher: strings.TrimSpace(c.PostForm("course_teacher")),

@@ -33,6 +33,18 @@ func (u *signAuthorizationUpstream) Sign(mobile, password string, fixed xxt.Fixe
 	return u.sign(mobile, password, fixed, signType, special)
 }
 
+func (u *signAuthorizationUpstream) UploadPanFile(string, string, string, string, []byte) (string, error) {
+	panic("unexpected pan upload")
+}
+
+func (u *signAuthorizationUpstream) UploadFaceTemp(string, string, string, string, []byte) (string, error) {
+	panic("unexpected face upload")
+}
+
+func (u *signAuthorizationUpstream) CheckFaceResult(string, string, int64, string) (xxt.FaceCheckResult, error) {
+	panic("unexpected face check")
+}
+
 func selectAuthorizationCourse(t *testing.T, database *gorm.DB, uid, courseID, classID int64) {
 	t.Helper()
 	if err := database.Create(&model.UserCourse{UserUID: uid, CourseID: courseID, ClassID: classID, IsSelected: true}).Error; err != nil {
