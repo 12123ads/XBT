@@ -2,9 +2,12 @@ package handler
 
 import (
 	"errors"
+	"io"
 	"log"
+	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +22,7 @@ import (
 )
 
 const manualEndTimeSentinel int64 = 64060559999000
+const maxPhotoUploadBytes int64 = 20 << 20
 
 type selectedCourseInfo struct {
 	CourseID int64
@@ -166,6 +170,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 				EndTime:      cache.EndTime,
 				SignType:     cache.SignType,
 				IfRefreshEWM: cache.IfRefreshEWM,
+				IfPhoto:      cache.IfPhoto,
 			}
 		} else {
 			remoteDetail, err := h.xxt.GetSignDetail(user.Mobile, password, a.ActiveID)
@@ -177,6 +182,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 					EndTime:      detail.EndTime,
 					SignType:     detail.SignType,
 					IfRefreshEWM: detail.IfRefreshEWM,
+					IfPhoto:      detail.IfPhoto,
 				}
 				_ = h.db.Clauses(clause.OnConflict{
 					Columns:   []clause.Column{{Name: "activity_id"}},
@@ -190,6 +196,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 						EndTime:      cache.EndTime,
 						SignType:     cache.SignType,
 						IfRefreshEWM: cache.IfRefreshEWM,
+						IfPhoto:      cache.IfPhoto,
 					}
 				} else {
 					continue
@@ -204,6 +211,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 					EndTime:      cache.EndTime,
 					SignType:     cache.SignType,
 					IfRefreshEWM: cache.IfRefreshEWM,
+					IfPhoto:      cache.IfPhoto,
 				}
 			} else {
 				continue
@@ -246,6 +254,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			"end_time":           detail.EndTime,
 			"sign_type":          detail.SignType,
 			"if_refresh_ewm":     detail.IfRefreshEWM,
+			"if_photo":           detail.IfPhoto,
 			"record_source":      recordSource,
 			"record_source_name": recordSourceName,
 			"record_sign_time":   recordSignTime,
@@ -374,6 +383,89 @@ func (h *SignHandler) Execute(c *gin.Context) {
 	common.Success(c, res)
 }
 
+func (h *SignHandler) Photo(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	activityID, err := requiredInt64Form(c, "activity_id")
+	if err != nil {
+		common.Fail(c, 400, "activity_id is required")
+		return
+	}
+	courseID, err := requiredInt64Form(c, "course_id")
+	if err != nil {
+		common.Fail(c, 400, "course_id is required")
+		return
+	}
+	classID, err := requiredInt64Form(c, "class_id")
+	if err != nil {
+		common.Fail(c, 400, "class_id is required")
+		return
+	}
+	targetUID := optionalInt64Form(c, "target_uid")
+	if targetUID <= 0 {
+		targetUID = uid
+	}
+
+	objectID := strings.TrimSpace(c.PostForm("object_id"))
+	if objectID == "" {
+		objectID = strings.TrimSpace(c.PostForm("objectId"))
+	}
+
+	var photo []byte
+	filename := ""
+	contentType := ""
+	fileHeader, fileErr := c.FormFile("file")
+	if fileErr == nil {
+		if fileHeader.Size > maxPhotoUploadBytes {
+			common.Fail(c, 400, "photo file is too large")
+			return
+		}
+		file, err := fileHeader.Open()
+		if err != nil {
+			common.Fail(c, 400, "open photo file failed")
+			return
+		}
+		defer file.Close()
+		photo, err = io.ReadAll(io.LimitReader(file, maxPhotoUploadBytes+1))
+		if err != nil {
+			common.Fail(c, 400, "read photo file failed")
+			return
+		}
+		if int64(len(photo)) > maxPhotoUploadBytes {
+			common.Fail(c, 400, "photo file is too large")
+			return
+		}
+		filename = fileHeader.Filename
+		contentType = fileHeader.Header.Get("Content-Type")
+	} else if objectID == "" {
+		if errors.Is(fileErr, http.ErrMissingFile) {
+			common.Fail(c, 400, "file or object_id is required")
+			return
+		}
+		common.Fail(c, 400, "invalid photo upload")
+		return
+	}
+
+	res, err := h.signService.ExecutePhoto(uid, service.ExecutePhotoSignRequest{
+		ActivityID:    activityID,
+		TargetUID:     targetUID,
+		CourseID:      courseID,
+		ClassID:       classID,
+		IfRefreshEWM:  optionalBoolForm(c, "if_refresh_ewm"),
+		ActivityName:  strings.TrimSpace(c.PostForm("activity_name")),
+		CourseName:    strings.TrimSpace(c.PostForm("course_name")),
+		CourseTeacher: strings.TrimSpace(c.PostForm("course_teacher")),
+		ObjectID:      objectID,
+		Filename:      filename,
+		ContentType:   contentType,
+		Photo:         photo,
+	})
+	if err != nil {
+		h.failSign(c, err)
+		return
+	}
+	common.Success(c, res)
+}
+
 func (h *SignHandler) Check(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	var req dto.SignCheckRequest
@@ -410,4 +502,33 @@ func (h *SignHandler) failSign(c *gin.Context, err error) {
 	default:
 		common.Fail(c, 500, "sign operation failed")
 	}
+}
+
+func requiredInt64Form(c *gin.Context, key string) (int64, error) {
+	raw := strings.TrimSpace(c.PostForm(key))
+	if raw == "" {
+		return 0, errors.New("missing form field")
+	}
+	return strconv.ParseInt(raw, 10, 64)
+}
+
+func optionalInt64Form(c *gin.Context, key string) int64 {
+	raw := strings.TrimSpace(c.PostForm(key))
+	if raw == "" {
+		return 0
+	}
+	value, _ := strconv.ParseInt(raw, 10, 64)
+	return value
+}
+
+func optionalBoolForm(c *gin.Context, key string) bool {
+	raw := strings.TrimSpace(c.PostForm(key))
+	if raw == "" {
+		return false
+	}
+	value, err := strconv.ParseBool(raw)
+	if err == nil {
+		return value
+	}
+	return raw == "1"
 }

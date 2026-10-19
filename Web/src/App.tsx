@@ -18,6 +18,7 @@ import RoomCheck from './pages/RoomCheck';
 import LearningDashboard from './pages/LearningDashboard';
 import CampusQR from './pages/CampusQR';
 import Contributions from './pages/Contributions';
+import FullPhoto from './pages/FullPhoto';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -84,6 +85,7 @@ function App() {
               <Route path="/learning" element={<LearningDashboard />} />
               <Route path="/campus-qr" element={<CampusQR />} />
               <Route path="/contributions" element={<Contributions />} />
+              <Route path="/photo-capture" element={<FullPhoto />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

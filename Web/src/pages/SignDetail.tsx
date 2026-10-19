@@ -14,7 +14,8 @@ import {
   Fingerprint,
   RectangleEllipsis,
   Share2,
-  Copy
+  Copy,
+  Camera
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import axios from 'axios';
@@ -30,7 +31,41 @@ import { PinInput } from '../components/sign/PinInput';
 import { LocationInput } from '../components/sign/LocationInput';
 import { QrInput } from '../components/sign/QrInput';
 import { NormalInput } from '../components/sign/NormalInput';
+import { PhotoInput } from '../components/sign/PhotoInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
+
+const MAX_PHOTO_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+function shuffleItems<T>(items: T[]) {
+  const next = [...items];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
+const buildPhotoAssignments = (targetUids: number[], files: File[]) => {
+  const assignments = new Map<number, File>();
+  if (files.length === 0) return assignments;
+
+  if (files.length >= targetUids.length) {
+    const shuffledFiles = shuffleItems(files);
+    targetUids.forEach((uid, index) => {
+      assignments.set(uid, shuffledFiles[index]);
+    });
+    return assignments;
+  }
+
+  let shuffledCycle = shuffleItems(files);
+  targetUids.forEach((uid, index) => {
+    if (index > 0 && index % files.length === 0) {
+      shuffledCycle = shuffleItems(files);
+    }
+    assignments.set(uid, shuffledCycle[index % files.length]);
+  });
+  return assignments;
+};
 
 const getErrorMessage = (error: unknown, fallback: string) => {
   return error instanceof Error ? error.message : fallback;
@@ -47,6 +82,7 @@ const SignDetail = () => {
   
   const activity = location.state?.activity as SignActivity;
   const course = location.state?.course as CourseActivities;
+  const isPhotoSign = activity?.sign_type === 0 && activity.if_photo;
 
   const [classmates, setClassmates] = useState<Classmate[]>([]);
   const [selectedUids, setSelectedUids] = useState<number[]>([]);
@@ -62,6 +98,8 @@ const SignDetail = () => {
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [photoPreviewUrls, setPhotoPreviewUrls] = useState<string[]>([]);
   
   const [showProgress, setShowProgress] = useState(false);
   const [signStatuses, setSignStatuses] = useState<Record<number, Partial<SignStatusMessage>>>({});
@@ -70,6 +108,7 @@ const SignDetail = () => {
   const isExecutingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
+  const photoPreviewUrlsRef = useRef<string[]>([]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -175,6 +214,61 @@ const SignDetail = () => {
     setSelectedUids(selectedUids.length === classmates.length ? [] : classmates.map(c => c.uid));
   };
 
+  const handlePhotoAdd = useCallback((files: File[]) => {
+    const acceptedFiles: File[] = [];
+    let invalidTypeCount = 0;
+    let oversizeCount = 0;
+
+    files.forEach((file) => {
+      if (!(file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(file.name))) {
+        invalidTypeCount += 1;
+        return;
+      }
+      if (file.size > MAX_PHOTO_UPLOAD_BYTES) {
+        oversizeCount += 1;
+        return;
+      }
+      acceptedFiles.push(file);
+    });
+
+    if (invalidTypeCount > 0) toast.error(`${invalidTypeCount} 个文件不是图片，已跳过`);
+    if (oversizeCount > 0) toast.error(`${oversizeCount} 张照片超过 20MB，已跳过`);
+    if (acceptedFiles.length === 0) return;
+
+    const nextUrls = acceptedFiles.map((file) => URL.createObjectURL(file));
+    setPhotoFiles(prev => [...prev, ...acceptedFiles]);
+    setPhotoPreviewUrls(prev => [...prev, ...nextUrls]);
+  }, []);
+
+  const removePhoto = useCallback((index: number) => {
+    const url = photoPreviewUrlsRef.current[index];
+    if (url) URL.revokeObjectURL(url);
+    setPhotoFiles(prev => prev.filter((_, i) => i !== index));
+    setPhotoPreviewUrls(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const clearPhotos = useCallback(() => {
+    photoPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    setPhotoFiles([]);
+    setPhotoPreviewUrls([]);
+  }, []);
+
+  useEffect(() => {
+    const returnedPhotos = location.state?.returnedPhotos as File[] | undefined;
+    if (returnedPhotos && returnedPhotos.length > 0) {
+      handlePhotoAdd(returnedPhotos);
+      window.history.replaceState({ ...location.state, returnedPhotos: undefined }, '');
+    }
+  }, [location.state, handlePhotoAdd]);
+
+  useEffect(() => {
+    photoPreviewUrlsRef.current = photoPreviewUrls;
+  }, [photoPreviewUrls]);
+
+  useEffect(() => () => {
+    photoPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
+
   const applyLocation = (nextLat: string, nextLng: string, nextDescription: string) => {
     setLat(nextLat);
     setLng(nextLng);
@@ -242,6 +336,7 @@ const SignDetail = () => {
     if (!activity || !owner || !mountedRef.current || isExecutingRef.current) return;
     const account = useAuthStore.getState();
     if (account.activeUid !== owner.uid || account.token !== owner.token) return;
+    const selectedPhotoFiles = [...photoFiles];
     if ((activity.sign_type === 3 || activity.sign_type === 5) && (!signCode || signCode.length < 4)) {
       toast.error('请输入正确位数的签到码 / 手势');
       return;
@@ -249,6 +344,11 @@ const SignDetail = () => {
 
     if (activity.sign_type === 4 && (!lat || !lng)) {
       toast.error('请先选择签到地点');
+      return;
+    }
+
+    if (isPhotoSign && selectedPhotoFiles.length === 0) {
+      toast.error('请先拍照或选择照片');
       return;
     }
 
@@ -266,6 +366,7 @@ const SignDetail = () => {
     setShowProgress(true);
 
     const targetUids = [...new Set([owner.uid, ...selectedUids])];
+    const photoAssignments = isPhotoSign ? buildPhotoAssignments(targetUids, selectedPhotoFiles) : new Map<number, File>();
     const initialStatuses: Record<number, Partial<SignStatusMessage>> = {};
     targetUids.forEach(uid => initialStatuses[uid] = { status: 'pending', message: '等待中' });
     setSignStatuses(initialStatuses);
@@ -330,14 +431,34 @@ const SignDetail = () => {
           }));
 
           try {
-            const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
-              activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
-              course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
-              activity_name: activity.activity_name,
-              course_name: course?.course_name || activity.course_name,
-              course_teacher: course?.course_teacher || activity.course_teacher,
-              special_params
-            }, withAccount(owner, controller.signal));
+            const assignedPhotoFile = isPhotoSign ? photoAssignments.get(uid) : null;
+            if (isPhotoSign && !assignedPhotoFile) {
+              setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], status: 'failed', message: '未找到可上传照片' } }));
+              return;
+            }
+
+            const execResp = isPhotoSign && assignedPhotoFile
+              ? await client.post<ApiResponse<SignExecuteResult>>('/sign/photo', (() => {
+                const formData = new FormData();
+                formData.append('activity_id', String(activity.active_id));
+                formData.append('course_id', String(activity.course_id));
+                formData.append('class_id', String(activity.class_id));
+                formData.append('target_uid', String(uid));
+                formData.append('if_refresh_ewm', String(activity.if_refresh_ewm));
+                formData.append('activity_name', activity.activity_name);
+                formData.append('course_name', course?.course_name || activity.course_name);
+                formData.append('course_teacher', course?.course_teacher || activity.course_teacher);
+                formData.append('file', assignedPhotoFile);
+                return formData;
+              })(), withAccount(owner, controller.signal))
+              : await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
+                activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
+                course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
+                activity_name: activity.activity_name,
+                course_name: course?.course_name || activity.course_name,
+                course_teacher: course?.course_teacher || activity.course_teacher,
+                special_params
+              }, withAccount(owner, controller.signal));
             if (!isCurrent()) return;
 
             const res = execResp.data.data;
@@ -416,6 +537,7 @@ const SignDetail = () => {
   if (!activity) return null;
 
   const getSignTypeName = () => {
+    if (isPhotoSign) return '拍照签到';
     switch (activity.sign_type) {
       case 0: return '普通签到';
       case 2: return '二维码签到';
@@ -427,6 +549,7 @@ const SignDetail = () => {
   };
 
   const getSignIcon = (size: number = 24) => {
+    if (isPhotoSign) return <Camera size={size} />;
     switch (activity.sign_type) {
       case 2: return <QrCode size={size} />;
       case 3: return <Fingerprint size={size} />;
@@ -511,7 +634,18 @@ const SignDetail = () => {
               />
             )}
             {activity.sign_type === 2 && <QrInput />}
-            {activity.sign_type === 0 && <NormalInput />}
+            {isPhotoSign && (
+              <PhotoInput
+                files={photoFiles}
+                previewUrls={photoPreviewUrls}
+                disabled={isExecuting}
+                onAdd={handlePhotoAdd}
+                onRemove={removePhoto}
+                onClear={clearPhotos}
+                onOpenCamera={() => navigate('/photo-capture', { state: { activity, course, selectedUids, classmates, existingPhotos: photoFiles } })}
+              />
+            )}
+            {activity.sign_type === 0 && !isPhotoSign && <NormalInput />}
           </div>
 
           <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 mt-auto shrink-0">

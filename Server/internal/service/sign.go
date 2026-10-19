@@ -19,6 +19,7 @@ type signClient interface {
 	PreSign(mobile, password string, fixed xxt.FixedParams, code, enc string) error
 	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error)
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
+	UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error)
 }
 
 type SignService struct {
@@ -66,6 +67,21 @@ type ExecuteSignRequest struct {
 	CourseName    string
 	CourseTeacher string
 	Special       map[string]interface{}
+}
+
+type ExecutePhotoSignRequest struct {
+	ActivityID    int64
+	TargetUID     int64
+	CourseID      int64
+	ClassID       int64
+	IfRefreshEWM  bool
+	ActivityName  string
+	CourseName    string
+	CourseTeacher string
+	ObjectID      string
+	Filename      string
+	ContentType   string
+	Photo         []byte
 }
 
 type SignCheckItem struct {
@@ -417,6 +433,66 @@ func (s *SignService) signRecordFromRequest(req ExecuteSignRequest, sourceUID in
 		CourseTeacher: strings.TrimSpace(req.CourseTeacher),
 		SignTimeMS:    time.Now().UnixMilli(),
 	}
+}
+
+func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignRequest) (SignExecuteResult, error) {
+	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "签到参数不完整"}, nil
+	}
+	if req.TargetUID <= 0 {
+		req.TargetUID = operatorUID
+	}
+	if err := s.AuthorizeTargets(operatorUID, req.ActivityID, req.CourseID, req.ClassID, []int64{req.TargetUID}); err != nil {
+		return SignExecuteResult{}, err
+	}
+	state, err := s.resolveSignState(req.ActivityID, req.TargetUID)
+	if err != nil {
+		return SignExecuteResult{}, err
+	}
+	if state.Signed {
+		return SignExecuteResult{
+			UserID:           req.TargetUID,
+			Success:          true,
+			AlreadySigned:    true,
+			RecordSource:     state.RecordSource,
+			RecordSourceName: state.RecordSourceName,
+			Message:          state.Message,
+		}, nil
+	}
+
+	objectID := strings.TrimSpace(req.ObjectID)
+	if objectID == "" {
+		if len(req.Photo) == 0 {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "请上传照片或传入 object_id"}, nil
+		}
+		var target model.User
+		if err := s.db.Where("uid = ?", req.TargetUID).First(&target).Error; err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未登录或账号不可用"}, nil
+		}
+		password, err := s.cc.Decrypt(target.CredentialCipher)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录"}, nil
+		}
+		objectID, err = s.xxt.UploadPanFile(target.Mobile, password, req.Filename, req.ContentType, req.Photo)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "照片上传失败：" + err.Error()}, nil
+		}
+	}
+
+	return s.ExecuteOne(operatorUID, ExecuteSignRequest{
+		ActivityID:    req.ActivityID,
+		TargetUID:     req.TargetUID,
+		SignType:      xxt.SignNormal,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  req.IfRefreshEWM,
+		ActivityName:  req.ActivityName,
+		CourseName:    req.CourseName,
+		CourseTeacher: req.CourseTeacher,
+		Special: map[string]interface{}{
+			"object_id": objectID,
+		},
+	})
 }
 
 func (s *SignService) toUserSignMessage(raw string) string {
