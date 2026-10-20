@@ -52,6 +52,7 @@ type Client struct {
 	signFID        string
 	activeFetchMax int
 	http           *http.Client
+	captchaModel   slideXPredictor
 	sessionMu      sync.Mutex
 	sessions       map[string]*Session
 	metadataMu     sync.Mutex

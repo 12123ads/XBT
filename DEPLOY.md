@@ -36,6 +36,50 @@ nano Server/config.yaml
 - `allow_insecure_tls: false`
 - `jwt_secret`、`credential_secret` 换成随机高强度值
 - `postgres_dsn` 保持与 compose 一致（默认 `host=db`）
+- `captcha_model_enabled: true`（默认；文件缺失时自动回退启发式）
+- `captcha_model_path: "./assets/captcha.ort"`
+
+### 3.1 验证码模型与 ONNX Runtime
+
+滑块识别使用 `Server/assets/captcha.ort`（YOLO11n，来自 ChaoxingSignFaker，AGPLv3，见 `NOTICE`）。Go 绑定为 `github.com/yalue/onnxruntime_go`，因此：
+
+- **必须使用 cgo 构建**：`CGO_ENABLED=1`，构建机需要 C 编译器。
+- **运行时需要共享库**：`libonnxruntime.so` 版本必须与绑定头文件一致（当前 `1.29.0`）。程序通过 `CAPTCHA_ORT_LIB_PATH` 指定路径；未设置时按 `libonnxruntime.so` 由 `LD_LIBRARY_PATH` / `ldconfig` 解析。
+- 官方镜像已在构建阶段下载对应架构的 ONNX Runtime 到 `/usr/local/lib`，并设置：
+  - `LD_LIBRARY_PATH=/usr/local/lib`
+  - `CAPTCHA_ORT_LIB_PATH=/usr/local/lib/libonnxruntime.so`
+
+非 Docker 部署（Linux）：
+
+```bash
+# 以 arm64 为例；amd64 使用 onnxruntime-linux-x64-1.29.0.tgz
+curl -fsSL -o /tmp/ort.tgz \
+  https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-aarch64-1.29.0.tgz
+sudo tar -xzf /tmp/ort.tgz -C /opt
+sudo cp -a /opt/onnxruntime-linux-aarch64-1.29.0/lib/. /usr/local/lib/
+sudo ldconfig
+
+cd Server
+CGO_ENABLED=1 go build -o xbt-server ./cmd/server
+CAPTCHA_ORT_LIB_PATH=/usr/local/lib/libonnxruntime.so ./xbt-server
+```
+
+降级行为：模型文件缺失、运行时加载失败或推理失败时，日志出现
+`captcha_model=fallback`，本次验证码改用内置启发式，签到流程不中断。
+模型可用时日志为 `captcha_model=model`，`captcha attempt` 行也会带该字段。
+
+验证模型链路（需共享库）：
+
+```bash
+cd Server
+CAPTCHA_ORT_LIB_PATH=/usr/local/lib/libonnxruntime.so \
+CAPTCHA_TEST_REQUIRE_MODEL=1 go test ./internal/captcha -v
+```
+
+> 共享库缺失时普通 `go test ./...` 会跳过模型用例；CI/发布验证应设置
+> `CAPTCHA_TEST_REQUIRE_MODEL=1`，让缺失直接失败。
+
+---
 
 快速生成随机密钥：
 

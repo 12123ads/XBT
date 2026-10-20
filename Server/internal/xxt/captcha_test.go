@@ -7,11 +7,13 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -287,5 +289,59 @@ func TestCaptchaCheckErrorIsSurfaced(t *testing.T) {
 	_, err := client.fetchCaptchaValidate(captchaTestHTTP(client), captchaTestSign(FixedParams{}))
 	if err == nil || err.Error() != "验证码已失效" {
 		t.Fatalf("error = %v, want upstream message", err)
+	}
+}
+
+type captchaStubPredictor struct {
+	x   int
+	err error
+}
+
+func (s captchaStubPredictor) PredictSlideX([]byte) (int, error) {
+	return s.x, s.err
+}
+
+func TestDetectSlideXCandidatesUsesModelAsOnlyCandidate(t *testing.T) {
+	shade, cutout, _ := captchaTestImages(t)
+	client := newCaptchaTestClient(t, nil)
+	client.SetCaptchaPredictor(captchaStubPredictor{x: 77})
+
+	candidates, source, err := client.detectSlideXCandidates(cutout, shade)
+	if err != nil {
+		t.Fatalf("detectSlideXCandidates error = %v", err)
+	}
+	if source != "model" {
+		t.Fatalf("source = %q, want model", source)
+	}
+	if len(candidates) != 1 || candidates[0] != 77 {
+		t.Fatalf("candidates = %v, want [77]", candidates)
+	}
+}
+
+func TestDetectSlideXCandidatesFallsBackToHeuristic(t *testing.T) {
+	shade, cutout, _ := captchaTestImages(t)
+	client := newCaptchaTestClient(t, nil)
+	client.SetCaptchaPredictor(captchaStubPredictor{err: fmt.Errorf("inference failed")})
+
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+
+	candidates, source, err := client.detectSlideXCandidates(cutout, shade)
+	if err != nil {
+		t.Fatalf("detectSlideXCandidates error = %v", err)
+	}
+	if source != "fallback" {
+		t.Fatalf("source = %q, want fallback", source)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("candidates empty, want heuristic candidates")
+	}
+	if !strings.Contains(logs.String(), "captcha_model=fallback") {
+		t.Fatalf("logs = %q, want captcha_model=fallback", logs.String())
+	}
+	if !strings.Contains(logs.String(), "inference failed") {
+		t.Fatalf("logs = %q, want inference error", logs.String())
 	}
 }

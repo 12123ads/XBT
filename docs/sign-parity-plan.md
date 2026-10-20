@@ -26,7 +26,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 
 ### 非目标
 - 不破解手势码/签到码，不做代答、不绕过监考或人脸核验。
-- 不复制 CSF 的 AGPL 代码或 `captcha.ort` 模型资产（见 §7 许可证）。
+- 不复制 CSF 的 Kotlin 源码。滑块模型 `captcha.ort` 已在 XBT-S16 按 AGPLv3 作为独立资产引入（整库同步转 AGPLv3，见 §8.1）。
 - 不改变现有权限模型、白名单模型和账号加密方式。
 - 不在本期做校园定制版适配；IM 群聊签到来源按 XBT-S14 范围做（`/sign/activities` 刷新时按需抓取，只发现 + 跳现有签到流程，不自动提交）。
 
@@ -120,7 +120,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - 上游 mock 第一次返回 `result=false`，客户端重新取 challenge，而不是换 x 重试同一 token。
   - `captchaId` 可通过配置切换，默认值以 staging 实测为准。
   - 失败不把内部 `validate` 字符串直接暴露给前端，映射为可读错误码。
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：上述 1–5 已落地——`fetchCaptchaValidate` 复用会话 jar、`get/conf` 取 `t` 派生 `captchaKey`/`token`/`iv`、校验带 `iv`+`t=a`、每个 challenge 只提交一次 top-1、最多 3 个 challenge；埋点由 `logCaptchaAttempt` 输出 `challenge_id/candidate_count/top1_x/upstream_result/attempt`。回归测试见 `Server/internal/xxt/captcha_test.go`。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：上述 1–5 已落地——`fetchCaptchaValidate` 复用会话 jar、`get/conf` 取 `t` 派生 `captchaKey`/`token`/`iv`、校验带 `iv`+`t=a`、每个 challenge 只提交一次 top-1、最多 3 个 challenge；埋点由 `logCaptchaAttempt` 输出 `challenge_id/captcha_model/candidate_count/top1_x/upstream_result/attempt`。S16 起模型可用时 top-1 即模型 x；回归测试见 `Server/internal/xxt/captcha_test.go`。
 
 ### 3.3 P1：成功率与体验
 
@@ -248,7 +248,7 @@ grep -n "activeType != 2\|taskactivelist\|signDetail" Server/internal/xxt/client
 
 ## 7. 风险与依赖
 
-1. **许可证**：CSF 为 AGPLv3，xbt 为 GPLv3；AGPLv3 与 GPLv3 不兼容。禁止直接复制 CSF 代码或 `captcha.ort`。本方案只复用**协议行为**并独立实现；若引入模型，需单独授权评估。
+1. **许可证**：CSF 为 AGPLv3。xbt 已于 2026-10-20 决定整库转为 AGPLv3（用户评论 `11eadf8b`），因此可以引入 `captcha.ort`（AGPLv3，未修改）。仍不复制 CSF 的 Kotlin 源码；推理行为按 `ChaoxingCaptchaPredictor.kt` 独立实现。仓库内不得再放入与 AGPLv3 不兼容的第三方代码。
 2. **上游风控/接口漂移**：`getPPTActiveInfo`、验证码参数可能随时变化；所有端点与 `captchaId` 配置化，保留降级路径。
 3. **deviceCode 隐私**：不使用硬件标识；按账号生成并持久化随机值。
 4. **账号风险**：高频签到/重试可能触发风控；服务端限制单账号并发与重试次数。
@@ -261,44 +261,55 @@ grep -n "activeType != 2\|taskactivelist\|signDetail" Server/internal/xxt/client
 | # | 问题 | 选项 | 推荐 |
 |---|---|---|---|
 | Q1 | `deviceCode` 生成策略 | A. 每账号稳定随机值；B. 模拟 Android 设备指纹 | A：隐私风险低、实现简单，先验证上游接受度 |
-| Q2 | 验证码识别 | A. 保留现有启发式；B. 引入 CSF 的 `captcha.ort`（YOLO11n）；C. 自训/授权非 AGPL 检测器 | **A 先行**：先修 S5 协议 + 埋点，单 challenge 通过率 ≥85% 即维持 A。**B 排除**：权重元数据自述 `AGPL-3.0 License`，与 xbt 的 GPLv3 不兼容。仅当 A 修完仍 <70% 才进入 C。详见 §8.1 |
+| Q2 | 验证码识别 | A. 保留现有启发式；B. 引入 CSF 的 `captcha.ort`（YOLO11n）；C. 自训/授权非 AGPL 检测器 | **B（2026-10-20 决策，用户评论 `11eadf8b`）**：整库转 AGPLv3，引入 CSF 模型；S16 已落地，模型失败仍回退 A。详见 §8.1 |
 | Q3 | 签退是否本期做 | A. 本期；B. 下一期 | B：依赖主签到稳定性，且需产品确认分享场景 |
 | Q4 | 多副本 `enc2` 状态 | A. 进程内；B. 共享存储 | A：当前单实例部署；扩容前再评估 |
 
 ### 8.1 验证码识别：CSF 模型 vs xbt 启发式（评估）
 
-**大白话版**：xbt 现在靠「贴图比对」找缺口，faker 用训练好的 AI 直接看缺口在哪；AI 更准更稳，但不能用（许可冲突 + 部署变重）。xbt 验证码失败的真正原因是流程参数错了，不是看得不准。所以先修流程、加统计，用「一次就过」的比例决定要不要自己训一个模型。
+**大白话版**：xbt 原来靠「贴图比对」找缺口，faker 用训练好的 AI 直接看缺口在哪。2026-10-20 用户决定整库转 AGPLv3，许可障碍消除，S16 直接引入 CSF 模型；模型不可用时仍回退原有启发式。
 
 **结论先行**
 
-1. xbt 目前**没有识别模型**：`detectSlideXCandidates` 是两路手写打分（`cutoutImage` alpha 掩码的灰度差 + 列边缘剖面投票），无参数、无训练集。所以问题不是"换哪个模型"，而是"启发式 vs 学习式检测器"。
+1. S16 之前 xbt **没有识别模型**：`detectSlideXCandidates` 是两路手写打分（`cutoutImage` alpha 掩码的灰度差 + 列边缘剖面投票），无参数、无训练集。S16 后模型作为首选，启发式保留为降级。
 2. 单看识别能力，**CSF 的方案更强**：YOLO11n 单类检测器直接回归缺口框，只吃 `shadeImage`，不依赖 `cutoutImage` 的 alpha 与两图对齐；输出唯一 x 且带置信度，失败时回落人工滑动。
-3. 但**这个模型不能进 xbt**：`captcha.ort` 元数据自述 `Ultralytics YOLO11n model trained on config/block.yaml` 与 `AGPL-3.0 License (https://ultralytics.com/license)`；xbt 为 GPLv3，分发该权重即许可冲突。另外 xbt 服务端是 Go，跑 `.ort` 需要 ONNX Runtime（CGO 绑定或独立 sidecar），成本不小。
+3. **模型现已可进 xbt**：`captcha.ort` 元数据自述 `Ultralytics YOLO11n model trained on config/block.yaml` 与 `AGPL-3.0 License (https://ultralytics.com/license)`；xbt 于 2026-10-20 整库转 AGPLv3，因此可将其作为未修改资产分发。代价是服务端引入 cgo + ONNX Runtime 共享库，部署变重（见 DEPLOY.md §3.1）。
 4. **当前 xbt 验证码失败的主因在协议层，不在视觉层**：空 cookie jar、无 `get/conf`、校验缺 `iv`/`t=a`、同一 token 最多提交 40 个候选 x。这些不修，换任何模型都过不了。
 
 **能力对比**
 
-| 维度 | xbt 现状（启发式） | CSF（`captcha.ort`） |
+| 维度 | xbt S16（模型优先，启发式降级） | CSF（`captcha.ort`） |
 |---|---|---|
-| 形态 | 手写打分函数，零依赖 | 5.7 MB YOLO11n 单类检测器，ONNX Runtime |
-| 输入 | `cutoutImage` alpha 掩码 + `shadeImage` 灰度 | 仅 `shadeImage`，补边至正方形后缩放到 640×640 |
-| 输出 | 最多 40 个候选 x，逐个提交上游 | 单框 `(x,y,w,h,score)`，score<0.25 丢弃，NMS IoU 0.45 |
-| 单 challenge 上游校验次数 | 1–40（同一 token） | 1，失败重取 challenge |
-| 算力/依赖 | 纯 Go 标准库，毫秒级 | native 库 + 每次约 2.6 GFLOPs（Ultralytics 公布值，未实测）；ARM 端数十至百毫秒为估算 |
-| 失败处理 | 换 x 猜 | 预测失败自动回落人工滑动 |
-| 可解释/可调 | 可打印分数与候选 | 黑盒，需重训 |
-| 许可 | GPLv3（自有） | 权重自述 AGPL-3.0 |
-| 准确率证据 | 无数据集、无埋点 | 无公开指标，仅作者自用 |
+| 形态 | `captcha.ort` + ONNX Runtime（cgo）；失败回退手写打分 | 5.7 MB YOLO11n 单类检测器，ONNX Runtime |
+| 输入 | 模型仅 `shadeImage`；启发式用 `cutoutImage` alpha + `shadeImage` 灰度 | 仅 `shadeImage`，补边至正方形后缩放到 640×640 |
+| 输出 | 模型单框；score<0.25 丢弃，NMS IoU 0.45；降级时启发式候选 | 单框 `(x,y,w,h,score)`，score<0.25 丢弃，NMS IoU 0.45 |
+| 单 challenge 上游校验次数 | 1，失败重取 challenge | 1，失败重取 challenge |
+| 算力/依赖 | native 库 + cgo；模型失败时纯 Go 标准库 | native 库 + 每次约 2.6 GFLOPs（Ultralytics 公布值，未实测）；ARM 端数十至百毫秒为估算 |
+| 失败处理 | 模型缺失/推理失败 → 启发式 → 失败重取 challenge | 预测失败自动回落人工滑动 |
+| 可解释/可调 | 模型黑盒；降级路径可打印分数与候选 | 黑盒，需重训 |
+| 许可 | AGPLv3（自有） | 权重自述 AGPL-3.0 |
+| 准确率证据 | 3 张固定图标注；线上通过率未实测 | 无公开指标，仅作者自用 |
 
-**准确率目前无法给出数字**：需要同一批真实 challenge 的标注结果；当前无样本集，环境也无 `go` 工具链。计划用 S5 埋点采集（仅存图片 digest 与上游 `result`，不落原图或账号信息），在 ≥200 个 challenge 上比较 top-1 通过率、单 challenge 通过率、平均校验次数。
+**准确率仍无法给出数字**：S16 只验证了 3 张固定图与上游一次性接受，没有 ≥200 challenge 的通过率样本；模型/启发式的线上通过率仍是已接受的未知。后续可用 S5 埋点采集（仅存图片 digest 与上游 `result`，不落原图或账号信息）比较 top-1 通过率、单 challenge 通过率、平均校验次数。
 
-**决策门槛**
+**决策门槛（S16 之前的历史评估，已被最终决策取代）**
 
 - 修完 S5 后单 challenge 通过率 ≥85%：维持启发式，不引入模型。
 - 70%–85%：先做零许可风险的增强（尺寸/DPR 对齐、掩码采样步长、边缘剖面权重、候选收敛到 top-1）。
 - <70%：进入选项 C——自行标注训练**非 AGPL** 检测器（Apache-2.0 实现）或采购授权；以 sidecar（Python + ONNX Runtime）部署，Go 主进程只传图取 x。
 
+**最终决策（2026-10-20，用户评论 `11eadf8b`）**：选 B。整库转 AGPLv3，直接引入 `captcha.ort`，不再等待启发式实测门槛。通过率仍无实测数据，按已接受的未知处理。
+
 **对 XBT-S5 的影响**：候选轮询改为「本地排序取 top-1 提交，失败重取 challenge」，并新增埋点字段（`captcha_challenge_id`、`candidate_count`、`top1_x`、`upstream_result`、`attempts`）。
+
+**XBT-S16 落地（2026-10-20）**
+
+- **许可证**：`LICENSE` 全文换为 AGPLv3；README 顶部与 `NOTICE` 声明 AGPLv3、§13 源码地址与模型来源（未修改，SHA-256 `ce9623e1…`）。
+- **推理**：新增 `Server/internal/captcha`，`PredictSlideX([]byte)` 解码 → 补边至正方形 → 640×640 → NCHW `/255` → `captcha.ort`（输入 `images`，输出 `output0`）→ score 0.25 阈值 → NMS IoU 0.45 → 最高分框 `x * paddedLength / 640 - 4 + 0.5`。常量与 CSF `ChaoxingCaptchaPredictor.kt:22-60` 对齐。
+- **接入**：`xxt.Client.SetCaptchaPredictor`；`detectSlideXCandidates` 模型成功时只返回模型 x（`captcha_model=model`），失败/未配置时回退启发式并记录 `captcha_model=fallback`，不阻断签到。
+- **配置**：`captcha_model_path`（默认 `./assets/captcha.ort`）、`captcha_model_enabled`（默认 true）。模型资产位于 `Server/assets/captcha.ort`。
+- **部署**：cgo + `libonnxruntime` 1.29.0；Dockerfile 构建阶段下载对应架构共享库，运行时设置 `CAPTCHA_ORT_LIB_PATH`。详见 DEPLOY.md §3.1。
+- **测试**：`Server/internal/captcha/testdata` 3 张匿名验证码背景 + 上游已接受的 x 标注，误差 ≤2px；模型缺失返回明确错误；`go test ./internal/captcha ./internal/xxt` 通过。
 
 ### 8.2 人脸：xbt 与 CSF 的差异（评估）
 
@@ -348,7 +359,7 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 
 | # | 剩余差异 | xbt 计划后状态 | CSF | 影响 | 处置 |
 |---|---|---|---|---|---|
-| 1 | 滑块验证码识别内核 | S5 只修协议与提交策略，仍为自建启发式；通过率门槛 ≥85%，低于 70% 触发 §8.1 的选项 C | YOLO11n + ONNX（AGPL） | 同一次签到可能需要更多 challenge；上游风控更敏感 | 待 S5 实测；不达标再立「非 AGPL 检测器」issue，不复制 CSF 模型 |
+| 1 | 滑块验证码识别内核 | **已完成（XBT-S16）**：`Server/internal/captcha` 使用 `captcha.ort` + ONNX Runtime，模型失败回退启发式；通过率无实测 | YOLO11n + ONNX（AGPLv3） | 与 CSF 同一模型、同一输入/阈值/后处理；线上等价性未实测 | 见 §8.1；关注 `captcha_model=fallback` 比例与验证码通过率 |
 | 2 | 人脸 `faceResult` 设备签名 | 已实现（XBT-S13）：登录时保存加密 `clientId`，`faceResult` 在可解密时追加 `cxcid`/`signToken`；缺失或解密失败仍不带签名 | 登录保存并解密 `clientId` 后签名 | 若上游对人脸请求加签名校验，xbt 人脸签到会整类失败 | **已完成**：见 §8.3.1 |
 | 3 | 签到来源：群聊实时消息 | 已实现（XBT-S14）：`/sign/activities` 刷新时按需抓 Easemob 群列表 + `messageroaming`，解析 `attachmentType=15`、`atype∈{2,74}`，按 `activeId` 与 `taskactivelist` 合并 | Easemob IM 群聊监听 + 群列表 | 页面不刷新就发现不了群消息；无「从群聊进入签到」入口 | **已完成**：见 §8.3.2（B 方案按需抓取，默认最小间隔 30s，不建长连接；staging 待验） |
 | 4 | 客户端身份伪装 | `chaoxing_user_agent` 为服务端全局配置，`appType=15` 固定，无 per-account/UI | 内置 `DEFAULT` / `XUEZAIXIDIAN` 及自定义 UA + 包名 | 校园定制版学校的课程/活动列表可能不匹配 | **不做**（2026-10-20 决策）；仅在文档标注为已知限制 |

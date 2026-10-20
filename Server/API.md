@@ -1256,3 +1256,9 @@ sign_execute {"activity_id":987654,"user_uid":10001,"sign_type":2,"result_code":
 - 超限返回 HTTP `429`，`Retry-After` 为建议等待秒数，响应 `message` 为「签到请求过于频繁，请稍后再试」，并记一条 `result_code=rate_limited` 的结果日志。
 - 配置项：`sign_rate_limit_per_minute`（默认 30）、`sign_rate_limit_burst`（默认 10）、`sign_max_concurrent`（默认 2）。非正值回退默认值。
 - IM 抓取不参与该限流；IM 失败只降级为无群聊活动，不返回 5xx。
+
+### 9.4 滑块验证码模型
+- 配置项：`captcha_model_path`（默认 `./assets/captcha.ort`）、`captcha_model_enabled`（默认 `true`）。模型文件缺失、ONNX Runtime 加载失败或推理失败时自动回退内置启发式，不阻断签到。
+- 日志字段：`captcha_model=model|fallback`（模型加载成功/降级）、`captcha attempt ... captcha_model=... challenge_id=... candidate_count=... top1_x=... upstream_result=...`。
+- 模型可用时只提交模型给出的 x；不可用时仍按启发式排序后提交 top-1。上游对同一 token 只接受一次提交。
+- 部署要求（cgo + `libonnxruntime` 1.29.0 + `CAPTCHA_ORT_LIB_PATH`）见 `DEPLOY.md` §3.1。

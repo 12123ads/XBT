@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/yalue/onnxruntime_go v1.36.0
 	golang.org/x/image v0.42.0
 	golang.org/x/net v0.51.0
 	golang.org/x/sync v0.21.0

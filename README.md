@@ -1,12 +1,14 @@
 # 学不通 2.0 (XBT2.0)
 
 > 一套面向学习通签到场景的三端协同系统：`Web 管理端` + `Go 后端` + `Android 原生壳`
+>
+> 本项目以 **GNU Affero General Public License v3.0（AGPLv3）** 发布，完整许可证见 [`LICENSE`](LICENSE)，第三方资产与依赖见 [`NOTICE`](NOTICE)。依据 AGPLv3 第 13 条，任何通过网络使用本服务的用户均有权从本仓库获取完整对应源码：<https://github.com/12123ads/xbt>。
 
 [![Web](https://img.shields.io/badge/Web-React%2019%20%2B%20Vite-61dafb)](#)
 [![Server](https://img.shields.io/badge/Server-Go%201.25%20%2B%20Gin-00add8)](#)
 [![Database](https://img.shields.io/badge/DB-PostgreSQL-336791)](#)
 [![Android](https://img.shields.io/badge/Android-Compose%20%2B%20CameraX-3ddc84)](#)
-[![License](https://img.shields.io/badge/License-Private-lightgrey)](#)
+[![License](https://img.shields.io/badge/License-AGPLv3-blue)](#)
 
 ---
 
@@ -286,6 +288,14 @@ cd Web && npm run lint && npm run build
 # Server
 cd Server && go test ./...
 ```
+
+---
+
+## 许可证
+
+本项目以 **GNU Affero General Public License v3.0（AGPLv3）** 发布。由于本服务通过网络提供，依据 AGPLv3 第 13 条，远程用户有权获取对应的完整源码；源码地址为 <https://github.com/12123ads/xbt>。
+
+滑块验证码模型 `Server/assets/captcha.ort` 来自 `aquamarine5/ChaoxingSignFaker`（AGPLv3），本项目未修改模型文件。详见 [`NOTICE`](NOTICE)。
 
 ---
 

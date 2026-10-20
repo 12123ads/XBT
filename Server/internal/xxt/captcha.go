@@ -57,26 +57,26 @@ func (c *Client) fetchCaptchaValidate(cli *http.Client, fixed FixedParams) (stri
 func (c *Client) solveCaptchaChallenge(cli *http.Client, referer string, fixed FixedParams, attempt int) (string, error) {
 	challenge, err := c.newCaptchaChallenge(cli, referer)
 	if err != nil {
-		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "challenge_error")
+		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "-", "challenge_error")
 		return "", err
 	}
 
 	bgBytes, err := c.downloadBytes(cli, challenge.shadeImage, referer)
 	if err != nil {
-		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "shade_download_error")
+		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "-", "shade_download_error")
 		return "", err
 	}
 	challengeID := captchaChallengeID(bgBytes)
 
 	targetBytes, err := c.downloadBytes(cli, challenge.cutoutImage, referer)
 	if err != nil {
-		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, "cutout_download_error")
+		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, "-", "cutout_download_error")
 		return "", err
 	}
 
-	candidates, err := detectSlideXCandidates(targetBytes, bgBytes)
+	candidates, source, err := c.detectSlideXCandidates(targetBytes, bgBytes)
 	if err != nil {
-		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, "detect_error")
+		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, source, "detect_error")
 		return "", err
 	}
 
@@ -87,7 +87,7 @@ func (c *Client) solveCaptchaChallenge(cli *http.Client, referer string, fixed F
 	if err != nil {
 		result = "rejected"
 	}
-	logCaptchaAttempt(fixed, attempt, challengeID, len(candidates), top1, result)
+	logCaptchaAttempt(fixed, attempt, challengeID, len(candidates), top1, source, result)
 	return validate, err
 }
 
@@ -249,10 +249,10 @@ func captchaChallengeID(shade []byte) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-func logCaptchaAttempt(fixed FixedParams, attempt int, challengeID string, candidates, top1 int, result string) {
+func logCaptchaAttempt(fixed FixedParams, attempt int, challengeID string, candidates, top1 int, source, result string) {
 	log.Printf(
-		"captcha attempt activity=%d uid=%d attempt=%d challenge_id=%s candidate_count=%d top1_x=%d upstream_result=%s",
-		fixed.ActiveID, fixed.UID, attempt, challengeID, candidates, top1, result,
+		"captcha attempt activity=%d uid=%d attempt=%d challenge_id=%s captcha_model=%s candidate_count=%d top1_x=%d upstream_result=%s",
+		fixed.ActiveID, fixed.UID, attempt, challengeID, source, candidates, top1, result,
 	)
 }
 
@@ -304,7 +304,36 @@ func md5Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func detectSlideXCandidates(targetBytes, bgBytes []byte) ([]int, error) {
+// slideXPredictor is satisfied by *captcha.Predictor. The interface keeps xxt
+// testable without ONNX Runtime.
+type slideXPredictor interface {
+	PredictSlideX(img []byte) (int, error)
+}
+
+// SetCaptchaPredictor wires the ONNX slide-gap detector. A nil predictor (or a
+// failed prediction) keeps the heuristic path. Call before serving traffic.
+func (c *Client) SetCaptchaPredictor(predictor slideXPredictor) {
+	c.captchaModel = predictor
+}
+
+// detectSlideXCandidates returns candidate x offsets and the source used for
+// the first candidate. A working model supplies the only candidate; otherwise
+// the legacy heuristic runs.
+func (c *Client) detectSlideXCandidates(targetBytes, bgBytes []byte) ([]int, string, error) {
+	if c.captchaModel != nil {
+		x, err := c.captchaModel.PredictSlideX(bgBytes)
+		if err == nil {
+			return []int{x}, "model", nil
+		}
+		log.Printf("captcha_model=fallback reason=%v", err)
+	} else {
+		log.Printf("captcha_model=fallback reason=not_configured")
+	}
+	candidates, err := detectSlideXCandidatesHeuristic(targetBytes, bgBytes)
+	return candidates, "fallback", err
+}
+
+func detectSlideXCandidatesHeuristic(targetBytes, bgBytes []byte) ([]int, error) {
 	targetImg, _, err := image.Decode(bytes.NewReader(targetBytes))
 	if err != nil {
 		return nil, err

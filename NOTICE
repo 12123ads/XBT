@@ -1,0 +1,43 @@
+学不通 2.0 (XBT2.0)
+
+This project is licensed under the GNU Affero General Public License v3.0.
+The complete license text is in LICENSE.
+
+Because this project is a network service, AGPLv3 section 13 applies:
+users interacting with it remotely have the right to receive the complete
+corresponding source. The source is available at:
+
+    https://github.com/12123ads/xbt
+
+Third-party components
+======================
+
+1. captcha.ort (slider-captcha detector model)
+
+   Source project : ChaoxingSignFaker
+   Repository     : https://github.com/aquamarine5/ChaoxingSignFaker
+   Source path    : app/src/main/assets/captcha.ort
+   License        : GNU Affero General Public License v3.0 (AGPLv3)
+   Upstream author: aquamarine5 / Brainspark (see repository)
+   Modification   : unmodified
+   SHA-256        : ce9623e1f58b46bc5e7485dffc6449d36255af5e9e2d877bb4db94e8c8b21ee7
+
+   The model is used as an asset and redistributed under AGPLv3. This project
+   does not copy ChaoxingSignFaker's Kotlin source. The inference pipeline in
+   Server/internal/captcha is an independent Go implementation of the behavior
+   described by ChaoxingCaptchaPredictor.kt (640x640 input, score 0.25, NMS IoU
+   0.45, edge offset 4).
+
+2. github.com/yalue/onnxruntime_go
+
+   License        : MIT
+   Usage          : Go binding that loads ONNX Runtime; not vendored.
+   Deployment     : requires a compatible libonnxruntime shared library, see
+                    DEPLOY.md.
+
+Test fixtures
+=============
+
+Server/internal/captcha/testdata contains anonymous slider-captcha background
+images captured from the public captcha endpoint. They contain no account id,
+token, cookie, or other user data, and are used only as regression fixtures.

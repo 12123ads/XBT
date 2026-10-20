@@ -59,6 +59,11 @@ type Config struct {
 	IMTokenURL                string `yaml:"im_token_url"`
 	IMAPIBaseURL              string `yaml:"im_api_base_url"`
 	IMMessageBaseURL          string `yaml:"im_message_base_url"`
+
+	// Slider-captcha ONNX detector. The model is optional: a missing file or
+	// failed inference falls back to the built-in heuristic.
+	CaptchaModelPath    string `yaml:"captcha_model_path"`
+	CaptchaModelEnabled *bool  `yaml:"captcha_model_enabled"`
 }
 
 func Load() Config {
@@ -83,6 +88,7 @@ func Load() Config {
 	}
 	cfg.applyIMDefaults()
 	cfg.applySignDefaults()
+	cfg.applyCaptchaDefaults()
 	return cfg
 }
 
@@ -141,6 +147,22 @@ func (c Config) IMFetchTimeout() time.Duration {
 
 func (c Config) IMEnabled() bool {
 	return !c.IMDisabled && c.IMMinFetchInterval() > 0
+}
+
+func (c *Config) applyCaptchaDefaults() {
+	if strings.TrimSpace(c.CaptchaModelPath) == "" {
+		c.CaptchaModelPath = "./assets/captcha.ort"
+	}
+	if c.CaptchaModelEnabled == nil {
+		enabled := true
+		c.CaptchaModelEnabled = &enabled
+	}
+}
+
+// CaptchaModelIsEnabled reports the configured detector switch. Missing YAML
+// values default to enabled; a missing model file is handled as a fallback.
+func (c Config) CaptchaModelIsEnabled() bool {
+	return c.CaptchaModelEnabled == nil || *c.CaptchaModelEnabled
 }
 
 // NormalizeVikunjaBaseURL is shared by configured endpoints and credential bindings.

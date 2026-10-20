@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"xbt2/server/internal/captcha"
 	"xbt2/server/internal/config"
 	"xbt2/server/internal/db"
 	"xbt2/server/internal/handler"
@@ -30,6 +31,17 @@ func main() {
 	jwtSvc := service.NewJWTService(cfg.JWTSecret)
 	credentialCrypto := service.NewCredentialCrypto(cfg.CredentialSecret)
 	xxtClient := xxt.New(cfg.ChaoxingAESKey, cfg.ChaoxingUserAgent, cfg.ChaoxingFID, cfg.AllowInsecureTLS, cfg.ActivityListLimit+1)
+	if cfg.CaptchaModelIsEnabled() {
+		predictor, err := captcha.New(cfg.CaptchaModelPath)
+		if err != nil {
+			log.Printf("captcha_model=fallback reason=%v", err)
+		} else {
+			xxtClient.SetCaptchaPredictor(predictor)
+			log.Printf("captcha_model=model path=%s", cfg.CaptchaModelPath)
+		}
+	} else {
+		log.Printf("captcha_model=fallback reason=disabled")
+	}
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	authHandler.SetFacePhotoService(service.NewFacePhotoService(database, credentialCrypto, xxtClient))

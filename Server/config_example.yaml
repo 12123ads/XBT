@@ -31,9 +31,15 @@ sign_rate_limit_per_minute: 30
 sign_rate_limit_burst: 10
 sign_max_concurrent: 2
 
+# 滑块验证码 ONNX 模型（captcha.ort）。启用后模型结果作为唯一首候选，
+# 模型缺失/加载失败/推理失败自动回退到内置启发式，不阻断签到。
+# 共享库路径由环境变量 CAPTCHA_ORT_LIB_PATH 指定；未设置时使用
+# libonnxruntime.so（需在 LD_LIBRARY_PATH 或 ldconfig 中）。
+captcha_model_path: "./assets/captcha.ort"
+captcha_model_enabled: true
+
 # 课程签到成功企业微信群机器人 webhook（留空则不推送）
 course_sign_webhook_url: ""
-
 # 宿舍在寝签到结果企业微信群机器人 webhook（留空则不推送）
 qmx_auto_sign_webhook_url: ""
 

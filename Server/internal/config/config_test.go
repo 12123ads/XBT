@@ -93,3 +93,18 @@ func TestSignLimiterDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("overrides not kept: %+v", cfg)
 	}
 }
+
+func TestCaptchaModelDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{}
+	cfg.applyCaptchaDefaults()
+	if cfg.CaptchaModelPath != "./assets/captcha.ort" || !cfg.CaptchaModelIsEnabled() {
+		t.Fatalf("defaults: path=%q enabled=%v", cfg.CaptchaModelPath, cfg.CaptchaModelIsEnabled())
+	}
+
+	disabled := false
+	cfg = Config{CaptchaModelPath: "/models/custom.ort", CaptchaModelEnabled: &disabled}
+	cfg.applyCaptchaDefaults()
+	if cfg.CaptchaModelPath != "/models/custom.ort" || cfg.CaptchaModelIsEnabled() {
+		t.Fatalf("overrides not kept: path=%q enabled=%v", cfg.CaptchaModelPath, cfg.CaptchaModelIsEnabled())
+	}
+}
