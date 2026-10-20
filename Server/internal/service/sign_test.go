@@ -18,10 +18,16 @@ type signAuthorizationUpstream struct {
 	checkFace  func(string, string, int64, string, string) (xxt.FaceCheckResult, error)
 	detail     xxt.SignDetail
 	detailErr  error
-	preSign    func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error)
+	// details overrides detail per activity id; sign-out needs two different
+	// metadata records (primary and sign-out activity).
+	details map[int64]xxt.SignDetail
+	preSign func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error)
 }
 
-func (u *signAuthorizationUpstream) GetSignDetail(string, string, int64, int64, int64, int64) (xxt.SignDetail, error) {
+func (u *signAuthorizationUpstream) GetSignDetail(_ string, _ string, activityID, _ int64, _ int64, _ int64) (xxt.SignDetail, error) {
+	if detail, ok := u.details[activityID]; ok {
+		return detail, u.detailErr
+	}
 	return u.detail, u.detailErr
 }
 

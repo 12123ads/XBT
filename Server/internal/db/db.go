@@ -45,6 +45,7 @@ func New(cfg config.Config) (*gorm.DB, error) {
 			&model.SignActivityScope{},
 			&model.SignShare{},
 			&model.SignRecord{},
+			&model.SignOutRecord{},
 			&model.QMXAutoSignSetting{},
 			&model.QMXAutoSignAccount{},
 			&model.QMXAutoSignRecord{},

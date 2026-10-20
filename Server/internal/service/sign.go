@@ -108,6 +108,33 @@ type ExecutePhotoSignRequest struct {
 	Photo         []byte
 }
 
+// SignOutRequest asks for one user's sign-out of the sign-out activity that
+// belongs to a completed sign-in. ActivityID is the primary sign-in activity;
+// the sign-out activity is resolved from its signOutId metadata.
+type SignOutRequest struct {
+	ActivityID    int64
+	TargetUID     int64
+	CourseID      int64
+	ClassID       int64
+	IfRefreshEWM  bool
+	IfOpenAddress bool
+	ActivityName  string
+	CourseName    string
+	CourseTeacher string
+	Special       map[string]interface{}
+}
+
+type SignOutResult struct {
+	UserID           int64  `json:"user_id"`
+	Success          bool   `json:"success"`
+	AlreadySignedOut bool   `json:"already_signed_out"`
+	SignOutID        int64  `json:"sign_out_id"`
+	SignOutTimeMS    int64  `json:"sign_out_time_ms"`
+	Message          string `json:"message"`
+	ErrorCode        string `json:"error_code"`
+	Retryable        bool   `json:"retryable"`
+}
+
 type SignCheckItem struct {
 	UserID           int64  `json:"user_id"`
 	Signed           bool   `json:"signed"`
@@ -142,6 +169,10 @@ const (
 	SignErrorActivityExpired  = "activity_expired"
 	SignErrorSessionExpired   = "session_expired"
 	SignErrorUpstream         = "upstream_error"
+	// Sign-out prerequisites are explicit results, never silent successes.
+	SignErrorSignInRequired     = "sign_in_required"
+	SignErrorSignOutUnavailable = "sign_out_unavailable"
+	SignErrorSignOutUnpublished = "sign_out_not_published"
 )
 
 func (s *SignService) CheckSignStates(operatorUID, activityID, courseID, classID int64, userIDs []int64) ([]SignCheckItem, error) {
@@ -418,22 +449,48 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		}
 	}
 
-	// Bounded state machine: captcha is resolved inside xxt.Sign (at most one
-	// extra request), face and location recoveries happen here and each may
-	// retry once. Every other outcome ends the attempt.
+	result, terminal, err := s.submitSign(&target, password, &req, fixed)
+	if err != nil {
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error()), ErrorCode: SignErrorUpstream, Retryable: true}, nil
+	}
+	if terminal != nil {
+		return *terminal, nil
+	}
+
+	switch result.Kind {
+	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
+		return s.recordSigned(req, operatorUID)
+	case xxt.SignResultAlreadySigned:
+		return s.recordAlreadySigned(req)
+	}
+	code, retryable, distance, message := s.signFailure(result)
+	return SignExecuteResult{
+		UserID:    req.TargetUID,
+		Success:   false,
+		DistanceM: distance,
+		Message:   message,
+		ErrorCode: code,
+		Retryable: retryable,
+	}, nil
+}
+
+// submitSign runs the bounded recovery state machine shared by sign-in and
+// sign-out: captcha is resolved inside xxt.Sign (at most one extra request),
+// face and location recoveries happen here and each may retry once. It returns
+// a terminal result only when face credentials cannot be prepared.
+func (s *SignService) submitSign(target *model.User, password string, req *ExecuteSignRequest, fixed xxt.FixedParams) (xxt.SignResult, *SignExecuteResult, error) {
 	faceRetried := false
 	locationRetried := false
-	var result xxt.SignResult
 	for {
-		result, err = s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
+		result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
 		if err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error()), ErrorCode: SignErrorUpstream, Retryable: true}, nil
+			return xxt.SignResult{}, nil, err
 		}
 		switch {
 		case result.Kind == xxt.SignResultFaceRequired && !faceRetried:
 			faceRetried = true
-			if err := s.applyFaceCredentials(&target, password, &req); err != nil {
-				return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
+			if err := s.applyFaceCredentials(target, password, req); err != nil {
+				return xxt.SignResult{}, &SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
 			}
 			if result.Enc2 != "" {
 				req.Special["enc2"] = result.Enc2
@@ -448,35 +505,331 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 			}
 			continue
 		}
-		break
+		return result, nil, nil
 	}
+}
 
+// signFailure maps a typed upstream outcome to the public error contract. Both
+// sign-in and sign-out share it so the codes stay identical.
+func (s *SignService) signFailure(result xxt.SignResult) (code string, retryable bool, distanceM float64, message string) {
 	switch result.Kind {
-	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
-		return s.recordSigned(req, operatorUID)
-	case xxt.SignResultAlreadySigned:
-		return s.recordAlreadySigned(req)
 	case xxt.SignResultCaptchaRequired:
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorCaptchaRequired, Retryable: true, Message: "验证码校验未通过，请重试"}, nil
+		return SignErrorCaptchaRequired, true, 0, "验证码校验未通过，请重试"
 	case xxt.SignResultLocationOutOfRange:
 		message := "签到位置超出范围，请重新选择位置"
 		if result.DistanceM > 0 {
 			message = locationOutOfRangeMessage(result.DistanceM)
 		}
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorLocationOutRange, DistanceM: result.DistanceM, Message: message}, nil
+		return SignErrorLocationOutRange, false, result.DistanceM, message
 	case xxt.SignResultQRExpired:
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorQRExpired, Message: "二维码已过期，请重新扫码"}, nil
+		return SignErrorQRExpired, false, 0, "二维码已过期，请重新扫码"
 	case xxt.SignResultSessionExpired:
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorSessionExpired, Message: "学习通登录已过期，请重新登录"}, nil
+		return SignErrorSessionExpired, false, 0, "学习通登录已过期，请重新登录"
 	case xxt.SignResultFaceRequired:
 		message := "人脸验证未通过，请更新人脸照片后重试"
 		if strings.TrimSpace(result.Message) != "" {
 			message = "人脸验证未通过：" + strings.TrimSpace(result.Message)
 		}
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: message}, nil
+		return SignErrorFaceRequired, false, 0, message
 	default:
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorUpstream, Retryable: true, Message: s.toUserSignMessage(result.Message)}, nil
+		return SignErrorUpstream, true, 0, s.toUserSignMessage(result.Message)
 	}
+}
+
+// SignOutOne signs out the sign-out activity that belongs to a completed
+// sign-in. The request never overwrites sign_records: success produces one
+// sign_out_records row keyed by the primary activity.
+//
+// Upstream model (CSF 9ae5398): getPPTActiveInfo of the primary activity
+// carries signOutId and signOutPublishTimeStamp. The sign-out activity itself
+// is then fetched for its sign type/ext and signed with the same stuSignajax
+// state machine as a normal sign-in.
+func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOutResult, error) {
+	if req.TargetUID <= 0 {
+		req.TargetUID = operatorUID
+	}
+	result := SignOutResult{UserID: req.TargetUID}
+	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
+		return SignOutResult{}, ErrSignForbidden
+	}
+	if req.Special == nil {
+		req.Special = map[string]interface{}{}
+	}
+	if err := s.AuthorizeTargets(operatorUID, req.ActivityID, req.CourseID, req.ClassID, []int64{req.TargetUID}); err != nil {
+		return SignOutResult{}, err
+	}
+
+	// A stored sign-out is the idempotency boundary: repeated requests never
+	// reach upstream and never duplicate the ledger row.
+	var prior model.SignOutRecord
+	err := s.db.Where("user_uid = ? AND activity_id = ?", req.TargetUID, req.ActivityID).Take(&prior).Error
+	if err == nil {
+		result.Success = true
+		result.AlreadySignedOut = true
+		result.SignOutID = prior.SignOutID
+		result.SignOutTimeMS = prior.SignOutTimeMS
+		result.Message = "该同学已签退"
+		return result, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return SignOutResult{}, err
+	}
+
+	target, err := LoadActiveUser(s.db, req.TargetUID)
+	if err != nil {
+		if errors.Is(err, ErrAccountInactive) {
+			return SignOutResult{}, ErrSignForbidden
+		}
+		return SignOutResult{}, err
+	}
+	password, err := s.cc.Decrypt(target.CredentialCipher)
+	if err != nil {
+		result.ErrorCode = SignErrorSessionExpired
+		result.Message = "该同学登录信息已过期，请先重新登录"
+		return result, nil
+	}
+
+	detail, err := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID)
+	if err != nil {
+		return s.signOutUpstreamFailure(result, err), nil
+	}
+	// The publish timestamp is visible before signOutId is assigned, so it is
+	// checked first to give a "not published yet" answer instead of "missing".
+	if detail.SignOutPublishTime > 0 && detail.SignOutPublishTime > time.Now().UnixMilli() {
+		result.ErrorCode = SignErrorSignOutUnpublished
+		result.Message = fmt.Sprintf("签退将于 %s 发布", time.UnixMilli(detail.SignOutPublishTime).Format("2006-01-02 15:04"))
+		return result, nil
+	}
+	signOutID := detail.SignOutID
+	if signOutID <= 0 || signOutID == req.ActivityID {
+		result.ErrorCode = SignErrorSignOutUnavailable
+		result.Message = "该签到活动未设置签退"
+		return result, nil
+	}
+	result.SignOutID = signOutID
+
+	if ok, early := s.ensurePrimarySignedIn(&target, password, req, detail); !ok {
+		return early, nil
+	}
+
+	outDetail, err := s.xxt.GetSignDetail(target.Mobile, password, signOutID, req.CourseID, req.ClassID, req.TargetUID)
+	if err != nil {
+		return s.signOutUpstreamFailure(result, err), nil
+	}
+	outFixed := xxt.FixedParams{
+		ActiveID:      signOutID,
+		UID:           req.TargetUID,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  req.IfRefreshEWM || outDetail.IfRefreshEWM,
+		IfOpenAddress: outDetail.IfOpenAddress,
+		Ext:           outDetail.Ext,
+	}
+	if outFixed.Ext == "" {
+		outFixed.Ext = s.cachedActivityExt(signOutID)
+	}
+
+	enc, _ := req.Special["enc"].(string)
+	code, _ := req.Special["c"].(string)
+	preSign, err := s.xxt.PreSign(target.Mobile, password, outFixed, outDetail.SignType, code, enc)
+	if err != nil {
+		return s.signOutUpstreamFailure(result, err), nil
+	}
+	switch preSign.Status {
+	case xxt.PreSignExpired:
+		result.ErrorCode = SignErrorActivityExpired
+		result.Message = signOutMessage(preSign.Message, "签退已截止")
+		return result, nil
+	case xxt.PreSignAlreadySigned:
+		// Upstream already has the sign-out, so record it locally without
+		// asking stuSignajax again.
+		return s.recordSignedOut(req, signOutID, outDetail.SignType, -1, true)
+	case xxt.PreSignNoPermission:
+		result.ErrorCode = SignErrorUpstream
+		result.Message = signOutMessage(preSign.Message, "无法签退该活动")
+		return result, nil
+	}
+
+	signReq := ExecuteSignRequest{
+		ActivityID:    signOutID,
+		TargetUID:     req.TargetUID,
+		SignType:      outDetail.SignType,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  outFixed.IfRefreshEWM,
+		IfOpenAddress: outFixed.IfOpenAddress,
+		ActivityName:  req.ActivityName,
+		CourseName:    req.CourseName,
+		CourseTeacher: req.CourseTeacher,
+		Special:       copySignSpecial(req.Special),
+	}
+	if term, ok := s.prepareSignLocation(&signReq, outDetail, true); !ok {
+		result.ErrorCode = term.ErrorCode
+		result.Message = term.Message
+		return result, nil
+	}
+	if outDetail.IfFace {
+		signReq.Special["if_face"] = true
+		if err := s.applyFaceCredentials(&target, password, &signReq); err != nil {
+			result.ErrorCode = SignErrorFaceRequired
+			result.Message = err.Error()
+			return result, nil
+		}
+	}
+
+	upstream, terminal, err := s.submitSign(&target, password, &signReq, outFixed)
+	if err != nil {
+		result.ErrorCode = SignErrorUpstream
+		result.Retryable = true
+		result.Message = s.toUserSignMessage(err.Error())
+		return result, nil
+	}
+	if terminal != nil {
+		result.ErrorCode = terminal.ErrorCode
+		result.Message = terminal.Message
+		result.Retryable = terminal.Retryable
+		return result, nil
+	}
+	switch upstream.Kind {
+	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
+		return s.recordSignedOut(req, signOutID, outDetail.SignType, operatorUID, false)
+	case xxt.SignResultAlreadySigned:
+		return s.recordSignedOut(req, signOutID, outDetail.SignType, -1, true)
+	}
+	code, retryable, message := s.signOutFailure(upstream)
+	result.ErrorCode = code
+	result.Retryable = retryable
+	result.Message = message
+	return result, nil
+}
+
+// ensurePrimarySignedIn requires a local sign record, or an upstream preSign
+// that proves the user already signed. It writes the 学习通-source record in
+// the latter case so the sign-out ledger always rests on a sign-in fact.
+func (s *SignService) ensurePrimarySignedIn(target *model.User, password string, req SignOutRequest, detail xxt.SignDetail) (bool, SignOutResult) {
+	early := SignOutResult{UserID: req.TargetUID}
+	var rec model.SignRecord
+	err := s.db.Where("user_uid = ? AND activity_id = ?", req.TargetUID, req.ActivityID).Take(&rec).Error
+	if err == nil {
+		return true, SignOutResult{}
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		early.ErrorCode = SignErrorUpstream
+		early.Retryable = true
+		early.Message = "查询主签到记录失败，请重试"
+		return false, early
+	}
+
+	fixed := xxt.FixedParams{
+		ActiveID: req.ActivityID,
+		UID:      req.TargetUID,
+		CourseID: req.CourseID,
+		ClassID:  req.ClassID,
+		Ext:      detail.Ext,
+	}
+	if fixed.Ext == "" {
+		fixed.Ext = s.cachedActivityExt(req.ActivityID)
+	}
+	enc, _ := req.Special["enc"].(string)
+	code, _ := req.Special["c"].(string)
+	preSign, err := s.xxt.PreSign(target.Mobile, password, fixed, detail.SignType, code, enc)
+	if err != nil {
+		return false, s.signOutUpstreamFailure(early, err)
+	}
+	switch preSign.Status {
+	case xxt.PreSignAlreadySigned:
+		state := SignCheckItem{UserID: req.TargetUID}
+		if _, err := s.recordUpstreamSigned(req.ActivityID, req.CourseID, req.ClassID, detail.SignType, state); err != nil {
+			early.ErrorCode = SignErrorUpstream
+			early.Retryable = true
+			early.Message = "写入主签到记录失败，请重试"
+			return false, early
+		}
+		return true, SignOutResult{}
+	case xxt.PreSignNoPermission:
+		early.ErrorCode = SignErrorUpstream
+		early.Message = signOutMessage(preSign.Message, "无法确认主签到状态")
+		return false, early
+	default:
+		early.ErrorCode = SignErrorSignInRequired
+		early.Message = "请先完成主签到"
+		return false, early
+	}
+}
+
+func (s *SignService) recordSignedOut(req SignOutRequest, signOutID int64, signType int, sourceUID int64, already bool) (SignOutResult, error) {
+	rec := model.SignOutRecord{
+		UserUID:       req.TargetUID,
+		ActivityID:    req.ActivityID,
+		SignOutID:     signOutID,
+		SourceUID:     sourceUID,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		SignType:      signType,
+		ActivityName:  strings.TrimSpace(req.ActivityName),
+		CourseName:    strings.TrimSpace(req.CourseName),
+		CourseTeacher: strings.TrimSpace(req.CourseTeacher),
+		SignOutTimeMS: time.Now().UnixMilli(),
+	}
+	dbResult := s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}},
+		DoNothing: true,
+	}).Create(&rec)
+	if dbResult.Error != nil {
+		return SignOutResult{}, dbResult.Error
+	}
+	// Read back so a concurrent writer's timestamp and source are authoritative.
+	if err := s.db.Where("user_uid = ? AND activity_id = ?", req.TargetUID, req.ActivityID).Take(&rec).Error; err != nil {
+		return SignOutResult{}, err
+	}
+	result := SignOutResult{
+		UserID:           req.TargetUID,
+		Success:          true,
+		AlreadySignedOut: already || dbResult.RowsAffected == 0,
+		SignOutID:        rec.SignOutID,
+		SignOutTimeMS:    rec.SignOutTimeMS,
+		Message:          "签退成功",
+	}
+	if result.AlreadySignedOut {
+		result.Message = "该同学已签退"
+	}
+	return result, nil
+}
+
+func (s *SignService) signOutUpstreamFailure(result SignOutResult, err error) SignOutResult {
+	if errors.Is(err, xxt.ErrSessionExpired) {
+		result.ErrorCode = SignErrorSessionExpired
+		result.Message = "学习通登录已过期，请重新登录"
+		return result
+	}
+	log.Printf("sign-out upstream failure: activity=%d uid=%d err=%v", result.SignOutID, result.UserID, err)
+	result.ErrorCode = SignErrorUpstream
+	result.Retryable = true
+	result.Message = "获取签退信息失败，请重试"
+	return result
+}
+
+func (s *SignService) signOutFailure(result xxt.SignResult) (code string, retryable bool, message string) {
+	code, retryable, distance, message := s.signFailure(result)
+	if code == SignErrorLocationOutRange && distance > 0 {
+		message = fmt.Sprintf("签退位置超出范围，距签退点%.0f米，请重新选择位置", distance)
+	}
+	return code, retryable, message
+}
+
+func signOutMessage(message, fallback string) string {
+	if strings.TrimSpace(message) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(message)
+}
+
+func copySignSpecial(source map[string]interface{}) map[string]interface{} {
+	copied := make(map[string]interface{}, len(source)+4)
+	for key, value := range source {
+		copied[key] = value
+	}
+	return copied
 }
 
 // prepareSignLocation validates a caller-selected point against the activity

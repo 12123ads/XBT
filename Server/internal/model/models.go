@@ -141,6 +141,26 @@ type SignRecord struct {
 	UpdatedAt     time.Time `json:"-"`
 }
 
+// SignOutRecord is the independent sign-out ledger. ActivityID is the primary
+// sign-in activity, so (user_uid, activity_id) identifies one sign-out for one
+// sign-in and never collides with sign_records.
+type SignOutRecord struct {
+	ID            uint      `gorm:"primaryKey" json:"-"`
+	UserUID       int64     `gorm:"not null;uniqueIndex:idx_sign_out_user_activity" json:"user_uid"`
+	ActivityID    int64     `gorm:"not null;uniqueIndex:idx_sign_out_user_activity" json:"activity_id"`
+	SignOutID     int64     `gorm:"not null;index" json:"sign_out_id"`
+	SourceUID     int64     `gorm:"not null;index" json:"source_uid"`
+	CourseID      int64     `json:"course_id"`
+	ClassID       int64     `json:"class_id"`
+	SignType      int       `json:"sign_type"`
+	ActivityName  string    `gorm:"size:255" json:"activity_name"`
+	CourseName    string    `gorm:"size:255" json:"course_name"`
+	CourseTeacher string    `gorm:"size:255" json:"course_teacher"`
+	SignOutTimeMS int64     `gorm:"not null;index" json:"sign_out_time_ms"`
+	CreatedAt     time.Time `json:"-"`
+	UpdatedAt     time.Time `json:"-"`
+}
+
 type QMXAutoSignSetting struct {
 	ID        uint      `gorm:"primaryKey" json:"-"`
 	Enabled   bool      `gorm:"not null;default:false" json:"enabled"`

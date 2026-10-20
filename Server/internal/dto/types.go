@@ -29,6 +29,19 @@ type SignExecuteRequest struct {
 	Special       map[string]interface{} `json:"special_params"`
 }
 
+type SignOutRequest struct {
+	ActivityID    int64                  `json:"activity_id" binding:"required,gt=0"`
+	TargetUID     int64                  `json:"target_uid"`
+	CourseID      int64                  `json:"course_id" binding:"required,gt=0"`
+	ClassID       int64                  `json:"class_id" binding:"required,gt=0"`
+	IfRefreshEWM  bool                   `json:"if_refresh_ewm"`
+	IfOpenAddress bool                   `json:"if_open_address"`
+	ActivityName  string                 `json:"activity_name"`
+	CourseName    string                 `json:"course_name"`
+	CourseTeacher string                 `json:"course_teacher"`
+	Special       map[string]interface{} `json:"special_params"`
+}
+
 type SignCheckRequest struct {
 	ActivityID int64   `json:"activity_id" binding:"required,gt=0"`
 	CourseID   int64   `json:"course_id" binding:"required,gt=0"`

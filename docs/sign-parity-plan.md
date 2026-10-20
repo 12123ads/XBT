@@ -175,6 +175,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 #### XBT-S9 签退
 - 新增 `/api/sign/sign-out`，依赖主签到成功与 `signOutId`；分享链接是否支持需单独确认。
 - 验收：主签到未完成时拒绝；签退成功后写入独立记录，不覆盖签到记录。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`POST /api/sign/sign-out` 接收主签到 `activity_id`，从 `getPPTActiveInfo` 读取 `signOutId`/`signOutPublishTimeStamp`，先校验主签到（本地记录或上游 `preSign` 已签），再对 `signOutId` 活动执行 `preSign` + `stuSignajax`（复用 S3 状态机与 S2 参数构造）；未签到返回 `sign_in_required`，未发布返回 `sign_out_not_published`，无签退活动返回 `sign_out_unavailable`，上游结果沿用 S3 `error_code`。成功写独立表 `sign_out_records`（`user_uid + 主签到 activity_id` 唯一，`sign_out_id` 单独记录），重复签退幂等返回 `already_signed_out=true`、不再请求上游；`sign_records` 不被覆盖。分享链接对签退活动在创建和执行时都明确返回 `400`「分享链接不支持签退活动」。测试见 `Server/internal/service/sign_out_test.go`、`Server/internal/handler/sign_test.go`。
 
 #### XBT-S10 指标与限流
 - 结构化日志字段：`activity_id/user_uid/sign_type/result_code/attempt/upstream_status`；指标：成功率、验证码通过率、`validate` 触发率、`errorLocation` 率、上游 403 率、p95 时延。

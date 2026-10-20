@@ -392,6 +392,43 @@ func (h *SignHandler) Execute(c *gin.Context) {
 	common.Success(c, res)
 }
 
+func (h *SignHandler) SignOut(c *gin.Context) {
+	uid := common.GetUserUID(c)
+	var req dto.SignOutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.Fail(c, 400, "invalid request")
+		return
+	}
+	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
+		common.Fail(c, 400, "invalid request params")
+		return
+	}
+	targetUID := req.TargetUID
+	if targetUID <= 0 {
+		targetUID = uid
+	}
+	if req.Special == nil {
+		req.Special = map[string]interface{}{}
+	}
+	res, err := h.signService.SignOutOne(uid, service.SignOutRequest{
+		ActivityID:    req.ActivityID,
+		TargetUID:     targetUID,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  req.IfRefreshEWM,
+		IfOpenAddress: req.IfOpenAddress,
+		ActivityName:  req.ActivityName,
+		CourseName:    req.CourseName,
+		CourseTeacher: req.CourseTeacher,
+		Special:       req.Special,
+	})
+	if err != nil {
+		h.failSign(c, err)
+		return
+	}
+	common.Success(c, res)
+}
+
 func (h *SignHandler) Photo(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	activityID, err := requiredInt64Form(c, "activity_id")

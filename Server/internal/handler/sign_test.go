@@ -125,6 +125,7 @@ func handlerSignFixtureParts(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignU
 	authed.GET("/classmates", h.Classmates)
 	authed.POST("/check", h.Check)
 	authed.POST("/execute", h.Execute)
+	authed.POST("/sign-out", h.SignOut)
 	authed.POST("/shares", h.CreateShare)
 	authed.DELETE("/users/:id", NewWhitelistHandler(database).DeleteUser)
 	authed.POST("/accounts/:uid/sync", NewAdminAccountHandler(database, nil, nil).SyncUserCourses)
@@ -442,5 +443,94 @@ func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
 				t.Fatalf("response = %+v, want success=%v code=%q retryable=%v distance=%v", payload.Data, tc.wantSuccess, tc.wantCode, tc.wantRetry, tc.wantDist)
 			}
 		})
+	}
+}
+
+func TestSignOutEndpointRequiresPrimarySignIn(t *testing.T) {
+	_, router, upstream := handlerSignFixture(t)
+	upstream.detail = xxt.SignDetail{
+		SignType:           xxt.SignNormal,
+		SignOutID:          200,
+		SignOutPublishTime: time.Now().Add(-time.Minute).UnixMilli(),
+	}
+	response := accessRequest(t, router, http.MethodPost, "/sign-out", gin.H{
+		"activity_id": 100, "course_id": 10, "class_id": 20,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data service.SignOutResult `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Success || payload.Data.ErrorCode != service.SignErrorSignInRequired {
+		t.Fatalf("response = %+v", payload.Data)
+	}
+	if len(upstream.signed) != 0 {
+		t.Fatalf("rejected sign-out called upstream %d times", len(upstream.signed))
+	}
+}
+
+func TestSignOutEndpointWritesIndependentRecord(t *testing.T) {
+	database, router, upstream := handlerSignFixture(t)
+	upstream.detail = xxt.SignDetail{
+		SignType:           xxt.SignNormal,
+		SignOutID:          200,
+		SignOutPublishTime: time.Now().Add(-time.Minute).UnixMilli(),
+	}
+	if err := database.Create(&model.SignRecord{
+		UserUID: 1, ActivityID: 100, SourceUID: 1, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal, SignTimeMS: 99,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := accessRequest(t, router, http.MethodPost, "/sign-out", gin.H{
+		"activity_id": 100, "course_id": 10, "class_id": 20,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data service.SignOutResult `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Data.Success || payload.Data.SignOutID != 200 {
+		t.Fatalf("response = %+v", payload.Data)
+	}
+	if len(upstream.signed) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(upstream.signed))
+	}
+	var record model.SignOutRecord
+	if err := database.Where("user_uid = ? AND activity_id = ?", 1, 100).Take(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.SignOutID != 200 {
+		t.Fatalf("record = %+v", record)
+	}
+}
+
+func TestShareRejectsSignOutActivity(t *testing.T) {
+	database, router, _ := handlerSignFixture(t)
+	if err := database.Create(&model.SignActivity{ActivityID: 100, ActivityType: xxt.ActivityKindSignOut}).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := accessRequest(t, router, http.MethodPost, "/shares", gin.H{
+		"activity_id": 100, "course_id": 10, "class_id": 20, "sign_type": xxt.SignNormal,
+		"end_time": time.Now().Add(time.Hour).UnixMilli(),
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Message != "分享链接不支持签退活动" {
+		t.Fatalf("message=%q", payload.Message)
 	}
 }

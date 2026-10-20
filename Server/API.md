@@ -415,11 +415,64 @@ GET /api/sign/classmates?course_id=222&class_id=111
 
 `deviceCode` 由服务端按账号稳定派生（`HMAC-SHA256(chaoxing_aes_key, "xbt-device-code:v1:<uid>")`，64 位小写十六进制），同账号多次签到一致、不同账号不同，不使用真实硬件标识；轮换 `chaoxing_aes_key` 会改变全部账号的 `deviceCode`。`validate`/`enc2` 只在验证码/人脸状态机内部写入，首发请求不携带。
 
-### 5.5 签到分享接口
+### 5.5 签退
+- Method: `POST`
+- Path: `/api/sign/sign-out`
+- Auth: 是
+
+签退依赖主签到：`activity_id` 传**主签到活动**，服务端从 `getPPTActiveInfo` 读取 `signOutId` 与 `signOutPublishTimeStamp`，再用 `signOutId` 对应的签退活动执行 `preSign` 与 `stuSignajax`。
+
+请求体：
+
+```json
+{
+  "activity_id": 987654,
+  "target_uid": 10001,
+  "course_id": 222,
+  "class_id": 111,
+  "if_refresh_ewm": false,
+  "if_open_address": false,
+  "special_params": {
+    "enc": "xxxx",
+    "latitude": "30.7501",
+    "longitude": "103.9272",
+    "description": "成都市郫都区xxx"
+  }
+}
+```
+
+`target_uid` 缺省为当前登录用户；`special_params` 与 `/api/sign/execute` 一致（二维码 `enc`、手势/签到码 `sign_code`、位置经纬度）。
+
+响应体 `data`:
+
+```json
+{
+  "user_id": 10001,
+  "success": true,
+  "already_signed_out": false,
+  "sign_out_id": 987655,
+  "sign_out_time_ms": 1760000500000,
+  "message": "签退成功",
+  "error_code": "",
+  "retryable": false
+}
+```
+
+签退专属 `error_code`：
+
+| error_code | 含义 | `retryable` | 备注 |
+|---|---|---|---|
+| `sign_in_required` | 主签到未完成 | `false` | 本地无签到记录且上游 `preSign` 未返回已签；不会请求签退接口 |
+| `sign_out_unavailable` | 该签到未发布签退活动 | `false` | 元数据无 `signOutId` |
+| `sign_out_not_published` | 签退尚未到发布时间 | `false` | `signOutPublishTimeStamp` 晚于当前时间 |
+
+其余 `error_code`（`captcha_required`、`face_required`、`location_out_of_range`、`qr_expired`、`activity_expired`、`session_expired`、`upstream_error`）与 `/api/sign/execute` 相同。签退成功写入独立的 `sign_out_records`（`user_uid + 主签到 activity_id` 唯一），不改写 `sign_records`；重复签退返回 `already_signed_out=true`，且不再请求上游。分享链接不支持签退：为签退活动创建分享或执行这类分享都返回 `400`「分享链接不支持签退活动」。
+
+### 5.6 签到分享接口
 
 签到分享用于生成免登录链接。分享页不会返回或展示账号列表；执行目标由后端按分享者在当前课程班级下可代签范围动态计算。
 
-#### 5.5.1 创建分享链接
+#### 5.6.1 创建分享链接
 - Method: `POST`
 - Path: `/api/sign/shares`
 - Auth: 是
@@ -449,14 +502,14 @@ GET /api/sign/classmates?course_id=222&class_id=111
 }
 ```
 
-#### 5.5.2 获取分享活动信息
+#### 5.6.2 获取分享活动信息
 - Method: `GET`
 - Path: `/api/sign/shares/:token`
 - Auth: 否
 
 响应体 `data` 只包含活动和签到类型信息，不包含账号信息。
 
-#### 5.5.3 执行分享签到
+#### 5.6.3 执行分享签到
 - Method: `POST`
 - Path: `/api/sign/shares/:token/execute`
 - Auth: 否
@@ -476,7 +529,8 @@ GET /api/sign/classmates?course_id=222&class_id=111
 - 二维码签到传 `enc/c`。
 - 位置签到传 `latitude/longitude/description`，坐标使用百度 `BD-09`。
 - 当目标范围全部成功或已签到后，分享链接会标记为已使用并失效；部分失败时可在活动结束前继续重试。
-### 5.6 拍照签到
+- 签退活动不支持分享：为签退活动创建分享或执行这类分享链接都会返回 `400`「分享链接不支持签退活动」，不会静默按签到处理。
+### 5.7 拍照签到
 - Method: `POST`
 - Path: `/api/sign/photo`
 - Auth: 是
@@ -509,10 +563,10 @@ curl -X POST http://localhost:3030/api/sign/photo \
   -F "file=@photo.jpg"
 ```
 
-### 5.7 人脸照片接口
+### 5.8 人脸照片接口
 人脸照片用于需要人脸验证的签到活动。照片保存在 `users.face_photo`，上传时会自动压缩到 720×1280 以内并尽量控制在 100KB 以下。
 
-#### 5.7.1 查询人脸照片
+#### 5.8.1 查询人脸照片
 - Method: `GET`
 - Path: `/api/user/face`
 - Auth: 是
@@ -525,7 +579,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 不传 `status_only` 时额外返回 `face_data`（JPEG data URL）。
 
-#### 5.7.2 上传/替换人脸照片
+#### 5.8.2 上传/替换人脸照片
 - Method: `POST`
 - Path: `/api/user/face`
 - Auth: 是
@@ -533,14 +587,14 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 字段：`file`（必填，图片，最大 20MB）。
 
-#### 5.7.3 删除人脸照片
+#### 5.8.3 删除人脸照片
 - Method: `DELETE`
 - Path: `/api/user/face`
 - Auth: 是
 
 说明：签到时若活动 `if_face=true`，后端会为目标账号上传该照片并换取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。
 
-### 5.8 功能开关
+### 5.9 功能开关
 - Method: `GET`
 - Path: `/api/features`
 - Auth: 是
@@ -557,7 +611,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。`class_admin_group_id/name` 仅当当前账号是某个班级的班级管理员时返回。
 
-### 5.9 群聊签到按需抓取状态
+### 5.10 群聊签到按需抓取状态
 - Method: `GET`
 - Path: `/api/sign/im/status`
 - Auth: 是

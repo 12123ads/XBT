@@ -133,6 +133,25 @@ CREATE TABLE IF NOT EXISTS sign_records (
   CONSTRAINT uq_sign_records_user_activity UNIQUE (user_uid, activity_id)
 );
 
+-- 9b) 签退记录表（activity_id 为主签到活动，独立于 sign_records）
+CREATE TABLE IF NOT EXISTS sign_out_records (
+  id BIGSERIAL PRIMARY KEY,
+  user_uid BIGINT NOT NULL,
+  activity_id BIGINT NOT NULL,
+  sign_out_id BIGINT NOT NULL,
+  source_uid BIGINT NOT NULL,
+  course_id BIGINT DEFAULT 0,
+  class_id BIGINT DEFAULT 0,
+  sign_type INTEGER DEFAULT 0,
+  activity_name VARCHAR(255) DEFAULT '',
+  course_name VARCHAR(255) DEFAULT '',
+  course_teacher VARCHAR(255) DEFAULT '',
+  sign_out_time_ms BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_sign_out_records_user_activity UNIQUE (user_uid, activity_id)
+);
+
 -- 10) QMX auto sign global settings
 CREATE TABLE IF NOT EXISTS qmx_auto_sign_settings (
   id BIGSERIAL PRIMARY KEY,

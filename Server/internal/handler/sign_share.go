@@ -44,6 +44,10 @@ func (h *SignHandler) CreateShare(c *gin.Context) {
 		common.Fail(c, 400, "unsupported sign_type")
 		return
 	}
+	if h.isSignOutActivity(req.ActivityID) {
+		common.Fail(c, 400, "分享链接不支持签退活动")
+		return
+	}
 	expiresAt := time.UnixMilli(req.EndTime)
 	if !expiresAt.After(time.Now()) {
 		common.Fail(c, 400, "该签到已结束，无法生成分享链接")
@@ -97,6 +101,10 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 	share, err := h.loadUsableShare(c.Param("token"))
 	if err != nil {
 		h.failShare(c, err)
+		return
+	}
+	if h.isSignOutActivity(share.ActivityID) {
+		common.Fail(c, 400, "分享链接不支持签退活动")
 		return
 	}
 
@@ -313,6 +321,17 @@ func generateSignShareToken() (string, string, error) {
 func hashSignShareToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// isSignOutActivity reports whether discovery cached this activity as type 74.
+// Share links do not implement sign-out; they must say so explicitly instead
+// of silently signing an unrelated activity.
+func (h *SignHandler) isSignOutActivity(activityID int64) bool {
+	var activity model.SignActivity
+	if err := h.db.Select("activity_type").Where("activity_id = ?", activityID).First(&activity).Error; err != nil {
+		return false
+	}
+	return activity.ActivityType == xxt.ActivityKindSignOut
 }
 
 func isSupportedShareSignType(signType int) bool {

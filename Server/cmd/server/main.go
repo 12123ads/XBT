@@ -92,6 +92,7 @@ func main() {
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
+			authed.POST("/sign/sign-out", signHandler.SignOut)
 			authed.POST("/sign/photo", signHandler.Photo)
 			authed.POST("/sign/shares", signHandler.CreateShare)
 			authed.GET("/sign/contributions", signHandler.Contributions)
