@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -6,14 +6,18 @@ import {
   LogOut, 
   Trash2, 
   User as UserIcon,
-  Plus
+  Plus,
+  RefreshCw
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
+import { getNativeUpdateBridge, readNativeAppVersion } from '../utils/nativeUpdate';
 import toast from 'react-hot-toast';
 
 const AccountManagement = () => {
   const navigate = useNavigate();
   const { accounts, activeUid, switchAccount, removeAccount } = useAuthStore();
+  const updateBridge = useMemo(() => getNativeUpdateBridge(), []);
+  const [appVersion] = useState(() => readNativeAppVersion());
 
   const sortedAccounts = useMemo(() => {
     return [...accounts].sort((a, b) => {
@@ -28,6 +32,16 @@ const AccountManagement = () => {
     switchAccount(uid);
     toast.success('已切换账号');
     navigate('/');
+  };
+
+  const handleCheckUpdate = () => {
+    const bridge = getNativeUpdateBridge();
+    if (!bridge?.checkForUpdate) {
+      toast.error('当前环境不支持应用内更新');
+      return;
+    }
+    bridge.checkForUpdate();
+    toast.success('正在检查更新…');
   };
 
   const handleRemove = (e: React.MouseEvent, uid: number) => {
@@ -122,6 +136,26 @@ const AccountManagement = () => {
             <span className="font-bold">添加新账号</span>
           </motion.button>
         </div>
+
+        {updateBridge && (
+          <div className="p-4 bg-white rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
+            <div>
+              <div className="font-bold text-slate-900">应用更新</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                {appVersion
+                  ? `当前版本 ${appVersion.versionName}（${appVersion.versionCode}）`
+                  : '当前版本未知'}
+              </div>
+            </div>
+            <button
+              onClick={handleCheckUpdate}
+              className="flex items-center space-x-1 px-3 h-9 rounded-full bg-blue-50 text-blue-600 font-bold text-sm active:scale-95 transition-transform"
+            >
+              <RefreshCw size={16} />
+              <span>检查更新</span>
+            </button>
+          </div>
+        )}
 
         <div className="pt-8 text-center pb-8">
           <p className="text-xs text-slate-400 leading-relaxed px-8">

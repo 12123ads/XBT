@@ -54,7 +54,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import com.github.enderwolf006.xbt.ui.UpdateDialogs
 import com.github.enderwolf006.xbt.ui.theme.XBTTheme
+import com.github.enderwolf006.xbt.update.UpdateController
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -100,6 +103,7 @@ private fun openLocalWebAsset(context: Context, assetPath: String): WebResourceR
 
 class MainActivity : ComponentActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var updateController: UpdateController
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         filePathCallback?.onReceiveValue(uris.toTypedArray())
         filePathCallback = null
@@ -113,6 +117,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updateController = UpdateController(this, lifecycleScope)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -133,17 +138,38 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = ComposeColor.Transparent
                 ) {
-                    MainScreen(
-                        onShowFileChooser = { callback ->
-                            filePathCallback = callback
-                            fileChooserLauncher.launch("image/*")
-                        },
-                        onRequestCameraPermission = {
-                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                        },
-                    )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        MainScreen(
+                            onShowFileChooser = { callback ->
+                                filePathCallback = callback
+                                fileChooserLauncher.launch("image/*")
+                            },
+                            onRequestCameraPermission = {
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            },
+                            updateController = updateController,
+                        )
+                        UpdateDialogs(
+                            state = updateController.state.value,
+                            onDownload = updateController::startDownload,
+                            onCancelDownload = updateController::cancelDownload,
+                            onDismiss = updateController::dismiss,
+                            onRetry = updateController::retry,
+                            onOpenSettings = updateController::openInstallSettings,
+                            onRetryInstall = updateController::retryInstall,
+                        )
+                    }
                 }
             }
+        }
+
+        updateController.checkOnStartup()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::updateController.isInitialized) {
+            updateController.onResume()
         }
     }
 }
@@ -492,9 +518,10 @@ private data class WebShellHolder(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun MainScreen(
+internal fun MainScreen(
     onShowFileChooser: (ValueCallback<Array<Uri>>) -> Unit,
     onRequestCameraPermission: () -> Unit,
+    updateController: UpdateController,
 ) {
     val context = LocalContext.current
     val url = context.getString(R.string.target_url)
@@ -779,6 +806,7 @@ fun MainScreen(
                     }
 
                     setInitialScale(0)
+                    addJavascriptInterface(updateController.javascriptBridge(), "XBTUpdateBridge")
                     webView = this
                 }
 

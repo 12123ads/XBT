@@ -86,7 +86,7 @@
 - WebView 容器化，Web 构建产物内置到 APK `assets/web`，启动不依赖远端页面
 - 仅前端 `/api` 请求走网络，与 `target_url` 同源
 - CameraX + ML Kit（原生扫码）
-- JavaScript Bridge（原生相机与 Web 页面通信）
+- JavaScript Bridge（原生相机、应用更新与 Web 页面通信）
 
 ---
 
@@ -177,6 +177,15 @@ cd Android
 ```
 
 Android 壳默认目标地址来自 `Android/app/src/main/res/values/strings.xml` 中的 `target_url`。
+
+应用内更新：
+
+- 启动时和账号管理页「检查更新」都会请求 `GET /api/app/version?package=<pkg>&versionCode=<n>&abi=<abi>`；接口不可用时静默跳过，不影响启动。
+- 更新链路只接受 HTTPS：`apkUrl` 非 `https` 会被客户端直接拒绝。
+- 下载到 `cacheDir/updates/`，校验 SHA-256、包名、`versionCode` 与签名证书后，经 `FileProvider` 拉起系统安装器；任一不符都会删除安装包并报错。
+- 非强制更新同一版本 24 小时内最多提示一次；`mandatory` 由服务端 `minSupportedVersionCode` 推导，强制更新弹窗不可取消。
+- 安装包必须与已安装应用使用同一签名，否则系统会拒绝覆盖安装（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
+- 首次安装需用户允许「安装未知应用」，部分 ROM 还会二次确认；未授权时客户端会跳转系统设置，返回后自动继续。
 
 ---
 
