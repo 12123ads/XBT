@@ -97,13 +97,8 @@ const FacePhotoManager = ({ targetUid, onChanged }: FacePhotoManagerProps) => {
   const handleImport = async () => {
     setBusy('import');
     try {
-      const res = await client.post<ApiResponse<FacePhoto & {
-        transform?: { crop_width_ratio: number; angle_degrees: number; quality: number };
-      }>>(targetPath('/user/faces/import', targetUid));
-      const transform = res.data.data?.transform;
-      toast.success(transform
-        ? `已导入并重制（裁剪 ${(transform.crop_width_ratio * 100).toFixed(1)}%，旋转 ${transform.angle_degrees.toFixed(1)}°，质量 ${transform.quality}）`
-        : '已导入官方人脸照片');
+      await client.post<ApiResponse<FacePhoto>>(targetPath('/user/faces/import', targetUid));
+      toast.success('已导入官方照片，签到时自动裁剪/旋转/压缩');
       await fetchPhotos();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : '导入官方照片失败');
@@ -219,8 +214,11 @@ const FacePhotoManager = ({ targetUid, onChanged }: FacePhotoManagerProps) => {
         {busy === 'import'
           ? <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
           : <Download size={16} />}
-        拉取学习通官方照片（自动裁剪/旋转/重压）
+        拉取学习通官方照片（保存原图，签到时自动变换）
       </button>
+      <p className="mt-2 text-center text-[11px] text-slate-400">
+        需要该账号已在学习通设置过人脸照片；导入的是原图，每次签到前会重新变换。
+      </p>
       {atLimit && (
         <p className="mt-2 text-center text-[11px] font-medium text-slate-400">已达 5 张上限，请先删除一张</p>
       )}
