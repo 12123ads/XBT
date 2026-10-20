@@ -10,6 +10,7 @@ import { useAuthStore } from '../store/auth';
 import { ProgressCard } from '../components/sign/ProgressCard';
 import type { ApiResponse, SignActivity, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SelectedLocation, Classmate, User } from '../types';
 import { parseChaoxingQrText, type QrData } from '../utils/qr';
+import { decideSignFailure } from '../utils/signError';
 import scanCursor from '../assets/scan_cursor.png';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 import { useSignLocation } from '../utils/useSignLocation';
@@ -97,6 +98,9 @@ const FullScanner = () => {
   const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
   const locationRef = useRef<SelectedLocation | null>(null);
   const lastScanTimeRef = useRef<number>(0);
+  // enc of the last code the server reported as expired; repeated decodes of
+  // it are ignored until a different code is scanned.
+  const staleQrEncRef = useRef<string | null>(null);
 
   useEffect(() => {
     locationRef.current = signLocation;
@@ -577,11 +581,14 @@ const FullScanner = () => {
       const toSignUids = orderedTargetUids.filter(uid => !signedUids.has(uid));
       if (toSignUids.length === 0) return;
 
-      // 2. Concurrent execution with Retry Logic
+      // 2. Concurrent execution. A scanned code gets one batch: only a captcha
+      // rejection is retried, exactly once. Every other error ends the attempt
+      // with a typed message; an expired code waits for the next scan.
       await Promise.all(toSignUids.map(async (uid) => {
-        const MAX_RETRIES = 15;
-        let lastError = '';
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        const MAX_CAPTCHA_RETRIES = 1;
+        let captchaRetries = 0;
+
+        for (;;) {
           if (!isCurrent()) return;
 
           const currentQr = latestQrDataRef.current || initialQr;
@@ -589,11 +596,13 @@ const FullScanner = () => {
             ...prev,
             [uid]: {
               ...prev[uid],
-              status: attempt === 0 ? 'signing' : 'retrying',
-              attempt,
-              message: attempt === 0 ? '正在尝试签到' : (prev[uid]?.message || `准备重试(${attempt})`)
+              status: captchaRetries === 0 ? 'signing' : 'retrying',
+              attempt: captchaRetries,
+              message: captchaRetries === 0 ? '正在尝试签到' : '验证码校验未通过，正在重试'
             }
           }));
+
+          let res: SignExecuteResult | undefined;
           try {
             const special_params: SignSpecialParams = { enc: currentQr.enc, c: currentQr.c };
             const currentLocation = locationRef.current;
@@ -612,31 +621,57 @@ const FullScanner = () => {
             }, withAccount(owner, controller.signal));
             if (!isCurrent()) return;
 
-            const res = execResp.data.data;
-            if (res.success || res.already_signed) {
-              setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: res.message || '成功' } }));
+            res = execResp.data.data;
+            const result = res;
+            if (result.success || result.already_signed) {
+              setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: result.message || '成功' } }));
               return;
             }
-            lastError = res.message || '失败';
-            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           } catch (error: unknown) {
             if (axios.isAxiosError<ApiResponse<unknown>>(error) && (error.response?.status === 401 || error.response?.status === 403)) {
               controller.abort();
               throw error;
             }
             if (!isCurrent() || axios.isCancel(error) || (error instanceof Error && error.name === 'AbortError')) return;
-            lastError = error instanceof Error ? error.message : '异常';
-            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
+            const message = error instanceof Error ? error.message : '异常';
+            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], status: 'failed', attempt: captchaRetries, message } }));
+            return;
           }
-          if (attempt < MAX_RETRIES) {
-            const delay = attempt < 3 ? 1000 : 2000;
-            for (let i = 0; i < delay; i += 100) {
-              if (!isCurrent()) return;
-              await new Promise(resolve => setTimeout(resolve, 100));
-            }
-          } else if (isCurrent()) {
-            setSignStatuses(prev => ({ ...prev, [uid]: { status: 'failed', message: lastError } }));
+
+          if (!res) return;
+          const failure = decideSignFailure(res);
+
+          if (failure.action === 'retry_captcha' && captchaRetries < MAX_CAPTCHA_RETRIES) {
+            captchaRetries += 1;
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: failure.message }
+            }));
+            continue;
           }
+
+          if (isCurrent()) {
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: { ...prev[uid], status: 'failed', attempt: captchaRetries, message: failure.message }
+            }));
+          }
+
+          if (failure.action === 'rescan_qr') {
+            // Ignore repeated decodes of this same expired code until a new
+            // one appears, so the camera cannot re-submit it automatically.
+            staleQrEncRef.current = currentQr.enc;
+          }
+          if (failure.action === 'relogin') {
+            toast.error(failure.message, { id: 'sign-error-relogin' });
+            controller.abort();
+            navigate('/login');
+            return;
+          }
+          if (failure.action !== 'fail') {
+            toast.error(failure.message, { id: `sign-error-${failure.action}` });
+          }
+          return;
         }
       }));
     } catch (error: unknown) {
@@ -655,7 +690,7 @@ const FullScanner = () => {
     } finally {
       if (ownsBatch()) abortControllerRef.current = null;
     }
-  }, [activity, orderedTargetUids, owner]);
+  }, [activity, orderedTargetUids, owner, navigate]);
 
   const onScanSuccess = useCallback((decodedText: string) => {
     const now = Date.now();
@@ -663,6 +698,7 @@ const FullScanner = () => {
 
     const qr = parseChaoxingQrText(decodedText);
     if (qr) {
+      if (staleQrEncRef.current === qr.enc) return;
       lastScanTimeRef.current = now;
       if (!latestQrDataRef.current || latestQrDataRef.current.enc !== qr.enc) setLatestQrData(qr);
       latestQrDataRef.current = qr;

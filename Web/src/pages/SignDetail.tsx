@@ -24,6 +24,7 @@ import { useAuthStore } from '../store/auth';
 import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse } from '../types';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 import { useSignLocation } from '../utils/useSignLocation';
+import { decideSignFailure } from '../utils/signError';
 
 // Import refactored components
 import { GestureInput } from '../components/sign/GestureInput';
@@ -395,24 +396,27 @@ const SignDetail = () => {
         return;
       }
 
-      // 2. Concurrent execution with Retry Logic (5 times)
+      // 2. Concurrent execution. Retries follow the server error code: only
+      // captcha_required is retried, exactly once. Everything else ends the
+      // attempt with a specific message or action.
       await Promise.all(toSignUids.map(async (uid) => {
-        const MAX_RETRIES = 5;
-        let lastError = '';
+        const MAX_CAPTCHA_RETRIES = 1;
+        let captchaRetries = 0;
 
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        for (;;) {
           if (!isCurrent()) return;
 
           setSignStatuses(prev => ({
             ...prev,
             [uid]: {
               ...prev[uid],
-              status: attempt === 0 ? 'signing' : 'retrying',
-              attempt,
-              message: attempt === 0 ? '正在尝试签到' : (prev[uid]?.message || '正在重试')
+              status: captchaRetries === 0 ? 'signing' : 'retrying',
+              attempt: captchaRetries,
+              message: captchaRetries === 0 ? '正在尝试签到' : '验证码校验未通过，正在重试'
             }
           }));
 
+          let res: SignExecuteResult | undefined;
           try {
             const assignedPhotoFile = isPhotoSign ? photoAssignments.get(uid) : null;
             if (isPhotoSign && !assignedPhotoFile) {
@@ -445,55 +449,70 @@ const SignDetail = () => {
               }, withAccount(owner, controller.signal));
             if (!isCurrent()) return;
 
-            const res = execResp.data.data;
-            if (res.success || res.already_signed) {
+            res = execResp.data.data;
+            const result = res;
+            if (result.success || result.already_signed) {
               if (uid !== owner.uid) {
                 setClassmateSignStates(prev => ({
                   ...prev,
                   [uid]: {
                     user_id: uid,
                     signed: true,
-                    record_source: res.record_source,
-                    record_source_name: res.record_source_name,
-                    message: res.message || '已签到',
+                    record_source: result.record_source,
+                    record_source_name: result.record_source_name,
+                    message: result.message || '已签到',
                   },
                 }));
               }
-              setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: res.message || '签到成功' } }));
+              setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: result.message || '签到成功' } }));
               return;
             }
-            lastError = res.message || '签到失败';
-            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           } catch (error: unknown) {
             if (axios.isAxiosError<ApiResponse<unknown>>(error) && (error.response?.status === 401 || error.response?.status === 403)) {
               controller.abort();
               throw error;
             }
             if (!isCurrent() || axios.isCancel(error) || (error instanceof Error && error.name === 'AbortError')) return;
-            lastError = getErrorMessage(error, '网络连接异常');
-            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
+            const message = getErrorMessage(error, '网络连接异常');
+            setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], status: 'failed', attempt: captchaRetries, message } }));
+            return;
           }
 
-          if (attempt < MAX_RETRIES) {
-            let delay = 0;
-            if (attempt === 2) delay = 1000;
-            else if (attempt >= 3) delay = 2000;
-            if (delay > 0) {
-              for (let i = 0; i < delay; i += 100) {
-                if (!isCurrent()) return;
-                await new Promise(resolve => setTimeout(resolve, 100));
-              }
-            }
-          } else if (isCurrent()) {
-            // All retries exhausted
+          if (!res) return;
+          const failure = decideSignFailure(res);
+
+          if (failure.action === 'retry_captcha' && captchaRetries < MAX_CAPTCHA_RETRIES) {
+            captchaRetries += 1;
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: failure.message }
+            }));
+            continue;
+          }
+
+          if (isCurrent()) {
             setSignStatuses(prev => ({
               ...prev,
               [uid]: {
+                ...prev[uid],
                 status: 'failed',
-                message: lastError || '多次重试后失败'
+                attempt: captchaRetries,
+                message: failure.message
               }
             }));
           }
+
+          if (failure.action === 'relogin') {
+            toast.error(failure.message, { id: 'sign-error-relogin' });
+            controller.abort();
+            navigate('/login');
+            return;
+          }
+
+          if (failure.action !== 'fail') {
+            toast.error(failure.message, { id: `sign-error-${failure.action}` });
+          }
+          return;
         }
       }));
     } catch (error: unknown) {

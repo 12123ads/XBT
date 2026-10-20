@@ -154,6 +154,16 @@ export interface SignCheckItem {
   message: string;
 }
 
+// Error codes from POST /api/sign/execute (XBT-S3). The web client branches on
+// these instead of parsing upstream message text.
+export type SignErrorCode =
+  | 'captcha_required'
+  | 'face_required'
+  | 'location_out_of_range'
+  | 'qr_expired'
+  | 'session_expired'
+  | 'upstream_error';
+
 export interface SignExecuteResult {
   user_id: number;
   success: boolean;
@@ -161,6 +171,9 @@ export interface SignExecuteResult {
   record_source: number;
   record_source_name: string;
   message: string;
+  error_code?: SignErrorCode;
+  retryable?: boolean;
+  distance_m?: number;
 }
 
 export interface SignShareCreateResponse {
