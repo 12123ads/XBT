@@ -270,6 +270,11 @@ GET /api/sign/classmates?course_id=222&class_id=111
 说明：
 - 后端会自动把当前登录用户加入查询列表。
 - 前端可据此过滤出未签用户，再自行并发调用执行签到接口。
+- 本地无签到记录的用户会在本次查询中向学习通发起一次 `preSign`（POST `ext`）确认状态：
+  - 上游已签：返回 `signed=true`、`record_source=-1`、`record_source_name="学习通"`，并写入 `source_uid=-1` 的签到记录；之后的查询不再请求上游。
+  - 活动已截止：`signed=false`、`checked_upstream=true`，`message="签到已截止"`，不写记录。
+  - 凭据/网络/上游失败：保留本地状态，`checked_upstream=false`，整个查询不因此失败。
+- `checked_upstream` 表示该用户的状态是否由本次上游查询确认；已有本地记录的用户为 `false`。
 
 响应体 `data`:
 
@@ -281,14 +286,24 @@ GET /api/sign/classmates?course_id=222&class_id=111
       "signed": true,
       "record_source": 343479151,
       "record_source_name": "张三",
-      "message": "该同学已本人签到"
+      "message": "该同学已本人签到",
+      "checked_upstream": false
     },
     {
       "user_id": 10001,
       "signed": false,
       "record_source": 0,
       "record_source_name": "",
-      "message": "未签到"
+      "message": "未签到",
+      "checked_upstream": true
+    },
+    {
+      "user_id": 10002,
+      "signed": true,
+      "record_source": -1,
+      "record_source_name": "学习通",
+      "message": "该同学已在学习通签到",
+      "checked_upstream": true
     }
   ]
 }
@@ -348,8 +363,11 @@ GET /api/sign/classmates?course_id=222&class_id=111
 | `face_required` | 人脸验证未通过或未设置人脸照片 | `false` | 服务端已自动做人脸恢复重试一次 |
 | `location_out_of_range` | 位置超出范围 | `false` | 上游给出距离时返回 `distance_m`（米） |
 | `qr_expired` | 二维码已过期 | `false` | 需要重新扫码 |
+| `activity_expired` | 签到已截止 | `false` | 上游 `preSign` 判定已截止，不写记录 |
 | `session_expired` | 学习通会话失效 | `false` | 需要重新登录 |
 | `upstream_error` | 其他上游错误 | `true` | `message` 为可读提示 |
+
+所有签到类型（普通/二维码/手势/位置/签到码）执行前都会先请求 `/newsign/preSign`：POST `ext`（来自活动元数据 `getPPTActiveInfo`），二维码额外带 `rcode`。`preSign` 返回 403 时服务端重新登录一次并重试一次；再次 403 或重登失败返回 `session_expired`，不会循环。
 
 上游返回“您已签到过了”时会写入 `source_uid=-1` 的学习通来源记录，之后的 `/api/sign/check` 与重复执行都只读本地记录，不再请求上游签到。
 

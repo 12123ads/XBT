@@ -16,7 +16,7 @@ import (
 )
 
 type signClient interface {
-	PreSign(mobile, password string, fixed xxt.FixedParams, code, enc string) error
+	PreSign(mobile, password string, fixed xxt.FixedParams, signType int, code, enc string) (xxt.PreSignResult, error)
 	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (xxt.SignResult, error)
 	GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (xxt.SignDetail, error)
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
@@ -95,6 +95,9 @@ type SignCheckItem struct {
 	RecordSource     int64  `json:"record_source"`
 	RecordSourceName string `json:"record_source_name"`
 	Message          string `json:"message"`
+	// CheckedUpstream reports whether preSign supplied the state. Local records
+	// are never re-queried, so it stays false for already-recorded users.
+	CheckedUpstream bool `json:"checked_upstream"`
 }
 
 type SignExecuteResult struct {
@@ -117,6 +120,7 @@ const (
 	SignErrorFaceRequired     = "face_required"
 	SignErrorLocationOutRange = "location_out_of_range"
 	SignErrorQRExpired        = "qr_expired"
+	SignErrorActivityExpired  = "activity_expired"
 	SignErrorSessionExpired   = "session_expired"
 	SignErrorUpstream         = "upstream_error"
 )
@@ -135,9 +139,88 @@ func (s *SignService) CheckSignStates(operatorUID, activityID, courseID, classID
 		if err != nil {
 			return nil, err
 		}
+		if !state.Signed {
+			state, err = s.mergeUpstreamSignState(activityID, courseID, classID, state)
+			if err != nil {
+				return nil, err
+			}
+		}
 		items = append(items, state)
 	}
 	return items, nil
+}
+
+// mergeUpstreamSignState asks 学习通 whether the user already signed. It only
+// writes a record when upstream reports a signature. Credential, transport and
+// upstream errors leave the local unsigned state intact so a check still
+// answers; database errors are returned because the answer would be trusted
+// without the record the rest of the system relies on.
+func (s *SignService) mergeUpstreamSignState(activityID, courseID, classID int64, state SignCheckItem) (SignCheckItem, error) {
+	target, err := LoadActiveUser(s.db, state.UserID)
+	if err != nil {
+		log.Printf("check upstream state skipped: activity=%d uid=%d err=%v", activityID, state.UserID, err)
+		return state, nil
+	}
+	password, err := s.cc.Decrypt(target.CredentialCipher)
+	if err != nil {
+		log.Printf("check upstream credentials unavailable: activity=%d uid=%d err=%v", activityID, state.UserID, err)
+		return state, nil
+	}
+	detail, err := s.xxt.GetSignDetail(target.Mobile, password, activityID, courseID, classID, state.UserID)
+	if err != nil {
+		log.Printf("check upstream metadata failed: activity=%d uid=%d err=%v", activityID, state.UserID, err)
+		return state, nil
+	}
+	fixed := xxt.FixedParams{
+		ActiveID: activityID,
+		UID:      state.UserID,
+		CourseID: courseID,
+		ClassID:  classID,
+		Ext:      detail.Ext,
+	}
+	result, err := s.xxt.PreSign(target.Mobile, password, fixed, detail.SignType, "", "")
+	if err != nil {
+		if errors.Is(err, xxt.ErrSessionExpired) {
+			state.Message = "学习通登录已过期，无法确认签到状态"
+		}
+		log.Printf("check upstream preSign failed: activity=%d uid=%d err=%v", activityID, state.UserID, err)
+		return state, nil
+	}
+	switch result.Status {
+	case xxt.PreSignAlreadySigned:
+		return s.recordUpstreamSigned(activityID, courseID, classID, detail.SignType, state)
+	case xxt.PreSignExpired:
+		state.CheckedUpstream = true
+		state.Message = result.Message
+	case xxt.PreSignReady:
+		state.CheckedUpstream = true
+	case xxt.PreSignNoPermission:
+		state.Message = "无法确认该活动的签到状态"
+	}
+	return state, nil
+}
+
+// recordUpstreamSigned persists an official self-sign discovered by preSign.
+// The unique (user_uid, activity_id) index makes concurrent checks idempotent.
+func (s *SignService) recordUpstreamSigned(activityID, courseID, classID int64, signType int, state SignCheckItem) (SignCheckItem, error) {
+	rec := model.SignRecord{
+		UserUID:    state.UserID,
+		ActivityID: activityID,
+		SourceUID:  -1,
+		CourseID:   courseID,
+		ClassID:    classID,
+		SignType:   signType,
+		SignTimeMS: time.Now().UnixMilli(),
+	}
+	if err := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec).Error; err != nil {
+		return SignCheckItem{}, err
+	}
+	state.Signed = true
+	state.RecordSource = -1
+	state.RecordSourceName = "学习通"
+	state.Message = "该同学已在学习通签到"
+	state.CheckedUpstream = true
+	return state, nil
 }
 
 func (s *SignService) AuthorizeTargets(operatorUID, activityID, courseID, classID int64, targetUIDs []int64) error {
@@ -247,22 +330,33 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		IfRefreshEWM:  req.IfRefreshEWM,
 		IfOpenAddress: req.IfOpenAddress,
 	}
-	// Types 2/3/4/5 carry the location parameter set when the activity opens
-	// address. The client flag is only a fallback: activity metadata is
-	// authoritative and is cached for 30s per account (XBT-S1).
-	if req.SignType != xxt.SignNormal {
-		if detail, err := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID); err == nil {
-			fixed.IfOpenAddress = fixed.IfOpenAddress || detail.IfOpenAddress
-		} else {
-			log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, err)
-		}
+	// Activity metadata is authoritative for both the location toggle and the
+	// opaque `ext` that preSign must post (30s cache per account, XBT-S1).
+	if detail, err := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID); err == nil {
+		fixed.IfOpenAddress = fixed.IfOpenAddress || detail.IfOpenAddress
+		fixed.Ext = detail.Ext
+	} else {
+		log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, err)
 	}
-	if req.SignType == xxt.SignQRCode {
-		enc, _ := req.Special["enc"].(string)
-		code, _ := req.Special["c"].(string)
-		if err := s.xxt.PreSign(target.Mobile, password, fixed, code, enc); err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试", ErrorCode: SignErrorUpstream, Retryable: true}, nil
+
+	enc, _ := req.Special["enc"].(string)
+	code, _ := req.Special["c"].(string)
+	preSign, err := s.xxt.PreSign(target.Mobile, password, fixed, req.SignType, code, enc)
+	if err != nil {
+		if errors.Is(err, xxt.ErrSessionExpired) {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorSessionExpired, Message: "学习通登录已过期，请重新登录"}, nil
 		}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试", ErrorCode: SignErrorUpstream, Retryable: true}, nil
+	}
+	switch preSign.Status {
+	case xxt.PreSignExpired:
+		// A closed activity never gets a record, even if the page still
+		// renders a signed marker.
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorActivityExpired, Message: preSign.Message}, nil
+	case xxt.PreSignAlreadySigned:
+		return s.recordAlreadySigned(req)
+	case xxt.PreSignNoPermission:
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorUpstream, Message: preSign.Message}, nil
 	}
 
 	if ifFace, _ := req.Special["if_face"].(bool); ifFace {

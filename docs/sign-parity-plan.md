@@ -105,6 +105,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - 上游已签、本地无记录时，`/sign/check` 返回 `signed=true`、`record_source=-1`、`record_source_name="学习通"`。
   - 已截止活动返回可读提示，不写记录。
   - 现有 `HasActivityInCourse` 授权逻辑不变。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Client.PreSign` 改为 POST `ext`（`FixedParams.Ext` 来自 `getPPTActiveInfo`），二维码额外带 `rcode`；403 时 `PreLogin` 一次并重试一次，第二次 403 或重登失败返回 `xxt.ErrSessionExpired`；`xxt/presign.go` 解析 `ready/expired/already_signed/no_permission`。`service.ExecuteOne` 对全部类型先 preSign：`already_signed` 写 `source_uid=-1` 记录，`expired` 返回 `activity_expired` 且不写记录，`session_expired` 映射为同名错误码。`CheckSignStates` 对本地无记录的用户用其凭据 preSign 合并上游状态，上游已签时落 `source_uid=-1` 记录并返回 `checked_upstream=true`；凭据/网络失败保留本地状态，不影响整次查询。测试见 `Server/internal/xxt/presign_test.go`、`Server/internal/service/sign_test.go`；接口说明见 `Server/API.md` §5.3/§5.4。
 
 #### XBT-S5 验证码流程修复
 - **输出**：可配置的 `captchaId`；`get/conf` → 生成 `captchaKey/token/iv` → 取图 → 单次校验 → 失败重取 challenge（最多 N 次）。

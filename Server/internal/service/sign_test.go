@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -17,6 +18,7 @@ type signAuthorizationUpstream struct {
 	checkFace  func(string, string, int64, string) (xxt.FaceCheckResult, error)
 	detail     xxt.SignDetail
 	detailErr  error
+	preSign    func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error)
 }
 
 func (u *signAuthorizationUpstream) GetSignDetail(string, string, int64, int64, int64, int64) (xxt.SignDetail, error) {
@@ -30,8 +32,11 @@ func (u *signAuthorizationUpstream) HasActivityInCourse(mobile, password string,
 	return u.lookup(mobile, password, courseID, classID, activityID)
 }
 
-func (u *signAuthorizationUpstream) PreSign(string, string, xxt.FixedParams, string, string) error {
-	panic("unexpected QR pre-sign")
+func (u *signAuthorizationUpstream) PreSign(mobile, password string, fixed xxt.FixedParams, signType int, code, enc string) (xxt.PreSignResult, error) {
+	if u.preSign == nil {
+		return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+	}
+	return u.preSign(mobile, password, fixed, signType, code, enc)
 }
 
 func (u *signAuthorizationUpstream) Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (xxt.SignResult, error) {
@@ -587,5 +592,260 @@ func TestSignExecuteTerminalErrorsDoNotRetry(t *testing.T) {
 				t.Fatalf("failed attempt wrote %d records: %v", count, err)
 			}
 		})
+	}
+}
+
+func TestSignExecutePreSignsEverySignTypeWithActivityExt(t *testing.T) {
+	cases := []struct {
+		name     string
+		signType int
+		special  map[string]interface{}
+		wantCode string
+		wantEnc  string
+	}{
+		{name: "normal", signType: xxt.SignNormal},
+		{name: "qr", signType: xxt.SignQRCode, special: map[string]interface{}{"c": "abc", "enc": "xyz"}, wantCode: "abc", wantEnc: "xyz"},
+		{name: "gesture", signType: xxt.SignGesture, special: map[string]interface{}{"sign_code": "1234"}},
+		{name: "location", signType: xxt.SignLocation},
+		{name: "sign code", signType: xxt.SignCode, special: map[string]interface{}{"sign_code": "5678"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			var preSignCalls int
+			var preSignFixed xxt.FixedParams
+			var preSignType int
+			var preSignCode, preSignEnc string
+			var signFixed xxt.FixedParams
+			upstream := &signAuthorizationUpstream{
+				detail: xxt.SignDetail{Ext: "activity-ext", SignType: tc.signType},
+				preSign: func(_ string, _ string, fixed xxt.FixedParams, signType int, code, enc string) (xxt.PreSignResult, error) {
+					preSignCalls++
+					preSignFixed = fixed
+					preSignType = signType
+					preSignCode, preSignEnc = code, enc
+					return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+				},
+				sign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
+					signFixed = fixed
+					return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+				ActivityID: 100,
+				TargetUID:  2,
+				CourseID:   10,
+				ClassID:    20,
+				SignType:   tc.signType,
+				Special:    tc.special,
+			})
+			if err != nil || !result.Success {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if preSignCalls != 1 {
+				t.Fatalf("preSign calls = %d, want 1", preSignCalls)
+			}
+			if preSignFixed.Ext != "activity-ext" || preSignFixed.ActiveID != 100 || preSignFixed.UID != 2 {
+				t.Fatalf("preSign fixed = %+v, want activity ext and target identity", preSignFixed)
+			}
+			if preSignType != tc.signType || preSignCode != tc.wantCode || preSignEnc != tc.wantEnc {
+				t.Fatalf("preSign args type=%d code=%q enc=%q, want type=%d code=%q enc=%q",
+					preSignType, preSignCode, preSignEnc, tc.signType, tc.wantCode, tc.wantEnc)
+			}
+			if signFixed.Ext != "activity-ext" {
+				t.Fatalf("sign request lost ext: %+v", signFixed)
+			}
+		})
+	}
+}
+
+func TestSignExecutePreSignOutcomesDoNotReachUpstreamSign(t *testing.T) {
+	cases := []struct {
+		name          string
+		preSign       func() (xxt.PreSignResult, error)
+		wantSuccess   bool
+		wantAlready   bool
+		wantRecord    bool
+		wantCode      string
+		wantSource    int64
+		wantSourceTag string
+	}{
+		{
+			name: "expired activity",
+			preSign: func() (xxt.PreSignResult, error) {
+				return xxt.PreSignResult{Status: xxt.PreSignExpired, Message: "签到已截止"}, nil
+			},
+			wantCode: SignErrorActivityExpired,
+		},
+		{
+			name:          "upstream already signed",
+			preSign:       func() (xxt.PreSignResult, error) { return xxt.PreSignResult{Status: xxt.PreSignAlreadySigned}, nil },
+			wantSuccess:   true,
+			wantAlready:   true,
+			wantRecord:    true,
+			wantSource:    -1,
+			wantSourceTag: "学习通",
+		},
+		{
+			name: "no permission",
+			preSign: func() (xxt.PreSignResult, error) {
+				return xxt.PreSignResult{Status: xxt.PreSignNoPermission, Message: "当前账号无权签到该活动"}, nil
+			},
+			wantCode: SignErrorUpstream,
+		},
+		{
+			name: "session expired",
+			preSign: func() (xxt.PreSignResult, error) {
+				return xxt.PreSignResult{}, fmt.Errorf("%w: relogin rejected", xxt.ErrSessionExpired)
+			},
+			wantCode: SignErrorSessionExpired,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			signCalls := 0
+			upstream := &signAuthorizationUpstream{
+				preSign: func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error) {
+					return tc.preSign()
+				},
+				sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+					signCalls++
+					return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			if result.Success != tc.wantSuccess || result.AlreadySigned != tc.wantAlready || result.ErrorCode != tc.wantCode {
+				t.Fatalf("result=%+v, want success=%v already=%v code=%q", result, tc.wantSuccess, tc.wantAlready, tc.wantCode)
+			}
+			if tc.wantSourceTag != "" && (result.RecordSource != tc.wantSource || result.RecordSourceName != tc.wantSourceTag) {
+				t.Fatalf("result source=%d/%q, want %d/%q", result.RecordSource, result.RecordSourceName, tc.wantSource, tc.wantSourceTag)
+			}
+			if tc.wantCode == SignErrorActivityExpired || tc.wantCode == SignErrorUpstream {
+				if result.Message == "" || result.Retryable {
+					t.Fatalf("terminal failure needs a readable, non-retryable message: %+v", result)
+				}
+			}
+			if signCalls != 0 {
+				t.Fatalf("stuSignajax calls = %d, preSign must short-circuit", signCalls)
+			}
+			var count int64
+			if err := database.Model(&model.SignRecord{}).Where("activity_id = ?", 100).Count(&count).Error; err != nil {
+				t.Fatal(err)
+			}
+			wantCount := int64(0)
+			if tc.wantRecord {
+				wantCount = 1
+			}
+			if count != wantCount {
+				t.Fatalf("records = %d, want %d", count, wantCount)
+			}
+		})
+	}
+}
+
+func TestSignCheckMergesUpstreamSignedStateAndPersistsOnce(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	var preSignUIDs []int64
+	upstream := &signAuthorizationUpstream{
+		detail: xxt.SignDetail{Ext: "activity-ext", SignType: xxt.SignCode},
+		preSign: func(_ string, _ string, fixed xxt.FixedParams, signType int, _, _ string) (xxt.PreSignResult, error) {
+			if fixed.Ext != "activity-ext" || signType != xxt.SignCode {
+				t.Fatalf("check preSign fixed=%+v type=%d, want activity ext and type", fixed, signType)
+			}
+			preSignUIDs = append(preSignUIDs, fixed.UID)
+			if fixed.UID == 2 {
+				return xxt.PreSignResult{Status: xxt.PreSignAlreadySigned}, nil
+			}
+			return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+
+	items, err := svc.CheckSignStates(1, 100, 10, 20, []int64{2})
+	if err != nil {
+		t.Fatalf("CheckSignStates error = %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	if items[0].UserID != 1 || items[0].Signed || !items[0].CheckedUpstream {
+		t.Fatalf("operator state = %+v, want unsigned and upstream-checked", items[0])
+	}
+	got := items[1]
+	if got.UserID != 2 || !got.Signed || got.RecordSource != -1 || got.RecordSourceName != "学习通" || !got.CheckedUpstream {
+		t.Fatalf("upstream-signed state = %+v, want signed with source -1/学习通", got)
+	}
+	if got.Message == "" {
+		t.Fatalf("upstream-signed state needs a readable message")
+	}
+	var rec model.SignRecord
+	if err := database.Where("user_uid = ? AND activity_id = ?", 2, 100).Take(&rec).Error; err != nil {
+		t.Fatalf("upstream-signed record missing: %v", err)
+	}
+	if rec.SourceUID != -1 || rec.CourseID != 10 || rec.ClassID != 20 || rec.SignType != xxt.SignCode {
+		t.Fatalf("persisted record = %+v", rec)
+	}
+
+	preSignUIDs = nil
+	items, err = svc.CheckSignStates(1, 100, 10, 20, []int64{2})
+	if err != nil || len(items) != 2 || !items[1].Signed || items[1].RecordSource != -1 {
+		t.Fatalf("second check = %+v err=%v", items, err)
+	}
+	if !reflect.DeepEqual(preSignUIDs, []int64{1}) {
+		t.Fatalf("second check preSign uids = %v, want only the unrecorded operator", preSignUIDs)
+	}
+}
+
+func TestSignCheckExpiredActivityReportsWithoutRecord(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	upstream := &signAuthorizationUpstream{
+		preSign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _, _ string) (xxt.PreSignResult, error) {
+			if fixed.UID == 2 {
+				return xxt.PreSignResult{Status: xxt.PreSignExpired, Message: "签到已截止"}, nil
+			}
+			return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	items, err := svc.CheckSignStates(1, 100, 10, 20, []int64{2})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("items = %+v err=%v", items, err)
+	}
+	if got := items[1]; got.Signed || !got.CheckedUpstream || got.Message != "签到已截止" {
+		t.Fatalf("expired state = %+v, want unsigned with readable closed message", got)
+	}
+	var count int64
+	if err := database.Model(&model.SignRecord{}).Where("activity_id = ?", 100).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("expired activity wrote %d records: %v", count, err)
+	}
+}
+
+func TestSignCheckPreSignFailureKeepsLocalState(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	upstream := &signAuthorizationUpstream{
+		preSign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _, _ string) (xxt.PreSignResult, error) {
+			if fixed.UID == 2 {
+				return xxt.PreSignResult{}, errors.New("upstream unreachable")
+			}
+			return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	items, err := svc.CheckSignStates(1, 100, 10, 20, []int64{2})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("check must survive upstream failure: items=%+v err=%v", items, err)
+	}
+	if got := items[1]; got.Signed || got.CheckedUpstream || got.Message != "未签到" {
+		t.Fatalf("failed merge changed local state: %+v", got)
+	}
+	var count int64
+	if err := database.Model(&model.SignRecord{}).Where("activity_id = ?", 100).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("failed merge wrote %d records: %v", count, err)
 	}
 }

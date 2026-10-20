@@ -109,6 +109,9 @@ type FixedParams struct {
 	// IfOpenAddress mirrors the activity's ifopenAddress flag (XBT-S1 metadata).
 	// When true, stuSignajax carries the location parameter set.
 	IfOpenAddress bool
+	// Ext is the activity's opaque ext field (getPPTActiveInfo). preSign must
+	// POST it verbatim; empty means the request carries an empty ext.
+	Ext string
 }
 
 // New builds the 学习通 client. signFID is the unit/school id sent as `fid` on
@@ -642,14 +645,66 @@ func (c *Client) GetFaceFlag(mobile, password string, activityID, courseID, clas
 	return false
 }
 
-func (c *Client) PreSign(mobile, password string, fixed FixedParams, code, enc string) error {
+// PreSign performs the pre-sign handshake for every sign type. The handshake
+// is a POST carrying the activity's opaque `ext`; QR activities additionally
+// carry an `rcode` built from the scanned code/enc pair.
+//
+// A 403 means the cached session cookie was rejected: the client logs in again
+// exactly once and retries exactly once. A second 403 (or a failed re-login)
+// returns [ErrSessionExpired]; there is no further retry.
+func (c *Client) PreSign(mobile, password string, fixed FixedParams, signType int, code, enc string) (PreSignResult, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
-		return err
+		return PreSignResult{}, err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
 
+	resp, err := c.sendPreSign(&cli, fixed, signType, code, enc)
+	if err != nil {
+		return PreSignResult{}, err
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if _, err := c.PreLogin(mobile, password); err != nil {
+			return PreSignResult{}, fmt.Errorf("%w: %v", ErrSessionExpired, err)
+		}
+		s, err = c.ensureSession(mobile, password)
+		if err != nil {
+			return PreSignResult{}, fmt.Errorf("%w: %v", ErrSessionExpired, err)
+		}
+		cli = *c.http
+		cli.Jar = s.Jar
+		resp, err = c.sendPreSign(&cli, fixed, signType, code, enc)
+		if err != nil {
+			return PreSignResult{}, err
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return PreSignResult{}, ErrSessionExpired
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return PreSignResult{}, err
+	}
+	if resp.StatusCode == http.StatusFound || strings.Contains(string(body), preSignNoPermissionMark) {
+		return PreSignResult{Status: PreSignNoPermission, Message: "当前账号无权签到该活动"}, nil
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return PreSignResult{}, fmt.Errorf("preSign: upstream status %d: %s", resp.StatusCode, truncateForLog(string(body), 200))
+	}
+
+	c.postSignAnalysis(&cli, fixed.ActiveID)
+	return ParsePreSignBody(string(body)), nil
+}
+
+func (c *Client) sendPreSign(cli *http.Client, fixed FixedParams, signType int, code, enc string) (*http.Response, error) {
 	vals := url.Values{}
 	vals.Set("courseId", strconv.FormatInt(fixed.CourseID, 10))
 	vals.Set("classId", strconv.FormatInt(fixed.ClassID, 10))
@@ -660,43 +715,43 @@ func (c *Client) PreSign(mobile, password string, fixed FixedParams, code, enc s
 	vals.Set("appType", "15")
 	vals.Set("uid", strconv.FormatInt(fixed.UID, 10))
 	vals.Set("isTeacherViewOpen", "0")
-	if fixed.IfRefreshEWM {
+	if signType == SignQRCode && (code != "" || enc != "") {
 		rcode := fmt.Sprintf("SIGNIN:aid=%d&source=15&Code=%s&enc=%s", fixed.ActiveID, code, enc)
-		vals.Set("rcode", url.QueryEscape(rcode))
+		vals.Set("rcode", rcode)
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, "https://mobilelearn.chaoxing.com/newsign/preSign?"+vals.Encode(), nil)
+	form := url.Values{}
+	form.Set("ext", fixed.Ext)
+	req, _ := http.NewRequest(http.MethodPost, "https://mobilelearn.chaoxing.com/newsign/preSign?"+vals.Encode(), strings.NewReader(form.Encode()))
+	req.Header.Set("User-Agent", c.mobileUA)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return cli.Do(req)
+}
+
+// postSignAnalysis is best effort: it never changes the preSign outcome.
+func (c *Client) postSignAnalysis(cli *http.Client, activeID int64) {
+	a1 := fmt.Sprintf("https://mobilelearn.chaoxing.com/pptSign/analysis?vs=1&DB_STRATEGY=RANDOM&aid=%d", activeID)
+	req, _ := http.NewRequest(http.MethodGet, a1, nil)
 	req.Header.Set("User-Agent", c.mobileUA)
 	resp, err := cli.Do(req)
 	if err != nil {
-		return err
+		return
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	a1 := fmt.Sprintf("https://mobilelearn.chaoxing.com/pptSign/analysis?vs=1&DB_STRATEGY=RANDOM&aid=%d", fixed.ActiveID)
-	req2, _ := http.NewRequest(http.MethodGet, a1, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	m := regexp.MustCompile(`code='\\+'(.*?)'`).FindSubmatch(body)
+	if len(m) < 2 {
+		return
+	}
+	code := string(m[1])
+	a2 := "https://mobilelearn.chaoxing.com/pptSign/analysis2?DB_STRATEGY=RANDOM&code=" + url.QueryEscape(code)
+	req2, _ := http.NewRequest(http.MethodGet, a2, nil)
 	req2.Header.Set("User-Agent", c.mobileUA)
 	resp2, err := cli.Do(req2)
-	if err != nil {
-		return err
-	}
-	defer resp2.Body.Close()
-	body2, _ := io.ReadAll(resp2.Body)
-	m := regexp.MustCompile(`code='\\+'(.*?)'`).FindSubmatch(body2)
-	if len(m) < 2 {
-		return nil
-	}
-	code2 := string(m[1])
-	a2 := "https://mobilelearn.chaoxing.com/pptSign/analysis2?DB_STRATEGY=RANDOM&code=" + url.QueryEscape(code2)
-	req3, _ := http.NewRequest(http.MethodGet, a2, nil)
-	req3.Header.Set("User-Agent", c.mobileUA)
-	resp3, err := cli.Do(req3)
 	if err == nil {
-		defer resp3.Body.Close()
-		_, _ = io.Copy(io.Discard, resp3.Body)
+		_, _ = io.Copy(io.Discard, resp2.Body)
+		resp2.Body.Close()
 	}
-	return nil
 }
 
 func (c *Client) GetPanUploadToken(mobile, password string) (string, error) {

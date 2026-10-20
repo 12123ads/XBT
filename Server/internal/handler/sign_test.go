@@ -47,8 +47,8 @@ func (u *handlerSignUpstream) HasActivityInCourse(string, string, int64, int64, 
 	return u.scope, u.scopeErr
 }
 
-func (u *handlerSignUpstream) PreSign(string, string, xxt.FixedParams, string, string) error {
-	return nil
+func (u *handlerSignUpstream) PreSign(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error) {
+	return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
 }
 
 func (u *handlerSignUpstream) Sign(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
