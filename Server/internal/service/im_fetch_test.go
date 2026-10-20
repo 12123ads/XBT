@@ -117,7 +117,7 @@ func TestIMFetchDiscoversActivities(t *testing.T) {
 		}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.refreshAccount(context.Background(), uid, true)
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
 	if snapshot.ErrorCode != "" || snapshot.GroupCount != 2 || snapshot.ActivityCount != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
@@ -143,7 +143,7 @@ func TestIMFetchRefreshesTokenOnceAfterUnauthorized(t *testing.T) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{ActiveID: 7, CourseID: 1, ClassID: 2, AType: 2}}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.refreshAccount(context.Background(), uid, true)
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
 	if snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
@@ -162,7 +162,7 @@ func TestIMFetchStopsAfterSecondUnauthorized(t *testing.T) {
 		return nil, nil, &im.Error{Code: im.CodeUnauthorized, Status: 401}
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.refreshAccount(context.Background(), uid, true)
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
 	if snapshot.ErrorCode != im.CodeUnauthorized {
 		t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, im.CodeUnauthorized)
 	}
@@ -197,7 +197,7 @@ func TestIMFetchMapsCredentialFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &fakeIMClient{}
 			svc, _, uid := newTestIMService(t, tc.provider, client)
-			snapshot := svc.refreshAccount(context.Background(), uid, true)
+			snapshot := svc.RefreshIfStale(context.Background(), uid)
 			if snapshot.ErrorCode != tc.want {
 				t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, tc.want)
 			}
@@ -218,7 +218,7 @@ func TestIMFetchRetainsLastSuccessOnFailure(t *testing.T) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{ActiveID: 55, CourseID: 1, ClassID: 2, AType: 2}}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	if snapshot := svc.refreshAccount(context.Background(), uid, true); snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
+	if snapshot := svc.RefreshIfStale(context.Background(), uid); snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
 		t.Fatalf("initial poll: %+v", snapshot)
 	}
 	fail = true
@@ -248,7 +248,7 @@ func TestIMConcurrentFetchIsSingleFlightPerAccount(t *testing.T) {
 	svc, _, uid := newTestIMService(t, provider, client)
 
 	firstDone := make(chan IMSnapshot, 1)
-	go func() { firstDone <- svc.refreshAccount(context.Background(), uid, true) }()
+	go func() { firstDone <- svc.RefreshIfStale(context.Background(), uid) }()
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -256,7 +256,7 @@ func TestIMConcurrentFetchIsSingleFlightPerAccount(t *testing.T) {
 	}
 
 	secondDone := make(chan IMSnapshot, 1)
-	go func() { secondDone <- svc.refreshAccount(context.Background(), uid, true) }()
+	go func() { secondDone <- svc.RefreshIfStale(context.Background(), uid) }()
 	select {
 	case <-secondDone:
 	case <-time.After(2 * time.Second):
@@ -352,7 +352,7 @@ func TestIMFetchLogsDoNotContainSecrets(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	defer log.SetOutput(previous)
-	snapshot := svc.refreshAccount(context.Background(), uid, true)
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
 	if snapshot.ErrorCode != "" {
 		t.Fatalf("unexpected error: %s", snapshot.ErrorCode)
 	}
