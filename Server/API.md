@@ -794,6 +794,29 @@ curl -X POST http://localhost:3030/api/sign/photo \
 - 只有 `401/408` 会触发一次 token 重取并重试一次；第二次仍失败则记录 `im_unauthorized` 并结束本次抓取。
 - 抓取失败只写 `error_code`，`taskactivelist` 结果照常返回。
 
+### 5.11 导出本人账号到 ChaoxingSignFaker
+- Method: `GET`
+- Path: `/api/account/faker-export`
+- Auth: 是（普通用户，仅 JWT 对应账号）
+
+响应体 `data`:
+
+```json
+{
+  "url": "http://cdn.aquamarine5.fun/?phone=13800000000&pwd=...&name=...&face=&dc=...",
+  "qr_png": "data:image/png;base64,...",
+  "warnings": ["链接等同于账号密码，拿到即可还原密码并控制账号，请勿转发或截图外传"]
+}
+```
+
+说明：
+- `url` 为 ChaoxingSignFaker（CSF）已验证格式（基线 `9ae5398`，2026-10-20）：`phone`、`name`、`dc` 做 URL 编码；`face` 固定为空；`pwd` 为 `Base64(AES-128-CBC/PKCS5(密码, key=IV=u2oh6Vu^HWe4_AES))`。
+- `dc` 为 xbt 的稳定伪设备号 `HMAC-SHA256(chaoxing_aes_key, "xbt-device-code:v1:<uid>")`，与签到参数中的 `deviceCode` 相同。
+- `qr_png` 为 512×512、纠错级别 M 的 PNG data URL，内容与 `url` 完全一致。
+- 响应头 `Cache-Control: no-store`。链接不落库、不写日志；审计日志只记录 `uid/targets/ip`。
+- 账号凭据无法解密时返回 `400 credential expired, please add account again`。
+- 链接没有过期或撤销语义，CSF 只导入时不回报结果；同一链接被转发后仍可还原密码。
+
 ---
 
 ## 6. 白名单管理接口（管理员）
@@ -1002,6 +1025,52 @@ DELETE /api/admin/whitelist/users/12
 说明：
 - 后端会读取 `source_uid` 当前已选课程。
 - 对每个目标账号创建或更新相同的 `user_courses` 关系，并设为 `is_selected=true`。
+
+#### 6.5.8 批量导出账号到 ChaoxingSignFaker
+- Method: `GET`
+- Path: `/api/admin/accounts/faker-export`
+- Auth: 是（管理员）
+
+查询参数：`uids=1,2`（可选，逗号分隔；缺省导出全部已保存账号；重复 uid 自动去重，非法或非正数返回 `400`）。
+
+响应体 `data`:
+
+```json
+{
+  "items": [
+    {
+      "uid": 343479151,
+      "name": "张三",
+      "phone": "13800000000",
+      "url": "http://cdn.aquamarine5.fun/?phone=...&pwd=...&name=...&face=&dc=...",
+      "qr_png": "data:image/png;base64,..."
+    }
+  ],
+  "warnings": ["链接等同于账号密码，拿到即可还原密码并控制账号，请勿转发或截图外传"]
+}
+```
+
+说明：
+- 每个账号一条 CSF 链接和一张 512×512 PNG 二维码，格式同 `GET /api/account/faker-export`。
+- 账号不存在或无权限时该条返回 `{"uid":..., "error":"account not found"}`；凭据无法解密时返回 `error:"credential expired, please add account again"`，其余账号继续生成。
+- 响应头 `Cache-Control: no-store`。链接不落库；审计日志只记录操作者 `uid`、目标数 `targets` 与 `ip`，不记录 `url`、`pwd` 或密码。
+- 非管理员调用返回 `403`，响应体不含任何账号字段。
+
+#### 6.5.9 批量导出二维码压缩包
+- Method: `GET`
+- Path: `/api/admin/accounts/faker-export.zip`
+- Auth: 是（管理员）
+
+查询参数同 6.5.8。
+
+响应为 `application/zip` 附件（`faker-export.zip`），内容：
+- `qr-<uid>.png`：每个成功导出账号一张二维码（512×512）。
+- `links.txt`：每行 `uid<TAB>phone<TAB>name<TAB>url`，行数与压缩包内成功导出的账号数一致。
+
+说明：
+- 响应头 `Cache-Control: no-store`。
+- 凭据无法解密的账号会被跳过并写入服务端日志（只记 `uid` 与错误），不进入压缩包；不会返回部分明文密码。
+- 导入仍是每个账号单独扫码一次；CSF 不回报导入结果。
 
 ### 6.6 班级分组与班级课程同步（管理员）
 

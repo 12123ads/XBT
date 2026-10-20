@@ -80,6 +80,7 @@ func main() {
 	signHandler.SetIMSignSource(imSignSvc)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
+	fakerExportHandler := handler.NewFakerExportHandler(database, xxtClient, credentialCrypto)
 	adminSettingsHandler := handler.NewAdminSettingsHandler(runtimeSettingsSvc)
 	qmxClient := qmx.New(cfg.AllowInsecureTLS)
 	qmxRoomCheckHandler := handler.NewQMXRoomCheckHandler(qmxClient, database, xxtClient, credentialCrypto)
@@ -130,6 +131,7 @@ func main() {
 			authed.POST("/vikunja/sync", vikunjaHandler.SyncNow)
 
 			authed.GET("/features", signHandler.Features)
+			authed.GET("/account/faker-export", fakerExportHandler.Self)
 			authed.GET("/class-admin/overview", adminAccountHandler.ClassAdminOverview)
 			authed.POST("/class-admin/accounts", adminAccountHandler.CreateClassAccount)
 			authed.GET("/sign/activities", signHandler.Activities)
@@ -158,6 +160,8 @@ func main() {
 
 				admin.GET("/accounts", adminAccountHandler.ListAccounts)
 				admin.POST("/accounts", adminAccountHandler.CreateAccount)
+				admin.GET("/accounts/faker-export", fakerExportHandler.AdminList)
+				admin.GET("/accounts/faker-export.zip", fakerExportHandler.AdminZip)
 				admin.GET("/sign-records", adminAccountHandler.ListSignRecords)
 				admin.GET("/settings", adminSettingsHandler.Get)
 				admin.PUT("/settings", adminSettingsHandler.Update)

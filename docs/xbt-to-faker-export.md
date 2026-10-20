@@ -1,7 +1,7 @@
 # 把 xbt 登录账号导入 ChaoxingSignFaker（faker）：可行性与方案讨论
 
-- 状态：**讨论稿，未决策，未写实现代码**
-- 日期：2026-10-20
+- 状态：**服务端已实现（OMP-62）；Web 入口未实现**
+- 日期：2026-10-20（服务端实现 2026-10-21）
 - 角色：产品经理
 - 对比基线：xbt `d41bd05`；ChaoxingSignFaker（CSF）`9ae5398`（2026-10-20）
 
@@ -210,6 +210,8 @@ UI 建议（若做批量二维码）：
 
 ## 8. 实现前置预设（仅设计预案，不落地）
 
+> 2026-10-20 用户评论 `7941894c` 已覆盖本节部分预设：**批量导出、二维码正常显示（不做遮挡/定时隐藏）**，并增加 zip 打包。服务端已按该决定实现，见第 11 节；本节保留为历史设计记录。
+
 > 你已明确“先不做实现，光预设”。本节只固定产品口径、界面状态与验收标准，**不含实现代码、不建实现 issue**；等范围与授权模式确认后再启动。
 
 ### 8.1 预设范围
@@ -283,4 +285,53 @@ UI 建议（若做批量二维码）：
 
 ## 10. 本文档的边界
 
-本文只做可行性与方案讨论，**不含实现代码，不修改 faker，不做产品决策**。你确认方案和范围后，再拆实现 issue、补验收标准与测试计划。
+本文最初只做可行性与方案讨论。OMP-62 已在 xbt 服务端落地方案 A（见第 11 节），**不改 faker、不写 faker 私有数据**；Web 入口与真机端到端验证仍待后续 issue。
+
+## 11. 服务端实现记录（OMP-62，2026-10-21）
+
+### 11.1 范围
+
+- 新增 `Server/internal/faker`：`BuildURL(mobile, password, name, deviceCode)`、`EncryptPassword`、`QRPNG`（512×512，纠错级别 M）。
+- 新增 `Server/internal/handler/faker_export.go`，三个接口：
+  - `GET /api/account/faker-export`：登录用户，仅 JWT 对应账号。
+  - `GET /api/admin/accounts/faker-export`：管理员；`?uids=1,2` 可选，缺省全部账号。
+  - `GET /api/admin/accounts/faker-export.zip`：管理员；zip 内 `qr-<uid>.png` + `links.txt`。
+- 路由分别挂在现有 `Auth` 与 `AdminOnly` 中间件下；非管理员访问批量接口由中间件返回 403。
+- `xxt.Client.DeviceCode(uid)` 导出稳定伪设备号，复用签到参数同一个推导函数。
+
+### 11.2 固定协议
+
+```
+http://cdn.aquamarine5.fun/?phone=<URL 编码手机号>&pwd=<URL 编码 Base64>&name=<URL 编码昵称>&face=&dc=<deviceCode>
+pwd = Base64(AES-128-CBC/PKCS5(明文密码, key=IV=u2oh6Vu^HWe4_AES))
+dc  = HMAC-SHA256(chaoxing_aes_key, "xbt-device-code:v1:<uid>") 的 64 位小写 hex
+```
+
+参数顺序固定为 `phone/pwd/name/face/dc`；`face` 恒为空。已验证基线仍为 CSF `9ae5398`；CSF 未承诺格式版本，升级后需重新核对。
+
+### 11.3 安全与审计
+
+- 三个接口均返回 `Cache-Control: no-store`（JSON、PNG data URL、zip）。
+- 链接/密文不落库、不写缓存；响应不含明文密码。
+- 审计日志仅 `log.Printf("faker export uid=%d targets=%d ip=%s")`，不记录 `url`、`pwd` 或密码。
+- 批量接口对不存在账号或凭据解密失败按条返回 `error`，不影响同批其他账号；zip 跳过失败账号并只在服务端日志记录 `uid`。
+- 按用户决定，前端/接口不隐藏二维码；`warnings` 明确提示链接等同密码。
+
+### 11.4 验证
+
+```bash
+cd Server
+XBT_TEST_POSTGRES_DSN='postgres://xbt:xbt@127.0.0.1:5432/xbt?sslmode=disable' \
+  go test ./internal/faker ./internal/handler -run 'TestFaker|TestBuildURL|TestEncryptPassword|TestQRPNG' -count=1
+XBT_TEST_POSTGRES_DSN='postgres://xbt:xbt@127.0.0.1:5432/xbt?sslmode=disable' go test ./... -count=1
+go vet ./...
+```
+
+覆盖：`pwd` 用固定 key/IV 解密还原原密码、URL 编码与参数顺序、`face=` 为空、512×512 PNG、非管理员 403、本人只导出 JWT 账号、`Cache-Control: no-store`、zip 内每账号一张 PNG 且 `links.txt` 行数一致、日志不含密码或 `pwd=`。
+
+### 11.5 未完成与风险
+
+- **未执行真机端到端验证**：没有测试学习通账号与 CSF 安装实例；“xbt 链接 → CSF 扫码/粘贴 → 上游登录成功 → 可代签”仍需手工验证。
+- Web 入口未实现；当前仅服务端接口。
+- 链接无有效期/撤销语义，转发或截图的爆炸半径不变；`dc` 与 CSF 本机设备号冲突对后续签到的影响仍需真机确认。
+- 批量导出默认全部账号且无单批上限/限速（issue 未要求）；账号量大时响应体和二维码生成耗时会线性增长。

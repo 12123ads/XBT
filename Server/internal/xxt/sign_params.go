@@ -190,3 +190,10 @@ func (c *Client) deviceCode(uid int64) string {
 	mac.Write([]byte(strconv.FormatInt(uid, 10)))
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// DeviceCode exposes the stable per-account device code to integrations that
+// must reproduce the same sign identity, such as the CSF export link. It is the
+// exactly same value stuSignajax sends as `deviceCode`.
+func (c *Client) DeviceCode(uid int64) string {
+	return c.deviceCode(uid)
+}
