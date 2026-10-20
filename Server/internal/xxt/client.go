@@ -27,8 +27,13 @@ const (
 	SignGesture  = 3
 	SignLocation = 4
 	SignCode     = 5
-	captchaID    = "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1"
-	captchaType  = "slide"
+
+	// Activity kinds reported by the discovery list (`type`). A value of 74
+	// marks a sign-out activity; 2 is a regular sign-in activity.
+	ActivityKindSignIn  = 2
+	ActivityKindSignOut = 74
+	captchaID           = "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1"
+	captchaType         = "slide"
 
 	signMetadataTTL          = 30 * time.Second
 	signEndTimeSentinel      = int64(64060559999000)
@@ -76,9 +81,21 @@ type Course struct {
 	Icon     string
 }
 
+// Active is one entry from the course activity list. Type is the activity
+// kind (2 = sign-in, 74 = sign-out announcement); zero means the upstream
+// payload predates that field. Status/UserStatus are the upstream raw values.
+// StartTime/EndTime/SignType/Ext let callers keep and mark an activity even
+// when the metadata request fails (XBT-S8).
 type Active struct {
-	ActiveID int64
-	Name     string
+	ActiveID   int64
+	Name       string
+	Type       int
+	Status     int
+	UserStatus int
+	StartTime  int64
+	EndTime    int64
+	SignType   int
+	Ext        string
 }
 
 type SignDetail struct {
@@ -402,10 +419,12 @@ func (c *Client) getActives(mobile, password string, courseID, classID int64, li
 	if len(activeList) == 0 {
 		log.Printf("GetActives empty source: course=%d class=%d body=%s", courseID, classID, truncateForLog(string(raw), 240))
 	}
+	listExt := findActivityListExt(payload)
 	out := make([]Active, 0)
 	seen := make(map[int64]struct{})
 	for _, a := range activeList {
-		activeType := int64FromAny(firstNonNil(a["activeType"], a["type"], a["atype"]))
+		kind := int(int64FromAny(firstNonNil(a["type"], a["atype"])))
+		activeType := int(int64FromAny(a["activeType"]))
 		name := strVal(firstNonNil(a["nameOne"], a["name"], a["activeName"], a["title"]))
 		id := int64FromAny(firstNonNil(a["id"], a["activeId"], a["active_id"]))
 		if id <= 0 {
@@ -415,15 +434,33 @@ func (c *Client) getActives(mobile, password string, courseID, classID int64, li
 			continue
 		}
 		seen[id] = struct{}{}
-		if activeType != 2 && !strings.Contains(name, "签到") {
+		signOut := kind == ActivityKindSignOut || isSignOutName(name)
+		signIn := kind == ActivityKindSignIn || signOut
+		if kind == 0 {
+			// Legacy payloads carry no activity kind: fall back to the old
+			// activeType/name heuristic instead of dropping the entry.
+			signIn = activeType == ActivityKindSignIn || strings.Contains(name, "签到") || signOut
+		}
+		if !signIn {
 			continue
 		}
 		if name == "" {
 			name = fmt.Sprintf("活动 %d", id)
 		}
+		ext := signExtString(a["ext"])
+		if ext == "" {
+			ext = listExt
+		}
 		out = append(out, Active{
-			ActiveID: id,
-			Name:     name,
+			ActiveID:   id,
+			Name:       name,
+			Type:       kind,
+			Status:     int(int64FromAny(a["status"])),
+			UserStatus: int(int64FromAny(firstNonNil(a["userStatus"], a["userstatus"]))),
+			StartTime:  parseTimeMillis(firstNonNil(a["startTime"], a["starttime"])),
+			EndTime:    parseTimeMillis(firstNonNil(a["endTime"], a["endtime"])),
+			SignType:   int(int64FromAny(firstNonNil(a["otherId"], a["otherid"]))),
+			Ext:        ext,
 		})
 		if limit > 0 && len(out) >= limit {
 			break

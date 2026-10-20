@@ -178,6 +178,11 @@ Authorization: Bearer <JWT>
       {
         "active_id": 987654,
         "activity_name": "课堂签到",
+        "type": 2,
+        "status": 1,
+        "user_status": 0,
+        "is_sign_out": false,
+        "activity_state": "ongoing",
         "start_time": 1760000000000,
         "end_time": 1760003600000,
         "sign_type": 2,
@@ -230,6 +235,12 @@ Authorization: Bearer <JWT>
 说明：
 - 每门课程默认最多返回最新 `5` 条签到活动（可通过后端 `Server/config.yaml` 中的 `activity_list_limit` 配置）。
 - 当该课程活动总数超过返回条数时，`has_more=true`。
+- `type` 为上游活动种类：`2` 签到、`74` 签退；`0` 表示上游未返回该字段。
+- `is_sign_out=true` 表示签退活动（`type=74` 或名称含“签退”），随普通签到活动一起返回。
+- `status`、`user_status` 为上游原始值，仅做保留，状态判断以 `activity_state` 为准。
+- `activity_state` 取值 `not_started`（未开始）、`ongoing`（进行中）、`expired`（已结束/已失效）。过期和未开始的活动同样返回并标记，不再静默丢弃。
+- `sort` 规则不变：组内按 `start_time` 倒序，再按 `activity_list_limit` 截断。
+- 活动 `ext` 会写入后端 `sign_activities.ext_json` 缓存，供 `preSign` 在元数据接口失败时回退使用；不在列表响应中返回。
 - `source` 为 `taskactivelist`（活动列表轮询）或 `im_group`（Easemob 群聊消息）；两者都发现同一 `active_id` 时只返回一条，`sources` 同时包含两个值，`source` 取 `im_group`。
 - `im_atype`、`im_sub_title`、`im_message_time` 仅在群聊来源存在时返回；`im_atype=2` 为签到，`74` 为签退。群聊来源只做发现与跳转，不自动提交签到。
 - 群聊来源失败不会影响 `taskactivelist` 结果；错误码通过 `GET /api/sign/im/status` 查询。

@@ -197,6 +197,9 @@ func (s *SignService) mergeUpstreamSignState(activityID, courseID, classID int64
 		ClassID:  classID,
 		Ext:      detail.Ext,
 	}
+	if fixed.Ext == "" {
+		fixed.Ext = s.cachedActivityExt(activityID)
+	}
 	result, err := s.xxt.PreSign(target.Mobile, password, fixed, detail.SignType, "", "")
 	if err != nil {
 		if errors.Is(err, xxt.ErrSessionExpired) {
@@ -240,6 +243,20 @@ func (s *SignService) recordUpstreamSigned(activityID, courseID, classID int64, 
 	state.Message = "该同学已在学习通签到"
 	state.CheckedUpstream = true
 	return state, nil
+}
+
+// cachedActivityExt reads the ext captured by activity discovery. A missing
+// row or empty value is normal (the activity was never listed) and yields "".
+func (s *SignService) cachedActivityExt(activityID int64) string {
+	var cached model.SignActivity
+	err := s.db.Select("ext_json").Where("activity_id = ?", activityID).First(&cached).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("load cached activity ext failed: activity=%d err=%v", activityID, err)
+		}
+		return ""
+	}
+	return cached.ExtJSON
 }
 
 func (s *SignService) AuthorizeTargets(operatorUID, activityID, courseID, classID int64, targetUIDs []int64) error {
@@ -365,6 +382,11 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		fixed.Ext = detail.Ext
 	} else {
 		log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, detailErr)
+	}
+	if fixed.Ext == "" {
+		// Discovery caches the opaque ext so an execute still posts it when
+		// the metadata endpoint is unavailable (XBT-S8).
+		fixed.Ext = s.cachedActivityExt(req.ActivityID)
 	}
 	if result, ok := s.prepareSignLocation(&req, detail, detailErr == nil); !ok {
 		return result, nil

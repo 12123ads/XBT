@@ -201,34 +201,51 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 				IfRefreshEWM: detail.IfRefreshEWM,
 				IfPhoto:      detail.IfPhoto,
 				IfFace:       detail.IfFace,
+				ActivityType: a.Type,
+				Status:       a.Status,
+				UserStatus:   a.UserStatus,
+				ExtJSON:      activityExt(detail, a),
 			}
-			_ = h.db.Clauses(clause.OnConflict{
+			if createErr := h.db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "activity_id"}},
 				DoNothing: true,
-			}).Create(&cacheRow).Error
+			}).Create(&cacheRow).Error; createErr != nil {
+				log.Printf("save sign activity cache failed: uid=%d activity=%d err=%v", uid, a.ActiveID, createErr)
+			}
 		} else {
 			log.Printf("get sign detail failed: uid=%d activity=%d err=%v", uid, a.ActiveID, err)
-			if !cacheFound {
-				continue
-			}
-			detail = signDetailFromCache(cache)
-			if !detail.IfFace && h.xxt.GetFaceFlag(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid) {
-				detail.IfFace = true
-				h.db.Model(&model.SignActivity{}).Where("activity_id = ?", a.ActiveID).Update("if_face", true)
+			if cacheFound {
+				detail = signDetailFromCache(cache)
+				if !detail.IfFace && h.xxt.GetFaceFlag(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid) {
+					detail.IfFace = true
+					h.db.Model(&model.SignActivity{}).Where("activity_id = ?", a.ActiveID).Update("if_face", true)
+				}
 			}
 		}
 
-		if detail.StartTime == 0 && detail.EndTime == 0 {
-			if !cacheFound {
-				continue
-			}
-			detail = signDetailFromCache(cache)
+		// Keep the cache aligned with the discovery list. These fields are not
+		// returned by the metadata endpoints and must survive into S4 preSign.
+		h.syncActivityDiscoveryCache(a, cacheFound, cache, activityExt(detail, a))
+
+		// An activity discovered without usable metadata is still listed and
+		// marked (not_started/ongoing/expired); it is never silently dropped.
+		if detail.StartTime == 0 {
+			detail.StartTime = a.StartTime
+		}
+		if detail.EndTime == 0 {
+			detail.EndTime = a.EndTime
+		}
+		if detail.SignType == 0 {
+			detail.SignType = a.SignType
 		}
 
 		recordSource, recordSourceName, recordSignTime := h.signRecordView(uid, a.ActiveID, user)
 		items = append(items, gin.H{
 			"active_id":          a.ActiveID,
 			"activity_name":      a.Name,
+			"type":               a.Type,
+			"status":             a.Status,
+			"user_status":        a.UserStatus,
 			"start_time":         detail.StartTime,
 			"end_time":           detail.EndTime,
 			"sign_type":          detail.SignType,
@@ -251,24 +268,16 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			"sources":            []string{im.SourceTaskActiveList},
 		})
 	}
-	hasMore := len(items) > h.listLimit
-	if len(items) > 1 {
-		sort.Slice(items, func(i, j int) bool {
-			return items[i]["start_time"].(int64) > items[j]["start_time"].(int64)
-		})
-	}
-	if hasMore {
-		items = items[:h.listLimit]
-	}
-	return gin.H{
+	group := gin.H{
 		"course_id":      sc.CourseID,
 		"class_id":       sc.ClassID,
 		"course_name":    sc.Name,
 		"course_teacher": sc.Teacher,
 		"icon":           sc.Icon,
 		"activities":     items,
-		"has_more":       hasMore,
-	}, nil
+	}
+	finalizeActivityGroup(group, h.listLimit)
+	return group, nil
 }
 
 func signDetailFromCache(cache model.SignActivity) xxt.SignDetail {
@@ -279,6 +288,7 @@ func signDetailFromCache(cache model.SignActivity) xxt.SignDetail {
 		IfRefreshEWM: cache.IfRefreshEWM,
 		IfPhoto:      cache.IfPhoto,
 		IfFace:       cache.IfFace,
+		Ext:          cache.ExtJSON,
 	}
 }
 

@@ -168,6 +168,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 #### XBT-S8 活动发现补全
 - 保留 `type=74`、`status`、`userStatus`、`ext`；过期/未开始活动标记而非静默丢弃。
 - 验收：签退活动以 `is_sign_out=true` 出现在列表；`ext` 进入缓存；旧客户端字段不破坏。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`xxt.Active` 解析 `type`（`type`/`atype`，2/74）、`status`、`userStatus`、列表时间、`otherId` 与 `ext`（活动级优先、回退列表级）；筛选不再依赖 `activeType==2`，`type=74` 或名称含“签退”的活动保留，无 `type` 的旧载荷继续走原启发式；`sign_activities` 新增 `type/status/user_status/ext_json`（AutoMigrate，兼容旧行），handler 在元数据成功时写入、失败时从列表同步；详情失败或时间缺失时使用列表/缓存数据继续返回，不再 `continue` 丢弃；响应新增向后兼容字段 `type/status/user_status/is_sign_out/activity_state`（`not_started|ongoing|expired`），排序与 `has_more` 规则不变；`SignService` 在详情缺失/`ext` 为空时回退读取 `ext_json` 供 preSign 使用。测试见 `Server/internal/xxt/client_activity_discovery_test.go`、`Server/internal/handler/sign_activity_view_test.go`、`Server/internal/service/sign_ext_cache_test.go`。
 
 ### 3.4 P2：签退与可观测性
 

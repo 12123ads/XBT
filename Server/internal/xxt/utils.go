@@ -84,6 +84,37 @@ func firstNonNil(values ...interface{}) interface{} {
 	return nil
 }
 
+// findActivityListExt returns the list-level `ext` (sibling of activeList).
+// Upstream puts the opaque preSign value once per course response.
+func findActivityListExt(payload interface{}) string {
+	switch p := payload.(type) {
+	case map[string]interface{}:
+		if arr, ok := p["activeList"].([]interface{}); ok && len(arr) > 0 {
+			if ext := signExtString(p["ext"]); ext != "" {
+				return ext
+			}
+		}
+		for _, v := range p {
+			if ext := findActivityListExt(v); ext != "" {
+				return ext
+			}
+		}
+	case []interface{}:
+		for _, v := range p {
+			if ext := findActivityListExt(v); ext != "" {
+				return ext
+			}
+		}
+	}
+	return ""
+}
+
+// isSignOutName is the payload-shape fallback for sign-out activities when the
+// upstream list omits its `type` field.
+func isSignOutName(name string) bool {
+	return strings.Contains(name, "签退")
+}
+
 func findActiveList(payload interface{}) []map[string]interface{} {
 	switch p := payload.(type) {
 	case map[string]interface{}:

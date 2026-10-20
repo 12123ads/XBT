@@ -224,6 +224,10 @@ func finalizeActivityGroup(group gin.H, limit int) {
 	if limit > 0 && total > limit {
 		items = items[:limit]
 	}
+	now := time.Now()
+	for _, item := range items {
+		decorateActivityItem(item, now)
+	}
 	group["activities"] = items
 	group["has_more"] = total > limit
 }

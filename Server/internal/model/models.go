@@ -78,16 +78,24 @@ type AppSetting struct {
 }
 
 type SignActivity struct {
-	ID           uint      `gorm:"primaryKey" json:"-"`
-	ActivityID   int64     `gorm:"unique;not null" json:"activity_id"`
-	StartTime    int64     `gorm:"not null" json:"start_time"`
-	EndTime      int64     `gorm:"not null" json:"end_time"`
-	SignType     int       `gorm:"not null" json:"sign_type"`
-	IfRefreshEWM bool      `gorm:"not null;default:false" json:"if_refresh_ewm"`
-	IfPhoto      bool      `gorm:"not null;default:false" json:"if_photo"`
-	IfFace       bool      `gorm:"not null;default:false" json:"if_face"`
-	CreatedAt    time.Time `json:"-"`
-	UpdatedAt    time.Time `json:"-"`
+	ID           uint  `gorm:"primaryKey" json:"-"`
+	ActivityID   int64 `gorm:"unique;not null" json:"activity_id"`
+	StartTime    int64 `gorm:"not null" json:"start_time"`
+	EndTime      int64 `gorm:"not null" json:"end_time"`
+	SignType     int   `gorm:"not null" json:"sign_type"`
+	IfRefreshEWM bool  `gorm:"not null;default:false" json:"if_refresh_ewm"`
+	IfPhoto      bool  `gorm:"not null;default:false" json:"if_photo"`
+	IfFace       bool  `gorm:"not null;default:false" json:"if_face"`
+	// ActivityType/Status/UserStatus mirror the discovery list fields
+	// (type 2 = sign-in, 74 = sign-out). The zero value means "not observed".
+	ActivityType int `gorm:"not null;default:0" json:"type"`
+	Status       int `gorm:"not null;default:0" json:"status"`
+	UserStatus   int `gorm:"not null;default:0" json:"user_status"`
+	// ExtJSON is the opaque upstream `ext` used by preSign. It is cached so an
+	// execute can still post it when the metadata request fails (XBT-S8).
+	ExtJSON   string    `gorm:"type:text;not null;default:''" json:"ext_json"`
+	CreatedAt time.Time `json:"-"`
+	UpdatedAt time.Time `json:"-"`
 }
 
 type SignActivityScope struct {
