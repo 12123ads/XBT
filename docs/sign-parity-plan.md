@@ -1,7 +1,7 @@
 # XBT 签到实现补全方案
 
 > 对比对象：`aquamarine5/ChaoxingSignFaker`（下文简称 CSF）
-> 对比基线：xbt `02c8ae5`；CSF `9ae5398`（2026-10-20）
+> 对比基线：xbt `02c8ae5`（验证码修复见分支 `feature/captcha-protocol-fix` `11ce5a5`）；CSF `9ae5398`（2026-10-20）
 > 角色：产品方案，不含实现代码；技术选型由架构师确认。
 
 ## 0. 结论
@@ -42,7 +42,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 | 响应状态机 | 仅 `success`、`您已签到过了`（`Server/internal/service/sign.go:268-288`） | 识别 `success/success2/validate_/checkFace_/errorLocation_/[face]/签到失败，请重新扫描/您已签到过了` | P0 |
 | 验证码 | 自建灰度模板匹配；新 cookie jar；无 `get/conf`；校验缺 `iv/t`；同一 challenge 多次试 x（`Server/internal/xxt/captcha.go:24-130`） | 使用会话 cookie；`get/conf` 取 `t`；生成 `captchaKey/iv/token`；校验带 `iv/t=a`；模型只预测一次，失败重取 challenge | P0 |
 | 位置 | 直接用用户选定坐标；无范围校验/随机化；仅二维码可带位置 | 在 `locationRange` 内随机取点；半径外返回 `errorLocation_<distance>`；首次失败关闭随机化重试 | P1 |
-| 人脸 | 上传 `face_temp` + `check-face-result`，带 `currentFaceId/faceEnc/faceCode` | 同核心，另有 `faceEncAid`、`[face]` 失败重试、元数据提前判定 | P1 |
+| 人脸 | 单张固定照片；每次签到重传 `face_temp`；`currentFaceId/ifCFP/faceEnc/faceCode`，无 `faceEncAid`；不识别 `[face]`/`checkFace_` | 每账号最多 5 张、每次随机选一张；可下载官方人脸库照片并随机裁剪旋转后上传；`faceResult` 带设备签名；识别 `[face]` 并标记失败照片 | P1（协议）/P2（照片池） |
 | 签到状态 | 只查本地 `sign_records`（`sign.go:564-600`） | preSign 解析上游状态，能识别官方自签 | P0 |
 | 签退 | 无 | `type=74`，`signOutId/signOutPublishTimeStamp` | P2 |
 | 客户端重试 | Web 对 `/sign/execute` 固定重试 5 次（`Web/src/pages/SignDetail.tsx:399-448`） | 二维码过期只重新扫码；验证码/位置按明确错误类型重试 | P0 |
@@ -127,8 +127,10 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 验收：10k 次采样全部落在半径内；`errorLocation_12` 返回 `distance_m=12` 且只重试一次；前端位置选择器展示“距签到点 N 米 / 超出范围”。
 
 #### XBT-S7 人脸流程加固
-- 用 `openCheckFaceFlag` 提前判定；补 `faceEncAid`；`[face]` 失败重试一次；人脸照片按活动缓存上传结果。
-- 验收：`[face]` 响应触发一次重试；无照片返回明确提示；人脸请求字段齐全。
+- **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一活动内复用已上传的 `objectId`，不重复上传同一张照片；`check-face-result` 先判 HTTP 状态再解 JSON。
+- **S7b 照片池（P2，需产品确认）**：每账号最多 5 张人脸照片，随机选取并记录使用次数/失败标记；失败后优先换一张未失败过的照片，而不是反复用同一张。
+- **明确不做**：自动下载学习通官方人脸库照片、裁剪旋转后冒充新照片上传——涉及他人生物特征且用于绕过核验，超出本方案范围。
+- 验收：`[face]` 响应触发一次带新照片的重试或明确失败提示；无照片返回明确提示；人脸请求字段与上游客户端一致；同一活动连续执行不重复上传同一张照片。
 
 #### XBT-S8 活动发现补全
 - 保留 `type=74`、`status`、`userStatus`、`ext`；过期/未开始活动标记而非静默丢弃。
@@ -251,6 +253,48 @@ grep -n "activeType != 2\|taskactivelist\|signDetail" Server/internal/xxt/client
 
 **对 XBT-S5 的影响**：候选轮询改为「本地排序取 top-1 提交，失败重取 challenge」，并新增埋点字段（`captcha_challenge_id`、`candidate_count`、`top1_x`、`upstream_result`、`attempts`）。
 
+### 8.2 人脸：xbt 与 CSF 的差异（评估）
+
+**大白话版**：两边都能做到「上传照片 → 换一张人脸凭证 → 带参数提交」。差别在照片怎么管：faker 每个账号最多存 5 张、每次签到随机挑一张，哪张曾经失败也记着；还能把学习通里已有的那张人脸照片下载下来，随机裁一下、转一点角度再上传，避免每次都是同一张图。xbt 只有一张固定照片，每次原样重传；服务器如果说「要人脸 / 人脸不对」，xbt 也分不清是哪种，只能把原文吐给用户。
+
+**协议层差异（直接影响能不能签到成功）**
+
+| 项 | xbt 现状 | CSF 做法 | 判断 |
+|---|---|---|---|
+| 人脸要求判定 | `signDetail` 的 `deepFind`，失败再 GET `preSign` 页面正则抓 `openCheckFaceFlag`（`Server/internal/xxt/client.go:403-480`） | 一次 `getPPTActiveInfo` 读 `openCheckFaceFlag`（`ChaoxingSigner.kt:189-191`） | 归入 S1，xbt 的多余请求可去掉 |
+| 提交参数 | `currentFaceId`、`ifCFP=0`、`vpProbability=-1`、`vpStrategy=`，`faceEnc`/`faceCode` 非空才带（`client.go:798-809`） | `currentFaceId`、`ifCFP=0`、`courseId`、`faceEnc`、`faceCode=""`、`faceEncAid=""`（`ChaoxingSigner.kt:327-346`） | xbt 缺 `faceEncAid`；`courseId` 归入 S2 |
+| `faceResult` 内容 | `currentFaceId/LiveDetectionStatus/collectStatus/cxtime`（`client.go:715-721`） | 同四项，另在能解出 `clientId` 时加 `cxcid` + `signToken`（`ChaoxingFaceHelper.kt:88-124`） | xbt 登录未保存 `clientId`，无法生成；是否必需待 staging 验证 |
+| 校验响应 | 只取 `enc`，无 `enc` 就报错；不判 HTTP 状态（`client.go:739-757`） | 先判 HTTP 状态，再取 `enc`（`ChaoxingFaceHelper.kt:46-66`） | xbt 错误信息质量差，S7a 修 |
+| 失败识别 | 无 `[face]`/`checkFace_` 分支（`service/sign.go:535-561` 仅文本映射） | `[face]` 抛 `ChaoxingFaceSignException`，`checkFace_` 单独处理（`ChaoxingSigner.kt:351-358`） | S7a 补，属于响应状态机（S3）的人脸分支 |
+| 上传接口/时机 | 每次 execute 上传 `face_temp`，`uploadtype=face_temp`（`client.go:638-706`） | 存照片时上传一次到云盘 `/upload?_from=mobilelearn&_token=`，签到复用 `objectId`（`ChaoxingFaceHelper.kt:206-250`） | xbt 重复上传既慢又增加特征；S7a 至少按活动缓存 |
+
+**产品层差异（影响稳定性与合规）**
+
+| 项 | xbt | CSF |
+|---|---|---|
+| 照片数量 | 1 张（`users.face_photo` bytea，≤100KB、≤720×1280） | 每账号最多 5 张（`MAX_FACE_IMAGES`），本地文件 + objectId |
+| 选择策略 | 固定 | 每次随机；曾失败则只挑「用过且未失败」的（`QRCodeSignScreen.kt:915-927`） |
+| 图片来源 | 仅本人登录后手动上传（`/user/face`） | 手动拍照、相册、或直接拉取该账号官方人脸照片 |
+| 复用处理 | 每次原样上传同一张 | 官方照片下载后随机裁剪 90–99%、旋转 ±5°、重压缩（`Bitmap.kt:35-80`）；自存照片随机轮换 |
+| 代签账号 | 只能本人上传自己的照片 | 可对已导入的代签账号管理照片、抓取其官方照片 |
+| 失败反馈 | 返回上游原文 | 标记具体哪张照片失败，提示重拍/换图 |
+
+**结论**
+
+1. **有差异，而且不止参数**：xbt 只实现了「能带人脸提交」的最小路径；CSF 把「人脸照片」当成一个需要轮换和反馈的资源来管理。
+2. 协议层 3 处值得先补（`faceEncAid`、`[face]`/`checkFace_` 识别、按活动复用上传结果）。这三处与 S3/S7a 重叠，成本低、可测试。
+3. `signToken`/`cxcid` 需要登录时保存并解密 `clientId`，属于新的设备信息链路；先按「缺失也能签」处理，staging 若出现人脸请求被拒再单独立项。
+4. 多照片池和随机化能降低「同一张照片反复使用」的特征，但收益没有实测数据；且它服务于代签场景，**合规敏感**。本方案只做到「失败可换一张 + 不重复上传同一张」，不做「批量抓取他人在学习通的人脸库照片再变形上传」。
+
+**验证方式**
+
+```bash
+grep -n "faceEncAid\|faceCode\|ifCFP" /tmp/cs/app/src/main/java/.../signer/ChaoxingSigner.kt
+grep -n "MAX_FACE_IMAGES\|randomOrNull\|randomizeStylizeImage" /tmp/cs/app/src/main/java/.../api/ChaoxingFaceHelper.kt /tmp/cs/.../screen/QRCodeSignScreen.kt
+grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xxt/client.go Server/internal/service/sign.go
+```
+结果：CSF `MAX_FACE_IMAGES=5`、随机选择与照片随机化均存在；xbt 无 `faceEncAid`、无 `[face]` 分支、每次 execute 重新上传。人脸相关端到端行为需要真实人脸活动验证，当前环境没有测试账号。
+
 ## 9. 排期估算（1 人后端 + 0.5 人前端）
 
 | 阶段 | 内容 | 估算 |
@@ -270,6 +314,8 @@ grep -n "activeType != 2\|taskactivelist\|signDetail" Server/internal/xxt/client
 - xbt 本地状态：`Server/internal/service/sign.go:564-600`
 - xbt 验证码：`Server/internal/xxt/captcha.go:24-130,170-190,199+`
 - xbt 前端固定重试：`Web/src/pages/SignDetail.tsx:399-448`
+- xbt 人脸：`Server/internal/xxt/client.go:446-480`（判定）、`632-770`（上传/校验）、`798-809`（提交参数）、`Server/internal/service/sign.go:240-262`（执行链）、`Server/internal/handler/auth.go:203-242`（存储压缩）
+- CSF 人脸：`api/ChaoxingFaceHelper.kt`（`MAX_FACE_IMAGES`、`checkFaceResultAndGetEnc`、`signToken`、照片存取）、`components/FaceRecognitionComponent.kt:136-176`（官方照片导入）、`utilities/Bitmap.kt:35-80`（随机裁剪旋转）、`screen/QRCodeSignScreen.kt:915-927`（随机选图）
 - CSF 元数据：`app/.../signer/ChaoxingSigner.kt`（`URL_SIGN_INFO`、`isCaptchaRequired/isFaceRequired/isPositionRequired`）
 - CSF 提交参数：`ChaoxingQRCodeSigner.kt`、`ChaoxingLocationSigner.kt`、`ChaoxingGestureSigner.kt`、`ChaoxingPasswordSigner.kt`、`ChaoxingPhotoSigner.kt`
 - CSF 状态机：`ChaoxingSigner.kt`（`checkSignResult`、`checkAlreadySign`、`checkExpiredSign`）
