@@ -120,7 +120,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - 上游 mock 第一次返回 `result=false`，客户端重新取 challenge，而不是换 x 重试同一 token。
   - `captchaId` 可通过配置切换，默认值以 staging 实测为准。
   - 失败不把内部 `validate` 字符串直接暴露给前端，映射为可读错误码。
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：上述 1–5 已落地——`fetchCaptchaValidate` 复用会话 jar、`get/conf` 取 `t` 派生 `captchaKey`/`token`/`iv`、校验带 `iv`+`t=a`、每个 challenge 只提交一次 top-1、最多 3 个 challenge；埋点由 `logCaptchaAttempt` 输出 `challenge_id/captcha_model/candidate_count/top1_x/upstream_result/attempt`。S16 起模型可用时 top-1 即模型 x；回归测试见 `Server/internal/xxt/captcha_test.go`。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：上述 1–5 已落地——`fetchCaptchaValidate` 复用会话 jar、`get/conf` 取 `t` 派生 `captchaKey`/`token`/`iv`、校验带 `iv`+`t=a`、每个 challenge 只提交一次 top-1、最多 3 个 challenge；埋点由 `logCaptchaAttempt` 输出 `challenge_id/captcha_model/candidate_count/top1_x/upstream_result/attempt`。S16 起模型可用时 top-1 即模型 x；回归测试见 `Server/internal/xxt/captcha_test.go`。S20 修正 `get/conf`：该端点缺 `callback` 时返回 200 + `{"10013":"CALLBACK ERROR"}`（无 `t`），现在固定携带 `callback=cx_captcha_function`，解析接受顶层及 `data/result/conf/config` 一层嵌套的 `t`，失败返回 `captcha_conf_*` 错误码并附带截断、脱敏的响应片段。
 
 ### 3.3 P1：成功率与体验
 

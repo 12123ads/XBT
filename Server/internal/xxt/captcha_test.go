@@ -2,6 +2,7 @@ package xxt
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -247,6 +248,130 @@ func TestFetchCaptchaValidateGivesUpAfterChallengeLimit(t *testing.T) {
 	}
 	if confRequests != captchaMaxChallenges || checkRequests != captchaMaxChallenges {
 		t.Fatalf("conf requests = %d, checks = %d, want %d each", confRequests, checkRequests, captchaMaxChallenges)
+	}
+}
+
+func TestFetchCaptchaConfParsesTopLevelAndNestedT(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"top-level", fmt.Sprintf(`cx_captcha_function({"t":%d,"captchaId":%q})`, captchaTestConfT, captchaID)},
+		{"nested data", fmt.Sprintf(`cx_captcha_function({"captchaId":%q,"data":{"t":%d}})`, captchaID, captchaTestConfT)},
+		{"nested result", fmt.Sprintf(`cx_captcha_function({"result":{"t":%d}})`, captchaTestConfT)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotCallback, gotReferer string
+			transport := learningTestTransport(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/captcha/get/conf" {
+					return nil, fmt.Errorf("unexpected captcha request: %s", req.URL)
+				}
+				gotCallback = req.URL.Query().Get("callback")
+				gotReferer = req.Header.Get("Referer")
+				return learningTestResponse(req, http.StatusOK, tc.body), nil
+			})
+
+			client := newCaptchaTestClient(t, transport)
+			referer := "https://mobilelearn.chaoxing.com/page/sign/signIn"
+			got, err := client.fetchCaptchaConf(captchaTestHTTP(client), referer)
+			if err != nil {
+				t.Fatalf("fetchCaptchaConf error = %v", err)
+			}
+			if got != captchaTestConfT {
+				t.Fatalf("t = %d, want %d", got, captchaTestConfT)
+			}
+			if gotCallback != captchaCallback {
+				t.Fatalf("callback = %q, want %q (upstream returns CALLBACK ERROR without it)", gotCallback, captchaCallback)
+			}
+			if gotReferer != referer {
+				t.Fatalf("Referer = %q, want %q", gotReferer, referer)
+			}
+		})
+	}
+}
+
+func TestFetchCaptchaConfMissingTReturnsCodedErrorWithSnippet(t *testing.T) {
+	body := `cx_captcha_function({"captchaId":"42sx","msg":"upstream changed shape"})`
+	transport := learningTestTransport(func(req *http.Request) (*http.Response, error) {
+		return learningTestResponse(req, http.StatusOK, body), nil
+	})
+
+	client := newCaptchaTestClient(t, transport)
+	_, err := client.fetchCaptchaConf(captchaTestHTTP(client), "https://mobilelearn.chaoxing.com/")
+	if err == nil {
+		t.Fatal("expected an error when t is absent")
+	}
+	var confErr *captchaConfError
+	if !errors.As(err, &confErr) {
+		t.Fatalf("error type = %T, want *captchaConfError", err)
+	}
+	if confErr.Code != captchaConfCodeMissingT {
+		t.Fatalf("code = %q, want %q", confErr.Code, captchaConfCodeMissingT)
+	}
+	if !strings.Contains(confErr.Error(), captchaConfCodeMissingT) {
+		t.Fatalf("error = %q, want the explicit code %q", confErr.Error(), captchaConfCodeMissingT)
+	}
+	if !strings.Contains(confErr.Error(), "upstream changed shape") {
+		t.Fatalf("error = %q, want a response snippet", confErr.Error())
+	}
+}
+
+func TestFetchCaptchaConfCallbackErrorIsCoded(t *testing.T) {
+	transport := learningTestTransport(func(req *http.Request) (*http.Response, error) {
+		return learningTestResponse(req, http.StatusOK, `{"10013":"CALLBACK ERROR"}`), nil
+	})
+
+	client := newCaptchaTestClient(t, transport)
+	_, err := client.fetchCaptchaConf(captchaTestHTTP(client), "https://mobilelearn.chaoxing.com/")
+	var confErr *captchaConfError
+	if !errors.As(err, &confErr) {
+		t.Fatalf("error type = %T, want *captchaConfError", err)
+	}
+	if confErr.Code != captchaConfCodeCallbackError {
+		t.Fatalf("code = %q, want %q", confErr.Code, captchaConfCodeCallbackError)
+	}
+	if !strings.Contains(confErr.Error(), "CALLBACK ERROR") {
+		t.Fatalf("error = %q, want the upstream snippet", confErr.Error())
+	}
+}
+
+func TestCaptchaConfSnippetTruncatesAndRedacts(t *testing.T) {
+	body := `{"token":"super-secret","validate":"validate-secret","padding":"` + strings.Repeat("x", 400) + `"}`
+	snippet := captchaConfSnippet([]byte(body))
+	if strings.Contains(snippet, "super-secret") || strings.Contains(snippet, "validate-secret") {
+		t.Fatalf("snippet leaked a secret: %q", snippet)
+	}
+	if !strings.Contains(snippet, `"token":"***"`) || !strings.Contains(snippet, `"validate":"***"`) {
+		t.Fatalf("snippet = %q, want redacted values", snippet)
+	}
+	if len(snippet) > captchaConfSnippetLimit+len("...") {
+		t.Fatalf("snippet length = %d, want <= %d", len(snippet), captchaConfSnippetLimit+len("..."))
+	}
+}
+
+func TestCaptchaConfFailureLogIncludesSnippet(t *testing.T) {
+	body := `cx_captcha_function({"captchaId":"42sx","msg":"upstream changed shape"})`
+	transport := learningTestTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/captcha/get/conf" {
+			return nil, fmt.Errorf("unexpected captcha request: %s", req.URL)
+		}
+		return learningTestResponse(req, http.StatusOK, body), nil
+	})
+
+	client := newCaptchaTestClient(t, transport)
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+
+	if _, err := client.fetchCaptchaValidate(captchaTestHTTP(client), captchaTestSign(FixedParams{})); err == nil {
+		t.Fatal("expected captcha failure")
+	}
+	for _, want := range []string{captchaConfCodeMissingT, "upstream changed shape", "captcha challenge failed"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }
 

@@ -15,17 +15,66 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	captchaVersion       = "1.1.20"
 	captchaTokenTTL      = 300000 // 毫秒；上游 token 的有效期
 	captchaMaxChallenges = 3      // 单次签到最多重取几次验证码，避免放大风控
+	captchaCallback      = "cx_captcha_function"
+
+	captchaConfSnippetLimit = 160
 )
+
+// captcha conf 解析失败的错误码。上游把错误塞在 200 响应里，只有响应码和
+// 片段能判断原因，所以这里不把错误压成一句话。
+const (
+	captchaConfCodeCallbackError = "captcha_conf_callback_error"
+	captchaConfCodeHTTPError     = "captcha_conf_http_error"
+	captchaConfCodeInvalidJSON   = "captcha_conf_invalid_json"
+	captchaConfCodeMissingT      = "captcha_conf_missing_t"
+)
+
+// captchaConfError 保留可判定的错误码和截断/脱敏后的响应片段，便于日志定位。
+type captchaConfError struct {
+	Code    string
+	Detail  string
+	Snippet string
+}
+
+func (e *captchaConfError) Error() string {
+	msg := "captcha conf " + e.Code
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	if e.Snippet != "" {
+		msg += fmt.Sprintf(" (response=%q)", e.Snippet)
+	}
+	return msg
+}
+
+var captchaConfSecretValue = regexp.MustCompile(`(?i)"(token|validate|extradata|mobile|phone|password)"\s*:\s*"[^"]*"`)
+
+// captchaConfSnippet 把上游响应压成单行并限制长度；即使上游以后回显凭据，
+// 也不会把 token/validate 一类字段原样写进日志。
+func captchaConfSnippet(body []byte) string {
+	s := strings.Join(strings.Fields(string(body)), " ")
+	s = captchaConfSecretValue.ReplaceAllString(s, `"$1":"***"`)
+	if len(s) <= captchaConfSnippetLimit {
+		return s
+	}
+	cut := captchaConfSnippetLimit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
 
 // captchaChallenge 是一次性滑动验证码状态。
 // 上游对同一个 token 只接受一次 x 提交，失败必须重新取图，不能换 x 重试。
@@ -58,6 +107,7 @@ func (c *Client) solveCaptchaChallenge(cli *http.Client, referer string, fixed F
 	challenge, err := c.newCaptchaChallenge(cli, referer)
 	if err != nil {
 		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "-", "challenge_error")
+		log.Printf("captcha challenge failed: activity=%d uid=%d attempt=%d err=%v", fixed.ActiveID, fixed.UID, attempt, err)
 		return "", err
 	}
 
@@ -94,7 +144,7 @@ func (c *Client) solveCaptchaChallenge(cli *http.Client, referer string, fixed F
 // newCaptchaChallenge 按上游客户端流程取一张验证码：
 // get/conf 拿服务端时间 t → 由 t 派生 captchaKey/token → 取 shadeImage/cutoutImage。
 func (c *Client) newCaptchaChallenge(cli *http.Client, referer string) (captchaChallenge, error) {
-	t, err := c.fetchCaptchaConf(cli)
+	t, err := c.fetchCaptchaConf(cli, referer)
 	if err != nil {
 		return captchaChallenge{}, err
 	}
@@ -107,7 +157,7 @@ func (c *Client) newCaptchaChallenge(cli *http.Client, referer string) (captchaC
 
 	imageURL := "https://captcha.chaoxing.com/captcha/get/verification/image"
 	q := url.Values{}
-	q.Set("callback", "cx_captcha_function")
+	q.Set("callback", captchaCallback)
 	q.Set("captchaId", captchaID)
 	q.Set("type", captchaType)
 	q.Set("version", captchaVersion)
@@ -153,41 +203,92 @@ func (c *Client) newCaptchaChallenge(cli *http.Client, referer string) (captchaC
 }
 
 // fetchCaptchaConf 取服务端时间 t，token 的摘要和时间戳后缀都必须基于它。
-func (c *Client) fetchCaptchaConf(cli *http.Client) (int64, error) {
+// 上游在缺少 callback 参数时返回 200 + {"10013":"CALLBACK ERROR"}，t 只在
+// 带 callback 的 JSONP 响应里出现，所以 callback 是必需参数。
+func (c *Client) fetchCaptchaConf(cli *http.Client, referer string) (int64, error) {
 	confURL := "https://captcha.chaoxing.com/captcha/get/conf"
 	q := url.Values{}
+	q.Set("callback", captchaCallback)
 	q.Set("captchaId", captchaID)
 	q.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
 
 	req, _ := http.NewRequest(http.MethodGet, confURL+"?"+q.Encode(), nil)
-	setCaptchaHeaders(req, "")
+	setCaptchaHeaders(req, referer)
 	resp, err := cli.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("captcha conf request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("captcha conf read failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, &captchaConfError{
+			Code:    captchaConfCodeHTTPError,
+			Detail:  fmt.Sprintf("status=%d", resp.StatusCode),
+			Snippet: captchaConfSnippet(body),
+		}
+	}
+	return decodeCaptchaConf(body)
+}
+
+// decodeCaptchaConf 宽容解析 conf：t 在顶层或 data/result/conf/config 一层嵌套
+// 中都接受；解析失败时必须给出错误码和响应片段，不能只回一句 missing t。
+func decodeCaptchaConf(body []byte) (int64, error) {
+	snippet := captchaConfSnippet(body)
 	obj, err := extractJSONPObject(body)
 	if err != nil {
-		return 0, err
+		return 0, &captchaConfError{Code: captchaConfCodeInvalidJSON, Detail: err.Error(), Snippet: snippet}
 	}
 
-	var conf struct {
-		T int64 `json:"t"`
+	var payload map[string]interface{}
+	if err := json.Unmarshal(obj, &payload); err != nil {
+		return 0, &captchaConfError{Code: captchaConfCodeInvalidJSON, Detail: err.Error(), Snippet: snippet}
 	}
-	if err := json.Unmarshal(obj, &conf); err != nil {
-		return 0, err
+	for _, value := range payload {
+		if msg, ok := value.(string); ok && strings.Contains(strings.ToUpper(msg), "CALLBACK ERROR") {
+			return 0, &captchaConfError{
+				Code:    captchaConfCodeCallbackError,
+				Detail:  "upstream rejected the callback parameter",
+				Snippet: snippet,
+			}
+		}
 	}
-	if conf.T <= 0 {
-		return 0, errors.New("captcha conf missing t")
+	if t, ok := captchaConfTimestamp(payload); ok {
+		return t, nil
 	}
-	return conf.T, nil
+	return 0, &captchaConfError{
+		Code:    captchaConfCodeMissingT,
+		Detail:  "no positive numeric t at top level or in data/result/conf/config",
+		Snippet: snippet,
+	}
+}
+
+func captchaConfTimestamp(payload map[string]interface{}) (int64, bool) {
+	if t, ok := payload["t"]; ok {
+		if v := int64FromAny(t); v > 0 {
+			return v, true
+		}
+	}
+	for _, container := range []string{"data", "result", "conf", "config"} {
+		nested, ok := payload[container].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, ok := nested["t"]; ok {
+			if v := int64FromAny(t); v > 0 {
+				return v, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (c *Client) verifyCaptchaAtX(cli *http.Client, referer string, challenge captchaChallenge, x int) (string, error) {
 	checkURL := "https://captcha.chaoxing.com/captcha/check/verification/result"
 	q2 := url.Values{}
-	q2.Set("callback", "cx_captcha_function")
+	q2.Set("callback", captchaCallback)
 	q2.Set("captchaId", captchaID)
 	q2.Set("type", captchaType)
 	q2.Set("token", challenge.token)
