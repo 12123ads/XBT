@@ -452,6 +452,72 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestFaceUploadReusedWithinActivity(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
+		t.Fatal(err)
+	}
+	uploads, checks := 0, 0
+	var checkedObjects []string
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
+			uploads++
+			if string(data) != "face-bytes" && string(data) != "face-bytes-2" {
+				t.Fatalf("uploaded photo = %q", data)
+			}
+			return fmt.Sprintf("face-object-%d", uploads), nil
+		},
+		checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
+			checks++
+			checkedObjects = append(checkedObjects, objectID)
+			return xxt.FaceCheckResult{CurrentFaceID: objectID, FaceEnc: "face-enc-" + objectID}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	sign := func() {
+		t.Helper()
+		result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+			ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+			Special: map[string]interface{}{"if_face": true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Success {
+			t.Fatalf("sign failed: %+v", result)
+		}
+		if err := database.Where("user_uid = ? AND activity_id = ?", 2, 100).Delete(&model.SignRecord{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sign()
+	sign()
+	if uploads != 1 {
+		t.Fatalf("uploads = %d, want one upload for two executions in the same activity", uploads)
+	}
+	if checks != 2 {
+		t.Fatalf("face checks = %d, want one per execution", checks)
+	}
+	if checkedObjects[0] != "face-object-1" || checkedObjects[1] != checkedObjects[0] {
+		t.Fatalf("face checks reused objectIds %v, want the single upload", checkedObjects)
+	}
+
+	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes-2")).Error; err != nil {
+		t.Fatal(err)
+	}
+	sign()
+	if uploads != 2 {
+		t.Fatalf("uploads = %d, want a new upload after the photo changed", uploads)
+	}
+	if checkedObjects[2] != "face-object-2" {
+		t.Fatalf("changed photo checked with %q", checkedObjects[2])
+	}
+}
+
 func TestSignExecuteLocationErrorRetriesExactlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

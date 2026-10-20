@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"xbt2/server/internal/model"
@@ -33,6 +35,11 @@ type SignService struct {
 	courseWebhook       *EnterpriseWechatWebhookNotifier
 	courseNotifyMu      sync.Mutex
 	courseNotifyBatches map[courseSignNotificationKey]*courseSignNotificationBatch
+	// faceUploads deduplicates face_temp uploads: the same account and photo
+	// upload once per activity, then every check reuses the objectId.
+	faceUploadMu    sync.Mutex
+	faceUploads     map[faceUploadKey]faceUploadEntry
+	faceUploadGroup singleflight.Group
 	// sampleLocation is replaceable in tests. Production uses the uniform
 	// sampler from xxt with the global random source.
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
@@ -45,6 +52,7 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 		cc:                  cc,
 		courseWebhook:       courseWebhook,
 		courseNotifyBatches: map[courseSignNotificationKey]*courseSignNotificationBatch{},
+		faceUploads:         map[faceUploadKey]faceUploadEntry{},
 		sampleLocation: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
 			position := xxt.SampleLocation(center, radiusMeters, nil)
 			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
@@ -509,6 +517,22 @@ func locationOutOfRangeMessage(distance float64) string {
 	return fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", distance)
 }
 
+// faceUploadTTL bounds the in-memory objectId cache. Signing windows are far
+// shorter; the TTL only keeps a long-lived process from accumulating entries
+// for activities nobody will touch again.
+const faceUploadTTL = 6 * time.Hour
+
+type faceUploadKey struct {
+	UserUID    int64
+	ActivityID int64
+	PhotoHash  [sha256.Size]byte
+}
+
+type faceUploadEntry struct {
+	ObjectID   string
+	UploadedAt time.Time
+}
+
 func (s *SignService) applyFaceCredentials(target *model.User, password string, req *ExecuteSignRequest) error {
 	if len(target.FacePhoto) == 0 {
 		var fresh model.User
@@ -519,7 +543,14 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	if len(target.FacePhoto) == 0 {
 		return errors.New("该同学未设置人脸照片，请先在主页上传")
 	}
-	objectID, err := s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
+	key := faceUploadKey{
+		UserUID:    req.TargetUID,
+		ActivityID: req.ActivityID,
+		PhotoHash:  sha256.Sum256(target.FacePhoto),
+	}
+	objectID, err := s.faceObjectID(key, func() (string, error) {
+		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
+	})
 	if err != nil {
 		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
@@ -537,8 +568,68 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	}
 	req.Special["current_face_id"] = faceResult.CurrentFaceID
 	req.Special["face_enc"] = faceResult.FaceEnc
-	req.Special["face_code"] = faceResult.FaceCode
+	// faceCode is fixed to an empty value by the protocol builder (XBT-S7a).
 	return nil
+}
+
+// faceObjectID returns the uploaded objectId for one photo in one activity.
+// The cache is keyed by the photo digest as well, so a replaced photo is
+// uploaded again while repeated executions in the same activity reuse the
+// existing objectId. Concurrent callers share a single upload.
+func (s *SignService) faceObjectID(key faceUploadKey, upload func() (string, error)) (string, error) {
+	if objectID, ok := s.cachedFaceObjectID(key); ok {
+		return objectID, nil
+	}
+	flightKey := fmt.Sprintf("%d:%d:%x", key.UserUID, key.ActivityID, key.PhotoHash)
+	value, err, _ := s.faceUploadGroup.Do(flightKey, func() (interface{}, error) {
+		if objectID, ok := s.cachedFaceObjectID(key); ok {
+			return objectID, nil
+		}
+		objectID, err := upload()
+		if err != nil {
+			return "", err
+		}
+		objectID = strings.TrimSpace(objectID)
+		if objectID == "" {
+			return "", errors.New("上传接口未返回 objectId")
+		}
+		s.storeFaceObjectID(key, objectID)
+		return objectID, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	objectID, _ := value.(string)
+	return objectID, nil
+}
+
+func (s *SignService) cachedFaceObjectID(key faceUploadKey) (string, bool) {
+	s.faceUploadMu.Lock()
+	defer s.faceUploadMu.Unlock()
+	entry, ok := s.faceUploads[key]
+	if !ok {
+		return "", false
+	}
+	if time.Since(entry.UploadedAt) > faceUploadTTL {
+		delete(s.faceUploads, key)
+		return "", false
+	}
+	return entry.ObjectID, true
+}
+
+func (s *SignService) storeFaceObjectID(key faceUploadKey, objectID string) {
+	s.faceUploadMu.Lock()
+	defer s.faceUploadMu.Unlock()
+	if s.faceUploads == nil {
+		s.faceUploads = map[faceUploadKey]faceUploadEntry{}
+	}
+	now := time.Now()
+	for cachedKey, entry := range s.faceUploads {
+		if now.Sub(entry.UploadedAt) > faceUploadTTL {
+			delete(s.faceUploads, cachedKey)
+		}
+	}
+	s.faceUploads[key] = faceUploadEntry{ObjectID: objectID, UploadedAt: now}
 }
 
 func (s *SignService) recordSigned(req ExecuteSignRequest, operatorUID int64) (SignExecuteResult, error) {

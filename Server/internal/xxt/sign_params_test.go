@@ -172,6 +172,41 @@ func TestBuildStuSignParamsLocationToggle(t *testing.T) {
 	}
 }
 
+func TestBuildStuSignParamsFaceFields(t *testing.T) {
+	client := &Client{aesKey: "1234567890123456"}
+	base := signParamsTestBase(client.deviceCode(7))
+	base.SignType = SignNormal
+
+	withoutFace := buildStuSignParams(base)
+	for _, key := range []string{"currentFaceId", "faceEnc", "faceCode", "faceEncAid"} {
+		if withoutFace.Has(key) {
+			t.Fatalf("non-face submission carries %s: %v", key, withoutFace)
+		}
+	}
+
+	face := base
+	face.CurrentFaceID = "face-object"
+	face.FaceEnc = "face-enc"
+	params := buildStuSignParams(face)
+	if got := params.Get("currentFaceId"); got != "face-object" {
+		t.Fatalf("currentFaceId = %q", got)
+	}
+	if got := params.Get("faceEnc"); got != "face-enc" {
+		t.Fatalf("faceEnc = %q", got)
+	}
+	if got := params.Get("ifCFP"); got != "0" {
+		t.Fatalf("ifCFP = %q", got)
+	}
+	for _, key := range []string{"faceCode", "faceEncAid"} {
+		if !params.Has(key) {
+			t.Fatalf("face submission missing %s: %v", key, params)
+		}
+		if got := params.Get(key); got != "" {
+			t.Fatalf("%s = %q, want the fixed empty value", key, got)
+		}
+	}
+}
+
 func TestBuildStuSignParamsNeverInventsStateMachineFields(t *testing.T) {
 	client := &Client{aesKey: "1234567890123456"}
 	base := signParamsTestBase(client.deviceCode(7))

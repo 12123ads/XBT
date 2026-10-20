@@ -953,11 +953,17 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 		return FaceCheckResult{}, fmt.Errorf("check-face-result request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return FaceCheckResult{}, fmt.Errorf("check-face-result read failed: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return FaceCheckResult{}, fmt.Errorf("check-face-result returned http %d: %s", resp.StatusCode, truncateForLog(string(respBody), 200))
+	}
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(respBody, &payload); err != nil {
-		return FaceCheckResult{}, fmt.Errorf("check-face-result decode failed: %w", err)
+		return FaceCheckResult{}, fmt.Errorf("check-face-result decode failed: http %d: %w", resp.StatusCode, err)
 	}
 
 	faceEnc := strings.TrimSpace(strVal(deepFindFirst(payload, "enc", "faceEnc", "face_enc")))
@@ -1024,7 +1030,6 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		ObjectID:      strings.TrimSpace(strVal(firstNonNil(special["object_id"], special["objectId"]))),
 		CurrentFaceID: strings.TrimSpace(strVal(special["current_face_id"])),
 		FaceEnc:       strings.TrimSpace(strVal(special["face_enc"])),
-		FaceCode:      strings.TrimSpace(strVal(special["face_code"])),
 		Enc2:          strings.TrimSpace(strVal(special["enc2"])),
 		Validate:      strings.TrimSpace(strVal(special["validate"])),
 	})

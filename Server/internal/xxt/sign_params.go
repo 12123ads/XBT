@@ -39,7 +39,6 @@ type stuSignParams struct {
 	ObjectID      string
 	CurrentFaceID string
 	FaceEnc       string
-	FaceCode      string
 	// Enc2 and Validate are only ever written by the response state machine
 	// (XBT-S3). The builder must not fabricate them: empty means "omit".
 	Enc2     string
@@ -75,12 +74,15 @@ func buildStuSignParams(p stuSignParams) url.Values {
 		params.Set("ifCFP", "0")
 		params.Set("vpProbability", "-1")
 		params.Set("vpStrategy", "")
+		// CSF sends both fields with an empty value for every face
+		// submission. The upstream response's `code` is deliberately not
+		// echoed here: staging must prove a returned faceCode is required
+		// before xbt sends it.
+		params.Set("faceCode", "")
+		params.Set("faceEncAid", "")
 	}
 	if p.FaceEnc != "" {
 		params.Set("faceEnc", p.FaceEnc)
-	}
-	if p.FaceCode != "" {
-		params.Set("faceCode", p.FaceCode)
 	}
 
 	switch p.SignType {
