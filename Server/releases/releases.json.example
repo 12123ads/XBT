@@ -1,0 +1,12 @@
+{
+  "package": "com.github.enderwolf006.xbt",
+  "abi": "arm64-v8a",
+  "minSupportedVersionCode": 3,
+  "latest": {
+    "versionCode": 4,
+    "versionName": "2.0.2",
+    "apkFile": "xbt-2.0.2.apk",
+    "changelog": "示例清单：复制为 releases.json，并把同名 APK 放在本目录后重启服务。",
+    "publishedAt": "2026-10-21T00:00:00Z"
+  }
+}

@@ -14,6 +14,8 @@
 
 `code = 0` 表示成功，`code = 1` 表示失败。
 
+> 例外：`/api/app/version` 的成功响应是更新客户端直接消费的裸 JSON（无 `code/message/data` 包装），详见 §2.2；它的错误响应仍使用统一结构。
+
 ## 1. 鉴权说明
 
 ### 1.1 Bearer Token
@@ -49,6 +51,99 @@ Authorization: Bearer <JWT>
   }
 }
 ```
+
+---
+
+### 2.2 应用内更新
+
+更新接口**不需要登录**：登出状态或旧版本客户端也必须能检查并安装更新。仅支持 HTTPS，不提供 http 回退。
+
+#### 2.2.1 检查版本
+
+- Method: `GET`
+- Path: `/api/app/version`
+- Auth: 否
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `package` | 是 | Android 包名，必须与清单一致 |
+| `versionCode` | 是 | 客户端当前版本号，非负整数 |
+| `abi` | 是 | 客户端 ABI，当前仅 `arm64-v8a` |
+
+请求示例：
+
+```http
+GET /api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a
+```
+
+有更新时返回 `200` 裸 JSON：
+
+```json
+{
+  "latest": {
+    "versionCode": 4,
+    "versionName": "2.0.2",
+    "apkUrl": "https://xbt.example.com/api/app/download/xbt-2.0.2.apk",
+    "sha256": "<hex>",
+    "sizeBytes": 12345678,
+    "changelog": "...",
+    "publishedAt": "2026-10-21T00:00:00Z"
+  },
+  "minSupportedVersionCode": 3,
+  "mandatory": false
+}
+```
+
+- `mandatory` 为 `true` 当且仅当请求的 `versionCode < minSupportedVersionCode`。
+- 请求的 `versionCode` **大于等于**最新 `versionCode` 时返回 `204 No Content`，响应体为空（客户端无需再解析 JSON）。
+- `apkUrl` 始终是 `https://`。配置了 `public_base_url` 时使用该 origin；留空时使用请求的 `Host` 并强制 `https`。
+- 包名不匹配或 ABI 未知：`404`，响应体不包含其它包的信息。
+- 参数缺失或 `versionCode` 非法：`400`。
+- 清单缺失、损坏、APK 缺失或 `sha256`/`sizeBytes` 与文件不一致：`503`。此时服务继续启动，其它接口不受影响；启动日志包含 `app_release status=unavailable` 和具体原因。
+
+#### 2.2.2 下载 APK
+
+- Method: `GET`
+- Path: `/api/app/download/<file>.apk`
+- Auth: 否
+
+响应头：
+
+- `Content-Type: application/vnd.android.package-archive`
+- `Accept-Ranges: bytes`
+- `ETag: "<sha256>"`
+- `Last-Modified: <apk mtime>`
+- `Cache-Control: public, max-age=31536000, immutable`
+
+支持 `Range`（返回 `206 Partial Content`）、`If-None-Match` / `If-Modified-Since`（返回 `304`）以及 `If-Range`。只提供当前清单中 `latest.apkFile` 指向的文件，目录中的其它 APK 或测试包不会被下载。
+
+#### 2.2.3 版本清单
+
+清单路径由 `config.yaml` 的 `app_release_manifest` 指定，默认 `./releases/releases.json`；APK 放在同一目录。服务**启动时加载**，发布新版本后必须重启。示例见 `Server/releases/releases.json.example`：
+
+```json
+{
+  "package": "com.github.enderwolf006.xbt",
+  "abi": "arm64-v8a",
+  "minSupportedVersionCode": 3,
+  "latest": {
+    "versionCode": 4,
+    "versionName": "2.0.2",
+    "apkFile": "xbt-2.0.2.apk",
+    "sha256": "<hex>",
+    "sizeBytes": 12345678,
+    "changelog": "...",
+    "publishedAt": "2026-10-21T00:00:00Z"
+  }
+}
+```
+
+- `sha256`、`sizeBytes` 可省略；由服务启动时对 APK 实际计算。若填写则必须与文件一致，否则启动时该接口返回 `503`。
+- `versionCode` 必须单调递增；`Android/build-release.sh` 会以已发布的 `releases.json` 为基线拒绝版本号未增加的构建。
+- `minSupportedVersionCode` 不得大于 `latest.versionCode`。
+- `publishedAt` 必须是 RFC3339 时间。
 
 ---
 

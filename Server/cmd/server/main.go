@@ -14,6 +14,7 @@ import (
 	"xbt2/server/internal/middleware"
 	"xbt2/server/internal/qmx"
 	"xbt2/server/internal/ratelimit"
+	"xbt2/server/internal/release"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
 )
@@ -27,6 +28,21 @@ func main() {
 		log.Fatalf("db init failed: %v", err)
 	}
 	runtimeSettingsSvc := service.NewRuntimeSettingsService(database, cfg)
+
+	appReleaseCatalog, appReleaseErr := release.Load(cfg.AppReleaseManifest)
+	if appReleaseErr != nil {
+		log.Printf("app_release status=unavailable manifest=%s error=%v", cfg.AppReleaseManifest, appReleaseErr)
+	} else {
+		log.Printf("app_release status=ready manifest=%s package=%s abi=%s version_code=%d apk=%s size=%d sha256=%s",
+			cfg.AppReleaseManifest,
+			appReleaseCatalog.Manifest.Package,
+			appReleaseCatalog.Manifest.ABI,
+			appReleaseCatalog.Manifest.Latest.VersionCode,
+			appReleaseCatalog.Manifest.Latest.APKFile,
+			appReleaseCatalog.SizeBytes,
+			appReleaseCatalog.SHA256,
+		)
+	}
 
 	jwtSvc := service.NewJWTService(cfg.JWTSecret)
 	credentialCrypto := service.NewCredentialCrypto(cfg.CredentialSecret)
@@ -43,6 +59,7 @@ func main() {
 		log.Printf("captcha_model=fallback reason=disabled")
 	}
 
+	appReleaseHandler := handler.NewAppReleaseHandler(appReleaseCatalog, cfg.PublicBaseURL)
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	facePhotoSvc := service.NewFacePhotoService(database, credentialCrypto, xxtClient)
 	authHandler.SetFacePhotoService(facePhotoSvc)
@@ -82,6 +99,8 @@ func main() {
 		api.GET("/sign/location-presets", signHandler.LocationPresets)
 		api.GET("/sign/shares/:token", signHandler.GetShare)
 		api.POST("/sign/shares/:token/execute", signHandler.ExecuteShare)
+		api.GET("/app/version", appReleaseHandler.Version)
+		api.GET("/app/download/:file", appReleaseHandler.Download)
 
 		authed := api.Group("")
 		authed.Use(middleware.Auth(jwtSvc, database))

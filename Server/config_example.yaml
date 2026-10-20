@@ -47,6 +47,14 @@ qmx_auto_sign_webhook_url: ""
 # 更换实例后，用户必须重新绑定 Token，不会把原 Token 发送到新实例。
 vikunja_base_url: ""
 
+# 应用内更新版本清单（JSON）路径；APK 放在同一目录。
+# 文件缺失或校验失败时仅 /api/app/* 返回 503，服务与其它接口正常启动。
+app_release_manifest: "./releases/releases.json"
+
+# 写入 apkUrl 的对外 HTTPS 根地址（仅 origin，不带路径）。
+# 留空时使用请求 Host 并强制 https；http 不会被接受。
+public_base_url: ""
+
 # postgres 数据库连接字符串
 postgres_dsn: "host=example.com port=5432 user=admin password=114514 dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"
 

@@ -326,6 +326,56 @@ cd Android
 > 前端 API 基地址是 `/api`，所以 `target_url` 必须指向同时提供页面和 API 的同一站点。
 > 如果 API 部署在另一个域名，需要额外给后端配置 CORS。
 
+### 11.2 应用内更新与 APK 发布
+
+更新接口是公开的，客户端登出状态也能检查更新：
+
+- `GET /api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a`
+- `GET /api/app/download/<file>.apk`
+
+接口契约见 `Server/API.md` §2.2。只支持 HTTPS，`apkUrl` 永远输出 `https://`。
+
+发布步骤：
+
+1. 修改 `Android/app/build.gradle.kts` 的 `versionCode`（必须大于已发布的版本）和 `versionName`。
+2. 执行 `./Android/build-release.sh`。脚本会读取 `Server/releases/releases.json` 作为基线，若 `versionCode` 未增加会直接失败；成功后打印 `sha256` 与 `sizeBytes`。
+3. 把 APK 复制为版本化文件名并放入发布目录：
+
+   ```bash
+   cp dist/xbt-release.apk Server/releases/xbt-2.0.2.apk
+   sha256sum Server/releases/xbt-2.0.2.apk
+   stat -c %s Server/releases/xbt-2.0.2.apk
+   ```
+
+4. 按 `Server/releases/releases.json.example` 创建 `Server/releases/releases.json`，填入新的 `versionCode`、`versionName`、`apkFile`、`publishedAt`、`changelog`。`sha256` / `sizeBytes` 可省略（服务启动时计算），也可以填入第 3 步的结果用于校验。
+5. 重启后端，使清单生效：`docker compose restart server`（或重启 `xbt-server` 进程）。
+
+后端配置（`Server/config.yaml`）：
+
+```yaml
+app_release_manifest: "./releases/releases.json"
+# 对外 HTTPS 根地址；留空则使用请求 Host 并强制 https。
+public_base_url: "https://xbt.example.com"
+```
+
+Docker 部署时 `docker-compose.yml` 已把 `./Server/releases` 只读挂载到容器 `/app/releases`，所以改清单/换 APK 不需要重建镜像，但**必须重启 server 容器**。`Server/.gitignore` 已忽略 `releases/*.apk`，不要把安装包提交到仓库。
+
+验证：
+
+```bash
+curl -sS "https://xbt.example.com/api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a"
+# 返回 latest.versionCode / mandatory；versionCode 等于最新时返回 204
+
+curl -sS -r 0-99 -o /dev/null -w '%{http_code}\n' \
+  "https://xbt.example.com/api/app/download/xbt-2.0.2.apk"
+# 期望 206
+
+sha256sum Server/releases/xbt-2.0.2.apk
+# 与 /api/app/version 返回的 sha256 一致
+```
+
+清单缺失或校验失败时，只有 `/api/app/*` 返回 `503`，其它接口正常；启动日志会写明 `app_release status=unavailable manifest=... error=...`。不要把测试包、内部包放进发布目录：下载接口只暴露当前 `latest.apkFile`，但目录本身仍应只存放正式安装包。
+
 ---
 
 ## 12. 修改“位置签到”地址（地点预设）

@@ -108,3 +108,43 @@ func TestCaptchaModelDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("overrides not kept: path=%q enabled=%v", cfg.CaptchaModelPath, cfg.CaptchaModelIsEnabled())
 	}
 }
+
+func TestAppReleaseConfigDefaultsAndBaseURL(t *testing.T) {
+	cfg := Config{}
+	cfg.applyAppReleaseDefaults()
+	if cfg.AppReleaseManifest != "./releases/releases.json" {
+		t.Fatalf("default manifest=%q", cfg.AppReleaseManifest)
+	}
+	cfg = Config{AppReleaseManifest: "/srv/xbt/releases.json"}
+	cfg.applyAppReleaseDefaults()
+	if cfg.AppReleaseManifest != "/srv/xbt/releases.json" {
+		t.Fatalf("override manifest=%q", cfg.AppReleaseManifest)
+	}
+
+	for _, tc := range []struct{ input, want string }{
+		{"", ""},
+		{" HTTPS://XBT.Example/ ", "https://xbt.example"},
+		{"https://xbt.example:443", "https://xbt.example"},
+		{"https://xbt.example:8443", "https://xbt.example:8443"},
+		{"https://[0:0:0:0:0:0:0:1]:443/", "https://[::1]"},
+	} {
+		got, err := NormalizePublicBaseURL(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("base URL %q: got %q want %q; err=%v", tc.input, got, tc.want, err)
+		}
+	}
+	for _, input := range []string{
+		"http://xbt.example",
+		"xbt.example",
+		"https://user:pass@xbt.example",
+		"https://xbt.example/prefix",
+		"https://xbt.example?x=1",
+		"https://xbt.example/#frag",
+		"https://xbt.example:65536",
+		"https://xbt.example:",
+	} {
+		if _, err := NormalizePublicBaseURL(input); err == nil {
+			t.Fatalf("accepted invalid public_base_url %q", input)
+		}
+	}
+}

@@ -27,6 +27,9 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Shanghai
+    volumes:
+      # Release manifest + APKs. Read-only; restart the container after publishing.
+      - ./Server/releases:/app/releases:ro
     ports:
       - "3030:3030"
     restart: unless-stopped

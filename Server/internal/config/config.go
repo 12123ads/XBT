@@ -64,6 +64,14 @@ type Config struct {
 	// failed inference falls back to the built-in heuristic.
 	CaptchaModelPath    string `yaml:"captcha_model_path"`
 	CaptchaModelEnabled *bool  `yaml:"captcha_model_enabled"`
+
+	// In-app update manifest (JSON). The APK files live in the same
+	// directory. A missing or invalid manifest disables only /api/app/*; the
+	// rest of the server keeps starting and serving.
+	AppReleaseManifest string `yaml:"app_release_manifest"`
+	// Public HTTPS origin used to build apkUrl. Empty derives it from the
+	// request Host while still forcing https.
+	PublicBaseURL string `yaml:"public_base_url"`
 }
 
 func Load() Config {
@@ -89,6 +97,10 @@ func Load() Config {
 	cfg.applyIMDefaults()
 	cfg.applySignDefaults()
 	cfg.applyCaptchaDefaults()
+	cfg.applyAppReleaseDefaults()
+	if cfg.PublicBaseURL, err = NormalizePublicBaseURL(cfg.PublicBaseURL); err != nil {
+		panic(err)
+	}
 	return cfg
 }
 
@@ -163,6 +175,61 @@ func (c *Config) applyCaptchaDefaults() {
 // values default to enabled; a missing model file is handled as a fallback.
 func (c Config) CaptchaModelIsEnabled() bool {
 	return c.CaptchaModelEnabled == nil || *c.CaptchaModelEnabled
+}
+
+func (c *Config) applyAppReleaseDefaults() {
+	if strings.TrimSpace(c.AppReleaseManifest) == "" {
+		c.AppReleaseManifest = "./releases/releases.json"
+	}
+}
+
+// NormalizePublicBaseURL validates the externally visible HTTPS origin used in
+// apkUrl. Only an origin is accepted: no credentials, path, query or fragment.
+// An empty value means "derive from the request Host"; http is never accepted.
+func NormalizePublicBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Opaque != "" ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
+		return "", fmt.Errorf("public_base_url must be an absolute HTTPS origin without credentials, path, query or fragment")
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "", fmt.Errorf("public_base_url must use https")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("public_base_url must not include a path")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return "", fmt.Errorf("invalid port in public_base_url")
+	}
+	port := u.Port()
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid port in public_base_url")
+		}
+		if n == 443 {
+			port = ""
+		} else {
+			port = strconv.Itoa(n)
+		}
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return "", fmt.Errorf("invalid host in public_base_url")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return "https://" + host, nil
 }
 
 // NormalizeVikunjaBaseURL is shared by configured endpoints and credential bindings.
