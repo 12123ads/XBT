@@ -68,6 +68,7 @@ func main() {
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signSvc.SetFacePhotoService(facePhotoSvc)
+	signSvc.SetLocationJitterMeters(cfg.LocationJitterMeters)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
 	signHandler.SetSignLimiter(ratelimit.New(cfg.SignRateLimitPerMinute, cfg.SignRateLimitBurst, cfg.SignMaxConcurrent))
 	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)

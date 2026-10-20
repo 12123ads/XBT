@@ -43,6 +43,21 @@ func TestSampleLocationStaysWithinRadius(t *testing.T) {
 	}
 }
 
+func TestSampleLocationJitterStaysWithinRadiusAndOffCenter(t *testing.T) {
+	center := GeoPoint{Latitude: 35.475740, Longitude: 119.535984}
+	const radius = 5.0
+	rng := rand.New(rand.NewPCG(0x5eed, 26))
+	for i := 0; i < 10000; i++ {
+		position := SampleLocationJitter(center, radius, rng)
+		assertSixDecimals(t, position.Latitude)
+		assertSixDecimals(t, position.Longitude)
+		distance := DistanceMeters(GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, center)
+		if distance <= 0 || distance > radius {
+			t.Fatalf("sample %d distance %.4fm outside (0, %.0f]: %+v", i, distance, radius, position)
+		}
+	}
+}
+
 func TestDistanceMetersKnownOffsets(t *testing.T) {
 	oneDegreeLat := DistanceMeters(GeoPoint{Latitude: 0, Longitude: 0}, GeoPoint{Latitude: 0.001, Longitude: 0})
 	if math.Abs(oneDegreeLat-111.195) > 0.2 {

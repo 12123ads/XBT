@@ -86,11 +86,21 @@ func TestSignLimiterDefaultsAndOverrides(t *testing.T) {
 	if cfg.SignRateLimitPerMinute != 30 || cfg.SignRateLimitBurst != 10 || cfg.SignMaxConcurrent != 2 {
 		t.Fatalf("defaults: %+v", cfg)
 	}
+	if cfg.LocationJitterMeters != 5 {
+		t.Fatalf("location jitter default = %v, want 5", cfg.LocationJitterMeters)
+	}
 
-	cfg = Config{SignRateLimitPerMinute: 120, SignRateLimitBurst: 20, SignMaxConcurrent: 4}
+	cfg = Config{SignRateLimitPerMinute: 120, SignRateLimitBurst: 20, SignMaxConcurrent: 4, LocationJitterMeters: 12}
 	cfg.applySignDefaults()
-	if cfg.SignRateLimitPerMinute != 120 || cfg.SignRateLimitBurst != 20 || cfg.SignMaxConcurrent != 4 {
+	if cfg.SignRateLimitPerMinute != 120 || cfg.SignRateLimitBurst != 20 || cfg.SignMaxConcurrent != 4 || cfg.LocationJitterMeters != 12 {
 		t.Fatalf("overrides not kept: %+v", cfg)
+	}
+
+	// Zero or negative would submit the selected point verbatim; keep 5m.
+	cfg = Config{LocationJitterMeters: -1}
+	cfg.applySignDefaults()
+	if cfg.LocationJitterMeters != 5 {
+		t.Fatalf("non-positive jitter = %v, want 5", cfg.LocationJitterMeters)
 	}
 }
 

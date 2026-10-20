@@ -99,6 +99,37 @@ func SampleLocation(center GeoPoint, radiusMeters float64, rng *rand.Rand) SignP
 	return SignPosition{Latitude: point.Latitude, Longitude: point.Longitude}
 }
 
+// SampleLocationJitter returns an area-uniform random point within
+// radiusMeters of center, rounded to six decimals. Unlike SampleLocation it
+// never returns center itself: a zero offset would submit the selected point
+// verbatim, which is the fingerprint the per-sign jitter exists to avoid
+// (XBT-S26). The result satisfies 0 < DistanceMeters(point, center) <=
+// radiusMeters whenever radiusMeters exceeds the six-decimal resolution
+// (~0.11m). Below that no representable offset is both nonzero and inside the
+// circle, so the rounded center is returned.
+func SampleLocationJitter(center GeoPoint, radiusMeters float64, rng *rand.Rand) SignPosition {
+	if radiusMeters <= 0 {
+		return SignPosition{Latitude: roundCoordinate(center.Latitude), Longitude: roundCoordinate(center.Longitude)}
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		position := SampleLocation(center, radiusMeters, rng)
+		point := GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
+		if distance := DistanceMeters(point, center); distance > 0 && distance <= radiusMeters {
+			return position
+		}
+	}
+	// Deterministic fallback: half the radius due north. Rounding keeps it
+	// inside; a radius below the coordinate resolution yields center.
+	point := GeoPoint{
+		Latitude:  roundCoordinate(center.Latitude + radiusMeters/2/metersPerDegreeLatitude),
+		Longitude: roundCoordinate(center.Longitude),
+	}
+	if distance := DistanceMeters(point, center); distance > 0 && distance <= radiusMeters {
+		return SignPosition{Latitude: point.Latitude, Longitude: point.Longitude}
+	}
+	return SignPosition{Latitude: roundCoordinate(center.Latitude), Longitude: roundCoordinate(center.Longitude)}
+}
+
 // metersPerDegreeLatitude is the mean meridional length of one degree.
 const metersPerDegreeLatitude = 111132.92
 

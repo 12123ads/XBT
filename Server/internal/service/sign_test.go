@@ -1180,8 +1180,11 @@ func TestSignExecuteQRWithCoordinatesInsideCircleSigns(t *testing.T) {
 		},
 	}
 	svc := NewSignService(database, upstream, cc, nil)
-	svc.sampleLocation = func(center xxt.GeoPoint, _ float64) xxt.GeoPoint {
-		return xxt.GeoPoint{Latitude: center.Latitude + 0.00005, Longitude: center.Longitude}
+	svc.sampleJitter = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+		if center.Latitude != 30.0001 || center.Longitude != 120 || radiusMeters != defaultLocationJitterMeters {
+			t.Fatalf("jitter args = %+v radius=%v", center, radiusMeters)
+		}
+		return xxt.GeoPoint{Latitude: center.Latitude + 0.00002, Longitude: center.Longitude}
 	}
 	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
 		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignQRCode,
@@ -1236,7 +1239,7 @@ func TestSignExecuteRejectsPresetOutsideActivityRadius(t *testing.T) {
 	}
 }
 
-func TestSignExecuteSamplesLocationAndRetriesWithoutRandomization(t *testing.T) {
+func TestSignExecuteJittersSelectedPointAndRetriesExactSelection(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		second   xxt.SignResult
@@ -1260,11 +1263,11 @@ func TestSignExecuteSamplesLocationAndRetriesWithoutRandomization(t *testing.T) 
 				},
 			}
 			svc := NewSignService(database, upstream, cc, nil)
-			svc.sampleLocation = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
-				if center.Latitude != 30 || center.Longitude != 120 || radiusMeters != 50 {
-					t.Fatalf("sampler args = %+v radius=%v", center, radiusMeters)
+			svc.sampleJitter = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+				if center.Latitude != 30.0002 || center.Longitude != 120 || radiusMeters != defaultLocationJitterMeters {
+					t.Fatalf("jitter args = %+v radius=%v", center, radiusMeters)
 				}
-				return xxt.GeoPoint{Latitude: center.Latitude + 0.0001, Longitude: center.Longitude}
+				return xxt.GeoPoint{Latitude: center.Latitude + 0.00002, Longitude: center.Longitude}
 			}
 			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
 				ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
@@ -1278,21 +1281,19 @@ func TestSignExecuteSamplesLocationAndRetriesWithoutRandomization(t *testing.T) 
 			if len(attempts) != 2 {
 				t.Fatalf("upstream sign calls = %d, want exactly 2", len(attempts))
 			}
-			if got := attempts[0]["latitude"]; got != "30.000100" {
-				t.Fatalf("first attempt latitude = %v, want sampled 30.000100", got)
+			if got := attempts[0]["latitude"]; got != "30.000220" {
+				t.Fatalf("first attempt latitude = %v, want jittered selection 30.000220", got)
 			}
+			// The errorLocation_ retry submits the caller's point, not another
+			// jittered sample (XBT-S26).
 			if got := attempts[1]["latitude"]; got != "30.000200" {
-				t.Fatalf("retry latitude = %v, want unrandomized preset 30.000200", got)
+				t.Fatalf("retry latitude = %v, want exact selection 30.000200", got)
 			}
 			if got := attempts[1]["longitude"]; got != "120.000000" {
 				t.Fatalf("retry longitude = %v", got)
 			}
 			if got := attempts[1]["description"]; got != "教学楼" {
 				t.Fatalf("retry description = %v", got)
-			}
-			sampled := xxt.GeoPoint{Latitude: 30.0001, Longitude: 120}
-			if distance := xxt.DistanceMeters(sampled, xxt.GeoPoint{Latitude: 30, Longitude: 120}); distance > 50 {
-				t.Fatalf("sampled point %.2fm outside radius", distance)
 			}
 			if tc.wantCode == "" {
 				if !result.Success {
@@ -1304,6 +1305,133 @@ func TestSignExecuteSamplesLocationAndRetriesWithoutRandomization(t *testing.T) 
 				t.Fatalf("result = %+v, want code=%q distance=%v", result, tc.wantCode, tc.wantDist)
 			}
 		})
+	}
+}
+
+func TestSignExecuteJittersSelectedPointWithinFiveMeters(t *testing.T) {
+	selected := xxt.GeoPoint{Latitude: 35.475740, Longitude: 119.535984}
+	detail := xxt.SignDetail{
+		IfOpenAddress:     true,
+		LocationLatitude:  selected.Latitude,
+		LocationLongitude: selected.Longitude,
+		LocationRange:     300,
+	}
+	svc := NewSignService(nil, nil, nil, nil)
+	if svc.locationJitterMeters != defaultLocationJitterMeters {
+		t.Fatalf("default jitter = %v, want %v", svc.locationJitterMeters, defaultLocationJitterMeters)
+	}
+	rng := mathrand.New(mathrand.NewPCG(0x5eed, 26))
+	svc.sampleJitter = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+		if center != selected {
+			t.Fatalf("jitter center = %+v, want selected %+v", center, selected)
+		}
+		if radiusMeters != defaultLocationJitterMeters {
+			t.Fatalf("jitter radius = %v, want %v", radiusMeters, defaultLocationJitterMeters)
+		}
+		position := xxt.SampleLocationJitter(center, radiusMeters, rng)
+		return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
+	}
+
+	nonzero := 0
+	for i := 0; i < 100; i++ {
+		req := ExecuteSignRequest{
+			ActivityID: 100, TargetUID: 2, SignType: xxt.SignLocation,
+			Special: map[string]interface{}{
+				"latitude": "35.475740", "longitude": "119.535984", "description": "七号教学楼",
+			},
+		}
+		if result, ok := svc.prepareSignLocation(&req, detail, true); !ok {
+			t.Fatalf("sample %d rejected: %+v", i, result)
+		}
+		position := xxt.PositionFromSpecial(req.Special)
+		if position == nil {
+			t.Fatalf("sample %d submitted no point: %v", i, req.Special)
+		}
+		if position.Address != "七号教学楼" {
+			t.Fatalf("sample %d description = %q", i, position.Address)
+		}
+		distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, selected)
+		if distance <= 0 || distance > defaultLocationJitterMeters {
+			t.Fatalf("sample %d distance %.4fm outside (0, %.0f]", i, distance, defaultLocationJitterMeters)
+		}
+		nonzero++
+	}
+	if nonzero != 100 {
+		t.Fatalf("nonzero jitter samples = %d, want 100", nonzero)
+	}
+}
+
+func TestSignExecuteSelectedPointJitterNeverLeavesCircle(t *testing.T) {
+	center := xxt.GeoPoint{Latitude: 30, Longitude: 120}
+	// About 47m from the center in a 50m circle: a 5m offset can leave it.
+	selected := xxt.GeoPoint{Latitude: 30.000423, Longitude: 120}
+	detail := xxt.SignDetail{
+		IfOpenAddress:     true,
+		LocationLatitude:  center.Latitude,
+		LocationLongitude: center.Longitude,
+		LocationRange:     50,
+	}
+	if distance := xxt.DistanceMeters(selected, center); distance <= 45 || distance >= 50 {
+		t.Fatalf("fixture selection distance = %.2fm, want inside a 50m circle but within 5m of the edge", distance)
+	}
+	svc := NewSignService(nil, nil, nil, nil)
+	rng := mathrand.New(mathrand.NewPCG(0x5eed, 0x26))
+	svc.sampleJitter = func(point xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+		position := xxt.SampleLocationJitter(point, radiusMeters, rng)
+		return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
+	}
+
+	fallbacks := 0
+	for i := 0; i < 500; i++ {
+		req := ExecuteSignRequest{
+			ActivityID: 100, TargetUID: 2, SignType: xxt.SignLocation,
+			Special: map[string]interface{}{"latitude": "30.000423", "longitude": "120", "description": "边界"},
+		}
+		if result, ok := svc.prepareSignLocation(&req, detail, true); !ok {
+			t.Fatalf("sample %d rejected: %+v", i, result)
+		}
+		position := xxt.PositionFromSpecial(req.Special)
+		if position == nil {
+			t.Fatalf("sample %d submitted no point", i)
+		}
+		if distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, center); distance > 50 {
+			t.Fatalf("sample %d submitted %.2fm outside the 50m circle", i, distance)
+		}
+		if xxt.DistanceMeters(xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, selected) < 0.001 {
+			fallbacks++
+		}
+	}
+	if fallbacks == 0 {
+		t.Fatal("no edge sample fell back to the exact selection; fixture or jitter is wrong")
+	}
+}
+
+func TestSignExecuteAutoModeStillSamplesWholeCircle(t *testing.T) {
+	detail := locationMetadata()
+	svc := NewSignService(nil, nil, nil, nil)
+	svc.sampleLocation = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+		if center.Latitude != 30 || center.Longitude != 120 || radiusMeters != 50 {
+			t.Fatalf("sampler args = %+v radius=%v", center, radiusMeters)
+		}
+		return xxt.GeoPoint{Latitude: center.Latitude + 0.0001, Longitude: center.Longitude}
+	}
+	svc.sampleJitter = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+		t.Fatalf("auto mode used the selection jitter: center=%+v radius=%v", center, radiusMeters)
+		return center
+	}
+
+	req := ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, SignType: xxt.SignLocation,
+		Special: map[string]interface{}{},
+	}
+	if result, ok := svc.prepareSignLocation(&req, detail, true); !ok {
+		t.Fatalf("auto mode rejected: %+v", result)
+	}
+	if got := req.Special["latitude"]; got != "30.000100" {
+		t.Fatalf("auto latitude = %v, want the whole-circle sample 30.000100", got)
+	}
+	if req.locationBase == nil || req.locationBase.Latitude != 30 || req.locationBase.Longitude != 120 {
+		t.Fatalf("auto base = %+v, want the metadata center", req.locationBase)
 	}
 }
 

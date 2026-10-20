@@ -31,6 +31,11 @@ sign_rate_limit_per_minute: 30
 sign_rate_limit_burst: 10
 sign_max_concurrent: 2
 
+# 用户显式选点后提交坐标的最大随机抖动（米）。缺省或 <=0 时为 5。
+# 未选点的自动模式仍按活动圆心/半径整圆采样，不受该值影响。
+# 选点距圆心不足该值时会回退为直接提交选点，避免越出活动圆。
+location_jitter_meters: 5
+
 # 滑块验证码 ONNX 模型（captcha.ort）。启用后模型结果作为唯一首候选，
 # 模型缺失/加载失败/推理失败自动回退到内置启发式，不阻断签到。
 # 共享库路径由环境变量 CAPTCHA_ORT_LIB_PATH 指定；未设置时使用

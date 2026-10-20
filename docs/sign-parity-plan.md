@@ -128,7 +128,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 在 `locationRange` 内均匀取点（保留 6 位小数）；服务端校验预设点到圆心距离，超范围直接拒绝并提示。
 - 请求携带 `location`、`locationResult`、`mockData`。
 - 验收：10k 次采样全部落在半径内；`errorLocation_12` 返回 `distance_m=12` 且只重试一次；前端位置选择器展示“距签到点 N 米 / 超出范围”。
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/location.go` 提供 haversine 距离、预设点范围校验与面积均匀圆内采样（6 位小数）；`service.ExecuteOne` 在 preSign 之前按活动元数据校验用户预设点，超范围直接返回 `location_out_of_range` + `distance_m`，未选点时以元数据圆心生成采样点；`errorLocation_` 首次重试发送未随机化的基准点（预设点或元数据圆心），第二次失败返回上游距离；`stuSignajax` 构造器对类型 0/2/3/4/5 在 `if_open_address=true` 时统一携带 `location`/`locationResult`（仅后者含 `mockData`）。Web 位置选择器、地图选点和已选位置展示“距签到点 N 米 / 超出范围”，地图选点超范围时禁止确认。测试见 `Server/internal/xxt/location_test.go`、`Server/internal/xxt/sign_params_test.go`、`Server/internal/service/sign_test.go`。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/location.go` 提供 haversine 距离、预设点范围校验与面积均匀圆内采样（6 位小数）；`service.ExecuteOne` 在 preSign 之前按活动元数据校验用户预设点，超范围直接返回 `location_out_of_range` + `distance_m`，未选点时以元数据圆心生成采样点；`errorLocation_` 首次重试发送未随机化的基准点（预设点或元数据圆心），第二次失败返回上游距离；`stuSignajax` 构造器对类型 0/2/3/4/5 在 `if_open_address=true` 时统一携带 `location`/`locationResult`（仅后者含 `mockData`）。Web 位置选择器、地图选点和已选位置展示“距签到点 N 米 / 超出范围”，地图选点超范围时禁止确认。S26 起用户已选点改为选点 ±5m 抖动，不再整圆采样（见 XBT-S26）。测试见 `Server/internal/xxt/location_test.go`、`Server/internal/xxt/sign_params_test.go`、`Server/internal/service/sign_test.go`。
 
 #### XBT-S19 位置圆心缺失防护
 - 现象：`getPPTActiveInfo` 返回 `locationLatitude=0`/`locationLongitude=0` 且 `ifopenAddress=1` 时，未选点的位置签到不带有效坐标，上游按 `(0,0)` 计算距离（约 1200 万米）。
@@ -140,6 +140,13 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 处理：`ExecuteSignRequest.locationProvided` 记录本次执行是否携带可用坐标（采样成功或用户显式选点）；`signFailure` 仅在该值存在时返回 `location_out_of_range` + 距离，否则 `errorLocation_` 一律升级为 `location_point_required`，文案「该签到要求定位，请先在地图选点或允许定位」。没有基准点时 `submitSign` 不再发起无意义的 `errorLocation_` 重试。`sign_params.go` 字段形状不变。
 - 前端：`FullScanner`/`SignDetail` 收到 `location_point_required` 时打开 `LocationPickerSheet`（含地图选点与浏览器定位），用户选中后带 `special_params.latitude/longitude/description` 重试一次；取消则停在错误提示。
 - 测试：`TestSignExecuteQRWithoutCoordinatesReportsMissingPoint`、`TestSignExecuteQRWithCoordinatesKeepsOutOfRangeDistance`、`TestSignExecuteQRWithCoordinatesInsideCircleSigns`、`TestSignExecuteQRWithoutLocationRequirementStillSigns`。
+
+#### XBT-S26 手动选点的坐标抖动限制
+- 决策（用户 2026-10-20 评论 `847a3b37`）：手动选点后，波动范围控制在 5 米以内。
+- 处理：`prepareSignLocation` 在用户显式选点时不再按活动圆整圆采样，而是以选点为圆心、在 `location_jitter_meters`（`config.yaml`，默认 5，非正值回退 5）内做一次面积均匀抖动，且偏移恒大于 0；抖动结果若越出活动圆（选点贴近边界），回退为直接提交选点本身。`errorLocation_` 重试仍提交未抖动的选点；元数据无圆心分支保持 S19 行为，直接提交选点。
+- 自动模式（未选点）不变：仍按元数据圆心/半径整圆均匀采样。
+- 日志：`location_mode=selected|auto`、`jitter_m`、`radius_m`、`jitter_fallback`。
+- 测试：`TestSampleLocationJitterStaysWithinRadiusAndOffCenter`、`TestSignExecuteJittersSelectedPointWithinFiveMeters`、`TestSignExecuteSelectedPointJitterNeverLeavesCircle`、`TestSignExecuteJittersSelectedPointAndRetriesExactSelection`、`TestSignExecuteAutoModeStillSamplesWholeCircle`。
 
 #### XBT-S7 人脸流程加固
 - **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一执行内复用已上传的 `objectId`，不重复上传同一份变换结果；`check-face-result` 先判 HTTP 状态再解 JSON。

@@ -453,10 +453,12 @@ GET /api/sign/classmates?course_id=222&class_id=111
 - 若都未传，默认签当前登录用户。
 - `if_open_address` 对应活动元数据里的 `if_open_address`：服务端执行签到时会读取 `getPPTActiveInfo`（30s 缓存）作为权威来源，请求体字段只在读取失败时兜底。为 `true` 且元数据带有圆心/半径时：
   - 若 `special_params` 提供了经纬度，服务端先按 haversine 距离校验预设点；超出 `location_range` 直接返回 `location_out_of_range` 与 `distance_m`，不会请求 `preSign`/`stuSignajax`。
-  - 服务端随后在元数据圆内面积均匀随机取点（6 位小数）提交；未提供经纬度时同样按元数据圆心生成，因此签到类型 `0/2/3/4/5` 的提交参数都会带 `location`、`locationResult`（仅后者含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。
-  - 上游返回 `errorLocation_<米>` 时关闭随机化，用未随机化的基准点（用户预设点或元数据圆心）重试一次；第二次仍失败返回上游距离。
+  - 已选点提交时以选点为圆心、在 `location_jitter_meters`（默认 5 米）内随机偏移一次（6 位小数），即最终坐标与选点距离满足 `0 < d ≤ 5m`；选点距活动圆边界不足该值、抖动越圈时回退为直接提交选点本身，保证仍在 `location_range` 内。
+  - 未选点时仍在元数据圆内面积均匀随机取点（6 位小数）；因此签到类型 `0/2/3/4/5` 的提交参数都会带 `location`、`locationResult`（仅后者含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。
+  - 上游返回 `errorLocation_<米>` 时关闭随机化，用未随机化的基准点（用户选点或元数据圆心）重试一次；第二次仍失败返回上游距离。
 - 元数据可能返回 `locationLatitude=0`/`locationLongitude=0`（教师未设置圆心）。服务端把 `(0,0)` 视为缺失，并依次尝试 `location`（对象或 JSON 字符串）、`address`/`locationInfo` 对象及顶层 `latitude`/`longitude`；只接受合法且非 `(0,0)` 的坐标。
-- 位置签到（`sign_type=4`）在未提供 `special_params.latitude/longitude` 且没有可用圆心/半径（包括元数据读取失败）时，直接返回 `location_point_required`，且不会请求 `preSign`/`stuSignajax`；前端应提示「请先在地图选点」。已提供合法经纬度时保持原行为：按原值提交（元数据有圆心则先做范围校验）。非位置类型在元数据缺失时保持原降级行为。
+- 位置签到（`sign_type=4`）在未提供 `special_params.latitude/longitude` 且没有可用圆心/半径（包括元数据读取失败）时，直接返回 `location_point_required`，且不会请求 `preSign`/`stuSignajax`；前端应提示「请先在地图选点」。已提供合法经纬度且元数据没有可用圆心时保持原行为：直接按选点原值提交，不做圆内校验。非位置类型在元数据缺失时保持原降级行为。
+- 服务端日志按 `location_mode=selected|auto`、`jitter_m`、`radius_m`、`jitter_fallback` 记录本次提交使用的定位策略，便于排查坐标异常。
 
 响应体 `data`:
 

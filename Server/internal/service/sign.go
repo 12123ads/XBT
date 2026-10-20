@@ -48,8 +48,16 @@ type SignService struct {
 	// account, so one fetch is shared instead of storing duplicate bases.
 	faceImportGroup singleflight.Group
 	// sampleLocation is replaceable in tests. Production uses the uniform
-	// sampler from xxt with the global random source.
+	// sampler from xxt with the global random source. It only serves requests
+	// without an explicit selection.
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
+	// sampleJitter randomizes an explicitly selected point. It is a separate
+	// seam because the invariant differs: the offset is bounded by
+	// locationJitterMeters and is never zero (XBT-S26).
+	sampleJitter func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
+	// locationJitterMeters bounds the offset applied around a caller-selected
+	// point. It never affects auto mode (XBT-S26).
+	locationJitterMeters float64
 	// facePhotoRand is replaceable in tests so pool selection and per-execution
 	// transforms are assertable.
 	facePhotoRand facephoto.RandSource
@@ -108,8 +116,13 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 		faceUploads:          map[faceUploadKey]faceUploadEntry{},
 		faceClientIDFailures: map[int64]time.Time{},
 		metrics:              observe.NewSignMetrics(),
+		locationJitterMeters: defaultLocationJitterMeters,
 		sampleLocation: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
 			position := xxt.SampleLocation(center, radiusMeters, nil)
+			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
+		},
+		sampleJitter: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+			position := xxt.SampleLocationJitter(center, radiusMeters, nil)
 			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
 		},
 	}
@@ -121,6 +134,10 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 }
 
 const courseSignNotificationDebounce = 8 * time.Second
+
+// defaultLocationJitterMeters is the offset bound applied around an explicitly
+// selected point (XBT-S26). Auto mode uses the activity radius instead.
+const defaultLocationJitterMeters = 5.0
 
 // FacePhotoImporter fetches and stores an account's official photo as a base
 // image. *FacePhotoService implements it; tests may inject a narrower stub.
@@ -138,6 +155,15 @@ func (s *SignService) SetFacePhotoService(importer FacePhotoImporter) {
 // that runs inside every execution. Tests inject a deterministic source;
 // production leaves it nil (time-seeded).
 func (s *SignService) SetRand(rnd facephoto.RandSource) { s.facePhotoRand = rnd }
+
+// SetLocationJitterMeters overrides the jitter bound used for explicitly
+// selected points. Non-positive values keep the default so a misconfigured
+// config.yaml cannot degrade into exact-point submission (XBT-S26).
+func (s *SignService) SetLocationJitterMeters(meters float64) {
+	if meters > 0 {
+		s.locationJitterMeters = meters
+	}
+}
 
 type courseSignNotificationKey struct {
 	ActivityID int64
@@ -1040,10 +1066,13 @@ func copySignSpecial(source map[string]interface{}) map[string]interface{} {
 }
 
 // prepareSignLocation validates a caller-selected point against the activity
-// metadata and replaces the submitted coordinates with a uniformly sampled
-// point inside the activity circle. When the caller did not select a point the
-// metadata center becomes both the sampling origin and the retry point. An
-// out-of-range preset is rejected before any preSign/stuSignajax request.
+// metadata and chooses the submitted coordinates. An explicit selection is
+// submitted with a bounded random offset (location_jitter_meters, XBT-S26), so
+// the user's choice stays meaningful while each execution differs. Without a
+// selection, the served point is uniformly sampled inside the activity circle
+// and the metadata center becomes both the sampling origin and the retry
+// point. An out-of-range preset is rejected before any preSign/stuSignajax
+// request.
 //
 // A location check-in without a caller-selected point can only be signed when
 // metadata supplies a usable center and radius. Otherwise the request returns
@@ -1090,7 +1119,8 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 
 	base := xxt.SignPosition{Latitude: center.Latitude, Longitude: center.Longitude}
 	if selected != nil {
-		distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: selected.Latitude, Longitude: selected.Longitude}, center)
+		selectedPoint := xxt.GeoPoint{Latitude: selected.Latitude, Longitude: selected.Longitude}
+		distance := xxt.DistanceMeters(selectedPoint, center)
 		if distance > radius {
 			return SignExecuteResult{
 				UserID:    req.TargetUID,
@@ -1101,6 +1131,24 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 			}, false
 		}
 		base = *selected
+		// An explicit selection stays authoritative: only a small offset is
+		// applied instead of resampling the whole activity circle (XBT-S26).
+		jittered := s.sampleJitter(selectedPoint, s.locationJitterMeters)
+		point := xxt.GeoPoint{Latitude: jittered.Latitude, Longitude: jittered.Longitude}
+		fallback := false
+		if xxt.DistanceMeters(point, center) > radius {
+			// A selection near the edge can leave the circle after the
+			// offset. Submit the exact selection instead of an invalid point.
+			point = selectedPoint
+			fallback = true
+		}
+		position := xxt.SignPosition{Latitude: point.Latitude, Longitude: point.Longitude, Address: base.Address}
+		applySignPosition(req.Special, &position)
+		req.locationBase = &base
+		req.locationProvided = true
+		log.Printf("sign location location_mode=selected activity=%d uid=%d jitter_m=%g jitter_fallback=%t",
+			req.ActivityID, req.TargetUID, s.locationJitterMeters, fallback)
+		return SignExecuteResult{}, true
 	}
 
 	sampled := s.sampleLocation(center, radius)
@@ -1108,6 +1156,7 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 	applySignPosition(req.Special, &position)
 	req.locationBase = &base
 	req.locationProvided = true
+	log.Printf("sign location location_mode=auto activity=%d uid=%d radius_m=%g", req.ActivityID, req.TargetUID, radius)
 	return SignExecuteResult{}, true
 }
 

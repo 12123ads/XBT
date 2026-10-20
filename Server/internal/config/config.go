@@ -42,13 +42,16 @@ type Config struct {
 	QMXAutoSignWebhookURL string `yaml:"qmx_auto_sign_webhook_url"`
 	// Sign submission guard. Non-positive values fall back to the defaults in
 	// applySignDefaults; the limiter is per account, in-process.
-	SignRateLimitPerMinute int                    `yaml:"sign_rate_limit_per_minute"`
-	SignRateLimitBurst     int                    `yaml:"sign_rate_limit_burst"`
-	SignMaxConcurrent      int                    `yaml:"sign_max_concurrent"`
-	PostgresDSN            string                 `yaml:"postgres_dsn"`
-	VikunjaBaseURL         string                 `yaml:"vikunja_base_url"`
-	QMXLocationPresets     []QMXLocationPreset    `yaml:"qmx_location_presets"`
-	CourseLocationPresets  []CourseLocationPreset `yaml:"course_location_presets"`
+	SignRateLimitPerMinute int `yaml:"sign_rate_limit_per_minute"`
+	SignRateLimitBurst     int `yaml:"sign_rate_limit_burst"`
+	SignMaxConcurrent      int `yaml:"sign_max_concurrent"`
+	// Bounded offset applied around an explicitly selected point. Non-positive
+	// values keep the default 5m; auto mode never uses it (XBT-S26).
+	LocationJitterMeters  float64                `yaml:"location_jitter_meters"`
+	PostgresDSN           string                 `yaml:"postgres_dsn"`
+	VikunjaBaseURL        string                 `yaml:"vikunja_base_url"`
+	QMXLocationPresets    []QMXLocationPreset    `yaml:"qmx_location_presets"`
+	CourseLocationPresets []CourseLocationPreset `yaml:"course_location_presets"`
 
 	// Group-chat sign discovery (Easemob IM, fetched on demand while serving
 	// /sign/activities). Endpoints are reverse-engineered and not a public
@@ -106,7 +109,7 @@ func Load() Config {
 
 // applySignDefaults keeps production safe when the new keys are absent from
 // an existing config.yaml: 30 submissions/min, burst 10, at most 2 in flight
-// per account.
+// per account, and 5m of jitter around an explicitly selected point.
 func (c *Config) applySignDefaults() {
 	if c.SignRateLimitPerMinute <= 0 {
 		c.SignRateLimitPerMinute = 30
@@ -116,6 +119,9 @@ func (c *Config) applySignDefaults() {
 	}
 	if c.SignMaxConcurrent <= 0 {
 		c.SignMaxConcurrent = 2
+	}
+	if c.LocationJitterMeters <= 0 {
+		c.LocationJitterMeters = 5
 	}
 }
 
