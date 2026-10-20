@@ -9,6 +9,7 @@ import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
 import AdminPanel from './pages/AdminPanel';
 import AdminAccounts from './pages/AdminAccounts';
+import AdminFakerExport from './pages/AdminFakerExport';
 import AdminClassGroups from './pages/AdminClassGroups';
 import AdminSignRecords from './pages/AdminSignRecords';
 import AdminQMXAutoSign from './pages/AdminQMXAutoSign';
@@ -75,6 +76,7 @@ function App() {
               <Route path="/sign/:id" element={<SignDetail />} />
               <Route path="/admin/panel" element={<AdminPanel />} />
               <Route path="/admin/accounts" element={<AdminAccounts />} />
+              <Route path="/admin/accounts/faker-export" element={<AdminFakerExport />} />
               <Route path="/admin/class-groups" element={<AdminClassGroups />} />
               <Route path="/admin/sign-records" element={<AdminSignRecords />} />
               <Route path="/admin/qmx-auto-sign" element={<AdminQMXAutoSign />} />

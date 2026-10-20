@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { BookOpen, CheckCircle2, Circle, Copy, Loader2, Plus, RefreshCw, Save, Search, ShieldCheck, UserPlus } from 'lucide-react';
+import { BookOpen, CheckCircle2, Circle, Copy, Loader2, Plus, QrCode, RefreshCw, Save, Search, ShieldCheck, UserPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminModal from '../components/admin/AdminModal';
 import AdminShell from '../components/admin/AdminShell';
 import client from '../api/client';
+import { useAuthStore } from '../store/auth';
 import type { AdminAccount, AdminCreateAccountResponse, AdminManagedCourse, ApiResponse } from '../types';
 
 type CourseRef = Pick<AdminManagedCourse, 'course_id' | 'class_id'>;
@@ -16,6 +18,8 @@ const getErrorMessage = (error: unknown, fallback: string) => (
 );
 
 const AdminAccounts = () => {
+  const navigate = useNavigate();
+  const canExportToCsf = useAuthStore((state) => (state.user?.permission ?? 0) >= 2);
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [selectedUid, setSelectedUid] = useState<number | null>(null);
   const [courses, setCourses] = useState<AdminManagedCourse[]>([]);
@@ -241,13 +245,25 @@ const AdminAccounts = () => {
       title="账号课程"
       subtitle="账号添加、课程同步与代签课程配置"
       action={(
-        <button
-          onClick={() => setShowAddAccount(true)}
-          className="h-10 px-3 bg-blue-600 text-white rounded-xl font-bold text-xs flex items-center gap-2 active:scale-95 transition-transform"
-        >
-          <UserPlus size={16} />
-          添加
-        </button>
+        <div className="flex items-center gap-2">
+          {canExportToCsf && (
+            <button
+              onClick={() => navigate('/admin/accounts/faker-export')}
+              className="h-10 px-3 bg-slate-900 text-white rounded-xl font-bold text-xs flex items-center gap-2 active:scale-95 transition-transform"
+              title="批量导出到 CSF"
+            >
+              <QrCode size={16} />
+              批量导出
+            </button>
+          )}
+          <button
+            onClick={() => setShowAddAccount(true)}
+            className="h-10 px-3 bg-blue-600 text-white rounded-xl font-bold text-xs flex items-center gap-2 active:scale-95 transition-transform"
+          >
+            <UserPlus size={16} />
+            添加
+          </button>
+        </div>
       )}
     >
       <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(16px+var(--sab))] space-y-4 custom-scrollbar">

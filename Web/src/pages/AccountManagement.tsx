@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ChevronLeft, 
+  Loader2,
   LogOut, 
+  QrCode,
   Trash2, 
   User as UserIcon,
   Plus,
@@ -11,13 +13,24 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
 import { getNativeUpdateBridge, readNativeAppVersion } from '../utils/nativeUpdate';
+import { getMyFakerExport, type FakerExportSingle } from '../api/fakerExport';
+import FakerExportDialog from '../components/FakerExportDialog';
 import toast from 'react-hot-toast';
+
+type ExportDialogState = {
+  uid: number;
+  name: string;
+  phone: string;
+  data: FakerExportSingle;
+};
 
 const AccountManagement = () => {
   const navigate = useNavigate();
-  const { accounts, activeUid, switchAccount, removeAccount } = useAuthStore();
+  const { accounts, activeUid, user, switchAccount, removeAccount } = useAuthStore();
   const updateBridge = useMemo(() => getNativeUpdateBridge(), []);
   const [appVersion] = useState(() => readNativeAppVersion());
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null);
 
   const sortedAccounts = useMemo(() => {
     return [...accounts].sort((a, b) => {
@@ -49,6 +62,24 @@ const AccountManagement = () => {
     if (!confirm('确定要移除此账号吗？')) return;
     removeAccount(uid);
     toast.success('已移除账号');
+  };
+
+  const handleExport = async () => {
+    if (!user || isExporting) return;
+    setIsExporting(true);
+    try {
+      const data = await getMyFakerExport();
+      setExportDialog({
+        uid: user.uid,
+        name: user.name,
+        phone: user.mobile,
+        data,
+      });
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '导出到 CSF 失败，请稍后重试');
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -137,6 +168,31 @@ const AccountManagement = () => {
           </motion.button>
         </div>
 
+        {user && (
+          <div className="p-4 bg-white rounded-3xl border border-slate-100 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 font-bold text-slate-900">
+                  <QrCode size={18} className="text-blue-600" />
+                  CSF 导入
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  将当前账号 {user.name} 导入 ChaoxingSignFaker，二维码仅在本次页面显示。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleExport()}
+                disabled={isExporting}
+                className="flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-blue-600 px-4 text-xs font-black text-white active:scale-95 transition-transform disabled:opacity-50"
+              >
+                {isExporting ? <Loader2 size={16} className="animate-spin" /> : <QrCode size={16} />}
+                <span>导出到 CSF</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {updateBridge && (
           <div className="p-4 bg-white rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
             <div>
@@ -163,6 +219,17 @@ const AccountManagement = () => {
           </p>
         </div>
       </div>
+      <AnimatePresence>
+        {exportDialog && (
+          <FakerExportDialog
+            uid={exportDialog.uid}
+            name={exportDialog.name}
+            phone={exportDialog.phone}
+            data={exportDialog.data}
+            onClose={() => setExportDialog(null)}
+          />
+        )}
+      </AnimatePresence>
       <style>{`.custom-scrollbar::-webkit-scrollbar { width: 0px; }`}</style>
     </div>
   );

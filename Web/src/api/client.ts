@@ -41,6 +41,9 @@ client.interceptors.request.use((config) => {
 
 client.interceptors.response.use(
   (response) => {
+    if (response.config.responseType === 'blob') {
+      return response;
+    }
     const res = response.data as ApiResponse<unknown>;
     if (res.code !== 0) {
       return Promise.reject(new AxiosError<ApiResponse<unknown>>(
