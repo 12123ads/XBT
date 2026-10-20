@@ -76,7 +76,7 @@ func (u *handlerSignUpstream) UploadFaceTemp(string, string, string, string, []b
 	return "face-object-id", nil
 }
 
-func (u *handlerSignUpstream) CheckFaceResult(string, string, int64, string) (xxt.FaceCheckResult, error) {
+func (u *handlerSignUpstream) CheckFaceResult(string, string, int64, string, string) (xxt.FaceCheckResult, error) {
 	return xxt.FaceCheckResult{}, nil
 }
 

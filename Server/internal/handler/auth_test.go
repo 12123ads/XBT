@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,10 +28,14 @@ func (f authLoginFunc) PreLogin(mobile, password string) (*xxt.LoginResult, erro
 	return f(mobile, password)
 }
 
+func (f authLoginFunc) FetchClientID(string, string, xxt.DeviceInfo) (string, error) {
+	return "", nil
+}
+
 func newHandlerAccessDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	database, _ := testutil.NewPostgres(t)
-	if err := database.AutoMigrate(&model.User{}, &model.Whitelist{}, &model.Course{}, &model.UserCourse{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignShare{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.Whitelist{}, &model.Course{}, &model.UserCourse{}, &model.SignActivity{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignShare{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
 		t.Fatal(err)
 	}
 	return database
@@ -238,5 +244,92 @@ func TestWhitelistedLoginRetainsGrantedPermission(t *testing.T) {
 	user, err := service.LoadActiveUser(database, 101)
 	if err != nil || user.Permission != 1 {
 		t.Fatalf("ordinary whitelist was promoted: user=%+v err=%v", user, err)
+	}
+}
+
+type authFaceUpstream struct {
+	uid        int64
+	clientID   string
+	clientErr  error
+	deviceInfo []xxt.DeviceInfo
+}
+
+func (u *authFaceUpstream) PreLogin(string, string) (*xxt.LoginResult, error) {
+	return &xxt.LoginResult{UID: u.uid, Name: "face user"}, nil
+}
+
+func (u *authFaceUpstream) FetchClientID(_ string, _ string, info xxt.DeviceInfo) (string, error) {
+	u.deviceInfo = append(u.deviceInfo, info)
+	return u.clientID, u.clientErr
+}
+
+const authClientIDFixture = "IGgr0eBRVhMNvwCKO/RwtVD+b34L9LMvX7X+KGR8m1gx+7HzHdtciwtd31KS2uIkI5Pr+WOqwXb3HMqFNqznvmfcdvA9b45QNLZqSBMi2TzVAuYM9laNJcAAmYK/1Y8RVj3RWoPU83alRPlYrw58nX0Q+ufHbZXSbC/U/tIitdY="
+
+func TestLoginPersistsFaceDeviceOnceAndClientIDEncrypted(t *testing.T) {
+	database := newHandlerAccessDB(t)
+	upstream := &authFaceUpstream{uid: 501, clientID: authClientIDFixture}
+	cc := service.NewCredentialCrypto("auth-test-credential")
+	router := loginRouter(database, upstream)
+	for attempt := 0; attempt < 2; attempt++ {
+		got := accessRequest(t, router, http.MethodPost, "/login", gin.H{"mobile": "13800000501", "password": "correct"})
+		if got.Code != http.StatusOK {
+			t.Fatalf("login %d: status=%d body=%s", attempt, got.Code, got.Body.String())
+		}
+	}
+	if len(upstream.deviceInfo) != 2 || upstream.deviceInfo[0] != upstream.deviceInfo[1] {
+		t.Fatalf("device profile changed between logins: %+v", upstream.deviceInfo)
+	}
+
+	var user model.User
+	if err := database.Where("uid = ?", 501).Take(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.DeviceInfoCipher == "" || user.ClientIDCipher == "" {
+		t.Fatalf("face device fields were not persisted: %+v", user)
+	}
+	deviceJSON, err := cc.Decrypt(user.DeviceInfoCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info xxt.DeviceInfo
+	if err := json.Unmarshal([]byte(deviceJSON), &info); err != nil {
+		t.Fatal(err)
+	}
+	if !info.Valid() || info != upstream.deviceInfo[0] {
+		t.Fatalf("persisted profile = %+v, generated = %+v", info, upstream.deviceInfo[0])
+	}
+	storedClientID, err := cc.Decrypt(user.ClientIDCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedClientID != authClientIDFixture {
+		t.Fatalf("stored clientId differs from upstream value")
+	}
+}
+
+func TestLoginSucceedsWhenClientIDFetchFails(t *testing.T) {
+	database := newHandlerAccessDB(t)
+	upstream := &authFaceUpstream{uid: 502, clientID: "fixture-client-id", clientErr: errors.New("upstream unavailable")}
+	router := loginRouter(database, upstream)
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+	got := accessRequest(t, router, http.MethodPost, "/login", gin.H{"mobile": "13800000502", "password": "correct"})
+	if got.Code != http.StatusOK {
+		t.Fatalf("login failed on clientId error: status=%d body=%s", got.Code, got.Body.String())
+	}
+	if strings.Contains(logs.String(), "fixture-client-id") || strings.Contains(logs.String(), "fixture-sc") {
+		t.Fatalf("login logs leaked the clientId or sc: %s", logs.String())
+	}
+	var user model.User
+	if err := database.Where("uid = ?", 502).Take(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.DeviceInfoCipher == "" {
+		t.Fatal("device profile was not stored")
+	}
+	if user.ClientIDCipher != "" {
+		t.Fatal("clientId cipher should stay empty after a fetch failure")
 	}
 }

@@ -148,6 +148,7 @@ func (h *AdminAccountHandler) CreateClassAccount(c *gin.Context) {
 		common.Fail(c, 500, "credential encrypt failed")
 		return
 	}
+	deviceCipher, clientIDCipher := ensureFaceDevice(h.db, h.cc, h.xxt, loginResult.UID, req.Mobile, req.Password)
 
 	user := model.User{
 		UID:              loginResult.UID,
@@ -155,6 +156,8 @@ func (h *AdminAccountHandler) CreateClassAccount(c *gin.Context) {
 		Name:             loginResult.Name,
 		Avatar:           loginResult.Avatar,
 		CredentialCipher: cipher,
+		DeviceInfoCipher: deviceCipher,
+		ClientIDCipher:   clientIDCipher,
 		Permission:       1,
 		LastLoginAt:      time.Now(),
 	}
@@ -170,14 +173,18 @@ func (h *AdminAccountHandler) CreateClassAccount(c *gin.Context) {
 			user.Name = loginResult.Name
 			user.Avatar = loginResult.Avatar
 			user.CredentialCipher = cipher
+			user.DeviceInfoCipher = deviceCipher
+			user.ClientIDCipher = clientIDCipher
 			user.Permission = 1
 			user.LastLoginAt = time.Now()
 			if err := tx.Model(&model.User{}).Where("uid = ?", user.UID).Updates(map[string]interface{}{
-				"name":              user.Name,
-				"avatar":            user.Avatar,
-				"credential_cipher": user.CredentialCipher,
-				"permission":        user.Permission,
-				"last_login_at":     user.LastLoginAt,
+				"name":               user.Name,
+				"avatar":             user.Avatar,
+				"credential_cipher":  user.CredentialCipher,
+				"device_info_cipher": user.DeviceInfoCipher,
+				"client_id_cipher":   user.ClientIDCipher,
+				"permission":         user.Permission,
+				"last_login_at":      user.LastLoginAt,
 			}).Error; err != nil {
 				return err
 			}

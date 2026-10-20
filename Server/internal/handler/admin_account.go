@@ -80,6 +80,7 @@ func (h *AdminAccountHandler) CreateAccount(c *gin.Context) {
 		common.Fail(c, 500, "credential encrypt failed")
 		return
 	}
+	deviceCipher, clientIDCipher := ensureFaceDevice(h.db, h.cc, h.xxt, loginResult.UID, req.Mobile, req.Password)
 
 	permission := h.resolveAccountPermission(req.Mobile)
 	wl := model.Whitelist{Mobile: req.Mobile, Permission: permission}
@@ -97,6 +98,8 @@ func (h *AdminAccountHandler) CreateAccount(c *gin.Context) {
 		Name:             loginResult.Name,
 		Avatar:           loginResult.Avatar,
 		CredentialCipher: cipher,
+		DeviceInfoCipher: deviceCipher,
+		ClientIDCipher:   clientIDCipher,
 		Permission:       permission,
 		LastLoginAt:      time.Now(),
 	}

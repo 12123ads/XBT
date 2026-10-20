@@ -23,7 +23,7 @@ type signClient interface {
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
 	UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error)
 	UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error)
-	CheckFaceResult(mobile, password string, activeID int64, faceObjectID string) (xxt.FaceCheckResult, error)
+	CheckFaceResult(mobile, password string, activeID int64, faceObjectID, clientID string) (xxt.FaceCheckResult, error)
 }
 
 type SignService struct {
@@ -523,7 +523,15 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	if err != nil {
 		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
-	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID)
+	clientID := ""
+	if target.ClientIDCipher != "" {
+		if plain, err := s.cc.Decrypt(target.ClientIDCipher); err == nil {
+			clientID = plain
+		} else {
+			log.Printf("face clientId decrypt failed: uid=%d err=%v", target.UID, err)
+		}
+	}
+	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID, clientID)
 	if err != nil {
 		return fmt.Errorf("人脸验证失败：%v", err)
 	}

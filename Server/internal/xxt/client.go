@@ -924,7 +924,7 @@ func (c *Client) UploadFaceTemp(mobile, password, filename, contentType string, 
 	return objectID, nil
 }
 
-func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceObjectID string) (FaceCheckResult, error) {
+func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceObjectID, clientID string) (FaceCheckResult, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return FaceCheckResult{}, err
@@ -933,12 +933,7 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 	cli.Jar = s.Jar
 
 	cxtime := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	faceResult := map[string]interface{}{
-		"currentFaceId":       faceObjectID,
-		"LiveDetectionStatus": 1,
-		"collectStatus":       1,
-		"cxtime":              cxtime,
-	}
+	faceResult := buildFaceResult(faceObjectID, cxtime, clientID)
 	faceResultJSON, err := json.Marshal(faceResult)
 	if err != nil {
 		return FaceCheckResult{}, fmt.Errorf("marshal faceResult failed: %w", err)

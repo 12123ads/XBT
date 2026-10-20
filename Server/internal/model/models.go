@@ -3,17 +3,24 @@ package model
 import "time"
 
 type User struct {
-	ID               uint      `gorm:"primaryKey" json:"-"`
-	UID              int64     `gorm:"unique;not null" json:"uid"`
-	Mobile           string    `gorm:"size:32;unique;not null" json:"mobile"`
-	Name             string    `gorm:"size:128;not null" json:"name"`
-	Avatar           string    `gorm:"size:1024" json:"avatar"`
-	CredentialCipher string    `gorm:"type:text;not null" json:"-"`
-	Permission       int       `gorm:"not null;default:1" json:"permission"`
-	FacePhoto        []byte    `gorm:"type:bytea" json:"-"`
-	LastLoginAt      time.Time `json:"-"`
-	CreatedAt        time.Time `json:"-"`
-	UpdatedAt        time.Time `json:"-"`
+	ID               uint   `gorm:"primaryKey" json:"-"`
+	UID              int64  `gorm:"unique;not null" json:"uid"`
+	Mobile           string `gorm:"size:32;unique;not null" json:"mobile"`
+	Name             string `gorm:"size:128;not null" json:"name"`
+	Avatar           string `gorm:"size:1024" json:"avatar"`
+	CredentialCipher string `gorm:"type:text;not null" json:"-"`
+	// DeviceInfoCipher holds the account's synthetic device profile (JSON),
+	// encrypted with CredentialCrypto. It is reused across logins so the
+	// upstream clientId stays bound to one device.
+	DeviceInfoCipher string `gorm:"type:text" json:"-"`
+	// ClientIDCipher holds the upstream clientId used for the face signToken.
+	// It is encrypted at the same level as the password and never exposed.
+	ClientIDCipher string    `gorm:"type:text" json:"-"`
+	Permission     int       `gorm:"not null;default:1" json:"permission"`
+	FacePhoto      []byte    `gorm:"type:bytea" json:"-"`
+	LastLoginAt    time.Time `json:"-"`
+	CreatedAt      time.Time `json:"-"`
+	UpdatedAt      time.Time `json:"-"`
 }
 
 type Whitelist struct {

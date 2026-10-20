@@ -15,7 +15,7 @@ type signAuthorizationUpstream struct {
 	lookup     func(string, string, int64, int64, int64) (bool, error)
 	sign       func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error)
 	uploadFace func(string, string, string, string, []byte) (string, error)
-	checkFace  func(string, string, int64, string) (xxt.FaceCheckResult, error)
+	checkFace  func(string, string, int64, string, string) (xxt.FaceCheckResult, error)
 	detail     xxt.SignDetail
 	detailErr  error
 	preSign    func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error)
@@ -57,11 +57,11 @@ func (u *signAuthorizationUpstream) UploadFaceTemp(mobile, password, filename, c
 	return u.uploadFace(mobile, password, filename, contentType, data)
 }
 
-func (u *signAuthorizationUpstream) CheckFaceResult(mobile, password string, activityID int64, objectID string) (xxt.FaceCheckResult, error) {
+func (u *signAuthorizationUpstream) CheckFaceResult(mobile, password string, activityID int64, objectID, clientID string) (xxt.FaceCheckResult, error) {
 	if u.checkFace == nil {
 		panic("unexpected face check")
 	}
-	return u.checkFace(mobile, password, activityID, objectID)
+	return u.checkFace(mobile, password, activityID, objectID, clientID)
 }
 
 func selectAuthorizationCourse(t *testing.T, database *gorm.DB, uid, courseID, classID int64) {
@@ -423,7 +423,7 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 					}
 					return "face-object", nil
 				},
-				checkFace: func(_ string, _ string, _ int64, objectID string) (xxt.FaceCheckResult, error) {
+				checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
 					checks++
 					if objectID != "face-object" {
 						t.Fatalf("face check object = %q", objectID)
@@ -1008,4 +1008,83 @@ func copySpecial(special map[string]interface{}) map[string]interface{} {
 		copied[key] = value
 	}
 	return copied
+}
+
+func TestFaceCheckUsesPersistedClientID(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	cipher, err := cc.Encrypt("persisted-client-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Model(&model.User{}).Where("uid = ?", 2).Updates(map[string]interface{}{
+		"face_photo":       []byte("face-bytes"),
+		"client_id_cipher": cipher,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(string, string, string, string, []byte) (string, error) {
+			return "face-object", nil
+		},
+		checkFace: func(_ string, _ string, _ int64, objectID, clientID string) (xxt.FaceCheckResult, error) {
+			if objectID != "face-object" {
+				t.Fatalf("objectID = %q", objectID)
+			}
+			got = append(got, clientID)
+			return xxt.FaceCheckResult{CurrentFaceID: objectID, FaceEnc: "face-enc", FaceCode: ""}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+			ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+			Special: map[string]interface{}{"if_face": true},
+		})
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if !result.Success {
+			t.Fatalf("attempt %d: %+v", attempt, result)
+		}
+		if err := database.Where("user_uid = ? AND activity_id = ?", 2, 100).Delete(&model.SignRecord{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != "persisted-client-id" || got[1] != got[0] {
+		t.Fatalf("face checks received clientIds %v, want the persisted value twice", got)
+	}
+}
+
+func TestFaceCheckOmitsClientIDWhenStorageIsEmpty(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(string, string, string, string, []byte) (string, error) {
+			return "face-object", nil
+		},
+		checkFace: func(_ string, _ string, _ int64, _, clientID string) (xxt.FaceCheckResult, error) {
+			got = clientID
+			return xxt.FaceCheckResult{CurrentFaceID: "face-object", FaceEnc: "face-enc"}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	if _, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+		Special: map[string]interface{}{"if_face": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("face check received clientId %q without stored value", got)
+	}
 }

@@ -345,7 +345,7 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 | # | 剩余差异 | xbt 计划后状态 | CSF | 影响 | 处置 |
 |---|---|---|---|---|---|
 | 1 | 滑块验证码识别内核 | S5 只修协议与提交策略，仍为自建启发式；通过率门槛 ≥85%，低于 70% 触发 §8.1 的选项 C | YOLO11n + ONNX（AGPL） | 同一次签到可能需要更多 challenge；上游风控更敏感 | 待 S5 实测；不达标再立「非 AGPL 检测器」issue，不复制 CSF 模型 |
-| 2 | 人脸 `faceResult` 设备签名 | 不生成 `signToken`/`cxcid`（`Server` 内无 `clientId`/`signToken` 实现），按「缺失也能签」处理 | 登录保存并解密 `clientId` 后签名 | 若上游对人脸请求加签名校验，xbt 人脸签到会整类失败 | **做**：XBT-S13，排在 S7a 之后；保留「无 clientId 时不带签名」降级 |
+| 2 | 人脸 `faceResult` 设备签名 | 已实现（XBT-S13）：登录时保存加密 `clientId`，`faceResult` 在可解密时追加 `cxcid`/`signToken`；缺失或解密失败仍不带签名 | 登录保存并解密 `clientId` 后签名 | 若上游对人脸请求加签名校验，xbt 人脸签到会整类失败 | **已完成**：见 §8.3.1 |
 | 3 | 签到来源：群聊实时消息 | 只有 `taskactivelist` 轮询（S8 补字段，不补来源） | Easemob IM 群聊监听 + 群列表 | xbt 依赖轮询周期，签到窗口短的活动可能漏签；无「从群聊进入签到」入口 | **做**：XBT-S14（轮询版，不建长连接），独立于 S1–S12 |
 | 4 | 客户端身份伪装 | `chaoxing_user_agent` 为服务端全局配置，`appType=15` 固定，无 per-account/UI | 内置 `DEFAULT` / `XUEZAIXIDIAN` 及自定义 UA + 包名 | 校园定制版学校的课程/活动列表可能不匹配 | **不做**（2026-10-20 决策）；仅在文档标注为已知限制 |
 | 5 | 请求出口 IP | 签到由 `Server` 发起，`clientip` 固定空串，真实出口是服务器 IP | 由手机发起，出口是设备网络 | IP 与位置/设备画像可能不一致，风控特征不同；同一服务器多账号共用出口 | **接受现状**（2026-10-20 决策）；靠 S10 限流 + S11 串行降特征 |
@@ -354,6 +354,15 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 **xbt 有而 CSF 没有的能力**（不是差距，别为了「对齐」砍掉）：Web 多用户 + 管理员白名单、免登录签到分享链接、服务端并发代签与状态跟踪、`Server` 侧统一指标。
 
 **判断**：S13 落地后「设备签名」不再是差距；主线只剩 1（验证码通过率）待实测。S14 解决「找不找得到签到」的能力缺口，但不进入当前串行链。出口 IP 与照片存放属于架构选择，已决定不改。
+
+#### 8.3.1 XBT-S13 人脸设备签名（2026-10-20 落地）
+
+- **设备资料**：`xxt.GenerateDeviceInfo` 按 `uid + mobile` 派生合成设备 JSON（`deviceUniqueId/cdid/device_id` 同值，另含 `android_id/mediaDrmId/oaid/platform/os_name/os_ver/os_lang/brand/board/hardware/model/cpu_ar/app_name/app_ver`），不读取宿主硬件标识。首次登录生成后以 `CredentialCrypto` 加密存入 `users.device_info_cipher`，后续登录复用。
+- **clientId**：登录成功后用该设备资料调用 `POST https://sso.chaoxing.com/apis/login/userLogin4Uname.do`（form `data` 为 RSA/PKCS#1 v1.5 加密 JSON），只读取 `msg.clientId`，加密存入 `users.client_id_cipher`。请求失败、响应缺字段或加密失败只记 `uid` 与错误，不阻断登录/签到。
+- **解密与签名**：`xxt.DecryptClientID` 按 RSA 模长分块做 `modPow(publicExponent)`、去 PKCS#1 v1.5 type-1 填充、解析 JSON 取 `cid/sc`；失败返回空。`faceResult` 可解出时追加 `cxcid` 与 `signToken = MD5(sorted key+value + sc)`；否则保持原四项，`check-face-result` 照常发起。
+- **迁移**：`AutoMigrate(&model.User{})` 新增两个可空 `text` 列，旧数据为空即走降级路径。
+- **验证**：`Server/internal/xxt/device_test.go` 覆盖固定 type-1 fixture、非法样本、`signToken` 期望值/字段顺序、缺失降级、设备资料稳定性与 per-account 差异、userInfo 错误不回显响应体；`Server/internal/service/sign_test.go` 覆盖两次签到传入同一持久化 clientId；`Server/internal/handler/auth_test.go` 覆盖登录持久化、两次登录复用设备资料、clientId 拉取失败仍登录成功。命令：`cd Server && go test ./...`。
+- **风险**：上游 clientId 是弱混淆产物，不是身份凭据；staging 若拒绝人脸请求，先只带 `cxcid` 不带 `signToken` 二分。
 
 ## 9. 排期估算（1 人后端 + 0.5 人前端）
 
