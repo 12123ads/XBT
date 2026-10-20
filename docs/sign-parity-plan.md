@@ -139,7 +139,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 验收：`[face]` 响应触发一次带新照片的重试或明确失败提示；无照片返回明确提示；人脸请求字段与上游客户端一致；同一活动连续执行不重复上传同一张照片。
 - **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：S7a 已落地——`buildStuSignParams` 在带 `currentFaceId` 时固定发送 `faceCode=""`、`faceEncAid=""`，不再回传 `check-face-result` 的 `code`；`CheckFaceResult` 先判 HTTP 2xx 再解析 JSON，非 2xx 错误带状态码，无 `enc` 保留可读错误；`SignService.applyFaceCredentials` 以 `(uid, activityId, sha256(facePhoto))` 缓存 `face_temp` 的 `objectId`（单飞合并并发上传、6h TTL），同一活动重复执行只上传一次并重新调用 `check-face-result` 取新 `faceEnc`；`[face]`/`checkFace_` 仍由 S3 状态机映射为一次人脸恢复。回归测试见 `Server/internal/xxt/sign_params_test.go`、`face_check_test.go`、`Server/internal/service/sign_test.go`。`cxcid`/`signToken` 由并行的 XBT-S13 独立实现，不属于 S7a。
 
-#### XBT-S7b 多照片池与官方人脸照片导入（P2，延后）
+#### XBT-S7b 多照片池与官方人脸照片导入（P2，2026-10-20 落地）
 - **输入**：账号凭据、账号已保存的人脸照片；目标账号须是操作者本人或有代签权限的账号。
 - **输出**：
   1. 每账号最多 5 张照片，本地保存图片与 `objectId`，记录 `useCount`、`isFailureBefore`。
@@ -154,7 +154,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
      6. 变换必须接受可注入随机源，便于单测确定性断言。
   5. 照片池只保存变换后的字节；原始下载字节仅在请求作用域内短暂存在。
   6. UI：照片列表、上传、删除、失败标记、重新拉取（重新拉取会重新变换）；代签页可管理目标账号照片。
-  7. 实现状态（2026-10-20）：强制变换已落地于 `Server/internal/facephoto`（`Transform`，固定种子单测覆盖裁剪比例/角度/EXIF/黑边/体积上限）；照片池、导入 handler 仍按 S12 之后排期。
+  7. 实现状态（2026-10-20）：**全部落地**。强制变换在 `Server/internal/facephoto`（`Transform`）；照片池 `face_photos` 表、5 张上限、随机/失败降级选图、导入 handler、代签账号权限与 Web UI 均已实现，详见 §8.3.3。
 - **验收标准**：
   - 第 6 张被拒绝；删除后计数下降。
   - 随机选择与失败降级可用固定种子在单测中断言。
@@ -378,6 +378,18 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 - **并发与失败**：per-uid `TryLock`；已有抓取在跑时本次直接用旧快照，不排队。`401/408` 重取 token 并重试一次；第二次失败返回 `im_unauthorized`；超时返回 `im_timeout`。失败只写 `error_code`，保留上一轮成功结果，不影响普通活动列表。
 - **观测**：`GET /api/sign/im/status` 返回 `enabled/interval_seconds/fetch_timeout_seconds/last_poll_at/last_success_at/group_count/activity_count/error_code`；日志只含 `uid/active_id/source/result/duration_ms`，不含密码、token、消息体。
 - **验证**：`Server/internal/im/*_test.go` 覆盖 DES fixture、附件解析/丢弃规则、token 请求、401/408 重取、响应体不泄漏；`Server/internal/service/im_fetch_test.go` 覆盖按需抓取间隔门控、单飞、超时降级、重取一次、连续失败、解密失败、日志脱敏、失败保留上一轮；`Server/internal/handler/im_merge_test.go` 覆盖双来源去重、IM-only 合并、scope/cache 落库、IM 失败不影响列表。命令：`cd Server && go test ./...`。staging 发现流程尚未执行（当前环境无课程群测试账号），上游端点/内容类型需用真实账号确认。
+
+#### 8.3.3 XBT-S7b 照片池与官方照片导入（2026-10-20 落地）
+
+- **数据模型**：新增 `face_photos`（`user_uid/data/object_id/use_count/is_failure_before/source/created_at`），`user_uid` 建索引。迁移保留旧 `users.face_photo` 列，并在首次启动时幂等回填为池中一条 `source=upload` 记录；此后代码只读写池。
+- **上限与并发**：`FacePhotoService.Add` 在事务内对目标 `users` 行 `SELECT ... FOR UPDATE` 后计数，第 6 张返回 `ErrFacePhotoLimit`（HTTP 409）；删除后计数立即下降。
+- **选图**：`facephoto.Select` 接受可注入随机源。账号存在失败历史时优先「未失败且用过」，其次「未失败」，最后全体；同一次 execute 内复用已选照片，重试不换图、不重复计数。
+- **失败标记**：`check-face-result` 无 `enc` 包装为 `xxt.ErrFaceRejected`，只在该错误或提交阶段再次返回 `[face]` 时置 `is_failure_before=true`；传输/HTTP/解码错误不会误伤照片。上传+校验成功即 `use_count+1`，并持久化最新 `objectId`。
+- **官方导入**：`collectionfilephotoEnc`（账号自身会话）取 `oldObjectId` → `https://p.cldisk.com/star4/<objectId>/origin.jpg` → 内存内 `facephoto.Transform` → 只把变换输出写入池。原始下载字节不落盘、不写日志；未设置官方照片返回 HTTP 422 可读提示。
+- **权限**：本人始终可管理；管理他人时要求双方存在「同为已选」的课程（与 `AuthorizeTargets` 的代签集合一致），否则 403。不提供按手机号查询或批量枚举。
+- **API**：`GET/POST /api/user/faces`、`DELETE /api/user/faces/:id`、`POST /api/user/faces/import`，均支持 `target_uid`；旧 `GET/POST/DELETE /api/user/face` 保留为兼容入口（GET 返回最新一张，DELETE 清空池）。
+- **UI**：`FacePhotoManager` 复用于主页与签到详情；支持列表、拍照/相册上传、逐张删除、失败/官方标记、使用次数与「拉取官方照片」。
+- **验证**：`cd Server && go test ./...`（含照片池上限/权限/导入/选图/迁移回填与 handler 端点）；`cd Web && npm run lint && npm run build`。
 
 ## 9. 排期估算（1 人后端 + 0.5 人前端）
 

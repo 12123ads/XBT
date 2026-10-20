@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"xbt2/server/internal/facephoto"
 	"xbt2/server/internal/model"
 	"xbt2/server/internal/observe"
 	"xbt2/server/internal/xxt"
@@ -44,7 +45,9 @@ type SignService struct {
 	// sampleLocation is replaceable in tests. Production uses the uniform
 	// sampler from xxt with the global random source.
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
-	metrics        *observe.SignMetrics
+	// facePhotoRand is replaceable in tests so pool selection is assertable.
+	facePhotoRand facephoto.RandSource
+	metrics       *observe.SignMetrics
 }
 
 // signExecutionStats collects the fields that must appear in the single
@@ -128,6 +131,10 @@ type ExecuteSignRequest struct {
 	// faceUsedClientID records whether the S13 device signature was attached
 	// to the face request. The value itself never leaves applyFaceCredentials.
 	faceUsedClientID bool
+	// facePhotoID is the pool entry selected for this execution. A retry
+	// inside the same execution reuses it and never counts it twice.
+	facePhotoID      uint
+	facePhotoCounted bool
 }
 
 type ExecutePhotoSignRequest struct {
@@ -517,6 +524,9 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (res
 	if terminal != nil {
 		return *terminal, nil
 	}
+	if result.Kind == xxt.SignResultFaceRequired {
+		MarkFacePhotoFailed(s.db, req.facePhotoID)
+	}
 
 	switch result.Kind {
 	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
@@ -800,6 +810,9 @@ func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOut
 		result.Retryable = terminal.Retryable
 		return result, nil
 	}
+	if upstream.Kind == xxt.SignResultFaceRequired {
+		MarkFacePhotoFailed(s.db, signReq.facePhotoID)
+	}
 	switch upstream.Kind {
 	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
 		return s.recordSignedOut(req, signOutID, outDetail.SignType, operatorUID, false)
@@ -1019,24 +1032,20 @@ type faceUploadEntry struct {
 }
 
 func (s *SignService) applyFaceCredentials(target *model.User, password string, req *ExecuteSignRequest) error {
-	if len(target.FacePhoto) == 0 {
-		var fresh model.User
-		if err := s.db.Select("face_photo").Where("uid = ?", req.TargetUID).First(&fresh).Error; err == nil {
-			target.FacePhoto = fresh.FacePhoto
-		}
-	}
-	if len(target.FacePhoto) == 0 {
-		return errors.New("该同学未设置人脸照片，请先在主页上传")
+	photo, err := s.facePhotoForSign(req)
+	if err != nil {
+		return err
 	}
 	key := faceUploadKey{
 		UserUID:    req.TargetUID,
 		ActivityID: req.ActivityID,
-		PhotoHash:  sha256.Sum256(target.FacePhoto),
+		PhotoHash:  sha256.Sum256(photo.Data),
 	}
 	objectID, err := s.faceObjectID(key, func() (string, error) {
-		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
+		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", photo.Data)
 	})
 	if err != nil {
+		s.recordFaceUse(req, "", false)
 		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
 	clientID := ""
@@ -1052,12 +1061,54 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	}
 	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID, clientID)
 	if err != nil {
+		// Only an explicit upstream rejection poisons the photo; transport and
+		// session errors must not blacklist an otherwise valid image.
+		s.recordFaceUse(req, objectID, errors.Is(err, xxt.ErrFaceRejected))
 		return fmt.Errorf("人脸验证失败：%v", err)
 	}
+	s.recordFaceUse(req, objectID, false)
 	req.Special["current_face_id"] = faceResult.CurrentFaceID
 	req.Special["face_enc"] = faceResult.FaceEnc
 	// faceCode is fixed to an empty value by the protocol builder (XBT-S7a).
 	return nil
+}
+
+// facePhotoForSign keeps one pool entry for the whole execution. A retry
+// inside the state machine reuses the photo instead of selecting another one.
+func (s *SignService) facePhotoForSign(req *ExecuteSignRequest) (model.FacePhoto, error) {
+	if req.facePhotoID != 0 {
+		var photo model.FacePhoto
+		err := s.db.Where("id = ? AND user_uid = ?", req.facePhotoID, req.TargetUID).Take(&photo).Error
+		if err == nil {
+			return photo, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.FacePhoto{}, fmt.Errorf("读取人脸照片失败：%v", err)
+		}
+		req.facePhotoID = 0
+	}
+	photo, err := PickForSign(s.db, req.TargetUID, s.facePhotoRand)
+	if errors.Is(err, facephoto.ErrNoPhotos) {
+		return model.FacePhoto{}, errors.New("该同学未设置人脸照片，请先在主页上传")
+	}
+	if err != nil {
+		return model.FacePhoto{}, fmt.Errorf("读取人脸照片失败：%v", err)
+	}
+	req.facePhotoID = photo.ID
+	return photo, nil
+}
+
+func (s *SignService) recordFaceUse(req *ExecuteSignRequest, objectID string, failed bool) {
+	if req.facePhotoCounted {
+		if failed {
+			MarkFacePhotoFailed(s.db, req.facePhotoID)
+		}
+		return
+	}
+	if err := RecordFacePhotoUse(s.db, req.facePhotoID, objectID, failed); err != nil {
+		log.Printf("record face photo use: id=%d uid=%d err=%v", req.facePhotoID, req.TargetUID, err)
+	}
+	req.facePhotoCounted = true
 }
 
 // faceObjectID returns the uploaded objectId for one photo in one activity.

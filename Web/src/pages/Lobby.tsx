@@ -22,8 +22,6 @@ import {
   BarChart3,
   Trophy,
   ScanFace,
-  Upload,
-  Trash2,
   X
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -33,6 +31,7 @@ import { useAuthStore } from '../store/auth';
 import { getChineseStringByDatetime } from '../utils/datetime';
 import type { ApiResponse, CourseActivities, FeatureSettings } from '../types';
 import PullToRefresh from '../components/PullToRefresh';
+import FacePhotoManager from '../components/FacePhotoManager';
 
 type PendingActivityEntry = {
   activity: CourseActivities['activities'][number];
@@ -153,10 +152,6 @@ const Lobby = () => {
   const [classAdminGroupName, setClassAdminGroupName] = useState('');
   const [showFacePanel, setShowFacePanel] = useState(false);
   const [hasFace, setHasFace] = useState<boolean | null>(null);
-  const [faceDataUrl, setFaceDataUrl] = useState<string>('');
-  const [isFaceLoading, setIsFaceLoading] = useState(false);
-  const [isUploadingFace, setIsUploadingFace] = useState(false);
-  const faceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -222,51 +217,9 @@ const Lobby = () => {
     }
   }, [owner]);
 
-  const fetchFaceImage = useCallback(async () => {
-    setIsFaceLoading(true);
-    try {
-      const res = await client.get<ApiResponse<{ has_face: boolean; face_data?: string }>>('/user/face');
-      setHasFace(res.data.data?.has_face ?? false);
-      setFaceDataUrl(res.data.data?.face_data || '');
-    } catch {
-      setFaceDataUrl('');
-    } finally {
-      setIsFaceLoading(false);
-    }
-  }, []);
-
   const handleFacePanelOpen = () => {
     setShowFacePanel(true);
-    fetchFaceImage();
-  };
-
-  const handleFaceFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
-
-    if (!file.type.startsWith('image/')) {
-      toast.error('请选择图片文件');
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      toast.error('图片不能超过 20MB');
-      return;
-    }
-
-    setIsUploadingFace(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await client.post<ApiResponse<{ has_face: boolean; face_data?: string }>>('/user/face', formData);
-      setHasFace(res.data.data?.has_face ?? true);
-      setFaceDataUrl(res.data.data?.face_data || '');
-      toast.success('人脸照片已保存');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : '上传失败');
-    } finally {
-      setIsUploadingFace(false);
-    }
+    void fetchFaceFlag();
   };
 
   useEffect(() => {
@@ -686,79 +639,11 @@ const Lobby = () => {
                 </button>
               </div>
 
-              <div className="flex flex-col items-center gap-5 pb-[calc(32px+var(--sab))]">
-                <div className="w-28 h-28 rounded-3xl bg-slate-100 border-2 border-dashed border-slate-200 flex items-center justify-center overflow-hidden">
-                  {isFaceLoading ? (
-                    <div className="w-8 h-8 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
-                  ) : faceDataUrl ? (
-                    <img src={faceDataUrl} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1">
-                      <ScanFace size={36} className="text-slate-300" />
-                      <span className="text-[10px] text-slate-400 font-medium">未设置</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="text-center">
-                  <p className="text-sm font-bold text-slate-700">
-                    {faceDataUrl ? '人脸照片已设置' : '尚未设置人脸照片'}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1 leading-5">
-                    {faceDataUrl
-                      ? '需要人脸验证的签到将自动使用此照片。点击下方按钮可重新上传。'
-                      : '上传后，需要人脸验证的签到将自动使用此照片完成验证。'}
-                  </p>
-                </div>
-
-                <input
-                  ref={faceInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleFaceFileChange}
+              <div className="pb-[calc(32px+var(--sab))]">
+                <FacePhotoManager
+                  targetUid={user?.uid}
+                  onChanged={(count) => setHasFace(count > 0)}
                 />
-
-                <div className="flex gap-3 w-full">
-                  <button
-                    onClick={() => {
-                      setShowFacePanel(false);
-                      navigate('/face-capture');
-                    }}
-                    className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-blue-600 text-white font-bold text-sm shadow-lg shadow-blue-100 transition-all active:scale-[0.97]"
-                  >
-                    <Camera size={16} />
-                    拍照上传
-                  </button>
-                  <button
-                    onClick={() => faceInputRef.current?.click()}
-                    disabled={isUploadingFace}
-                    className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-slate-100 text-slate-700 font-bold text-sm disabled:opacity-50 transition-all active:scale-[0.97]"
-                  >
-                    {isUploadingFace ? (
-                      <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Upload size={16} />
-                    )}
-                    相册选取
-                  </button>
-                  {faceDataUrl && (
-                    <button
-                      onClick={async () => {
-                        try {
-                          await client.delete('/user/face');
-                          setFaceDataUrl('');
-                          toast.success('已清除人脸照片');
-                        } catch (err: unknown) {
-                          toast.error(err instanceof Error ? err.message : '清除失败');
-                        }
-                      }}
-                      className="w-12 flex items-center justify-center rounded-2xl bg-slate-100 text-slate-500 transition-all active:scale-[0.97]"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  )}
-                </div>
               </div>
             </motion.div>
           </motion.div>

@@ -17,7 +17,6 @@ type User struct {
 	// It is encrypted at the same level as the password and never exposed.
 	ClientIDCipher string    `gorm:"type:text" json:"-"`
 	Permission     int       `gorm:"not null;default:1" json:"permission"`
-	FacePhoto      []byte    `gorm:"type:bytea" json:"-"`
 	LastLoginAt    time.Time `json:"-"`
 	CreatedAt      time.Time `json:"-"`
 	UpdatedAt      time.Time `json:"-"`
@@ -139,6 +138,22 @@ type SignRecord struct {
 	SignTimeMS    int64     `gorm:"not null;index" json:"sign_time_ms"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
+}
+
+// FacePhoto is one entry of an account's managed face photo pool (XBT-S7b).
+// Data always holds bytes that were produced by the upload pipeline or by the
+// mandatory transform of an imported official photo; downloaded originals are
+// never stored. ObjectID is the most recent face_temp upload for these bytes.
+type FacePhoto struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	UserUID         int64     `gorm:"not null;index:idx_face_photos_user" json:"user_uid"`
+	Data            []byte    `gorm:"type:bytea;not null" json:"-"`
+	ObjectID        string    `gorm:"size:128;not null;default:''" json:"object_id"`
+	UseCount        int       `gorm:"not null;default:0" json:"use_count"`
+	IsFailureBefore bool      `gorm:"not null;default:false" json:"is_failure_before"`
+	Source          string    `gorm:"size:16;not null;default:upload" json:"source"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"-"`
 }
 
 // SignOutRecord is the independent sign-out ledger. ActivityID is the primary

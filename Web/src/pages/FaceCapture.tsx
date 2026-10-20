@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Camera, Loader2, ScanFace } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
@@ -27,6 +27,8 @@ const getNativeBridge = (): NativeCameraBridge | null => {
 
 const FaceCapture = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const faceTargetUid = (location.state as { faceTargetUid?: number } | null)?.faceTargetUid;
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -234,7 +236,10 @@ const FaceCapture = () => {
 
       const formData = new FormData();
       formData.append('file', new File([blob], `face-${Date.now()}.jpg`, { type: 'image/jpeg' }));
-      await client.post<ApiResponse<{ has_face: boolean }>>('/user/face', formData);
+      await client.post<ApiResponse<{ id: number }>>(
+        faceTargetUid ? `/user/faces?target_uid=${faceTargetUid}` : '/user/faces',
+        formData
+      );
       toast.success('人脸照片已保存');
       navigate(-1);
     } catch (err: unknown) {

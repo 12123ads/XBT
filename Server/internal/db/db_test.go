@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -148,5 +149,28 @@ func TestMigrationConflictRollsBackLegacyCredentialChanges(t *testing.T) {
 	var constraints int64
 	if err := raw.Raw(`SELECT count(*) FROM pg_constraint WHERE conrelid=to_regclass('sign_shares') AND conname='sign_shares_token_hash_key'`).Scan(&constraints).Error; err != nil || constraints != 1 {
 		t.Fatalf("legacy uniqueness was not rolled back: count=%d err=%v", constraints, err)
+	}
+}
+
+func TestLegacyFacePhotoBackfillsPoolOnce(t *testing.T) {
+	raw, dsn := testutil.NewPostgres(t)
+	executeFile(t, raw, "testdata/pre_fix_init.sql")
+	if err := raw.Exec(`ALTER TABLE users ADD COLUMN face_photo BYTEA;
+		INSERT INTO users (uid,mobile,name,credential_cipher,face_photo)
+		VALUES (201,'13800000201','Face User','face-cipher','\x010203'::bytea)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	database := migrate(t, dsn)
+	var photos []model.FacePhoto
+	if err := database.Where("user_uid = ?", 201).Find(&photos).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(photos) != 1 || !bytes.Equal(photos[0].Data, []byte{1, 2, 3}) || photos[0].Source != "upload" {
+		t.Fatalf("backfilled photos = %+v", photos)
+	}
+	database = migrate(t, dsn)
+	var count int64
+	if err := database.Model(&model.FacePhoto{}).Where("user_uid = ?", 201).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("restart duplicated backfill: count=%d err=%v", count, err)
 	}
 }

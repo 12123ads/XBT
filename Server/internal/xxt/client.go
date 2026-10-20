@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	_ "image/jpeg"
 	_ "image/png"
@@ -891,6 +892,11 @@ type FaceCheckResult struct {
 	FaceCode      string
 }
 
+// ErrFaceRejected marks a completed check-face-result request that did not
+// return an enc, i.e. the upstream rejected this photo. Transport, HTTP and
+// decoding failures are deliberately not wrapped in it.
+var ErrFaceRejected = errors.New("face verification rejected")
+
 func (c *Client) UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", fmt.Errorf("face photo is empty")
@@ -1010,7 +1016,7 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 		if msg == "" {
 			msg = truncateForLog(string(respBody), 200)
 		}
-		return FaceCheckResult{}, fmt.Errorf("人脸识别失败: %s", msg)
+		return FaceCheckResult{}, fmt.Errorf("%w: 人脸识别失败: %s", ErrFaceRejected, msg)
 	}
 
 	faceCode := strings.TrimSpace(strVal(payload["code"]))

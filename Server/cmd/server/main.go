@@ -32,6 +32,7 @@ func main() {
 	xxtClient := xxt.New(cfg.ChaoxingAESKey, cfg.ChaoxingUserAgent, cfg.ChaoxingFID, cfg.AllowInsecureTLS, cfg.ActivityListLimit+1)
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
+	authHandler.SetFacePhotoService(service.NewFacePhotoService(database, credentialCrypto, xxtClient))
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
 	learningHandler := handler.NewLearningHandler(database, xxtClient, credentialCrypto)
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
@@ -74,6 +75,10 @@ func main() {
 			authed.GET("/user/face", authHandler.GetFace)
 			authed.POST("/user/face", authHandler.UploadFace)
 			authed.DELETE("/user/face", authHandler.DeleteFace)
+			authed.GET("/user/faces", authHandler.ListFaces)
+			authed.POST("/user/faces", authHandler.AddFace)
+			authed.DELETE("/user/faces/:id", authHandler.DeleteFaceByID)
+			authed.POST("/user/faces/import", authHandler.ImportFace)
 
 			authed.GET("/courses", courseHandler.List)
 			authed.POST("/courses/sync", courseHandler.Sync)

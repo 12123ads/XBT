@@ -392,6 +392,15 @@ func newSignStateMachineFixture(t *testing.T) (*gorm.DB, *CredentialCrypto) {
 	return database, cc
 }
 
+func seedFacePhoto(t *testing.T, database *gorm.DB, uid int64, data []byte) model.FacePhoto {
+	t.Helper()
+	photo := model.FacePhoto{UserUID: uid, Data: data, Source: "upload"}
+	if err := database.Create(&photo).Error; err != nil {
+		t.Fatal(err)
+	}
+	return photo
+}
+
 func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -404,9 +413,7 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, cc := newSignStateMachineFixture(t)
-			if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
-				t.Fatal(err)
-			}
+			seedFacePhoto(t, database, 2, []byte("face-bytes"))
 			var calls int
 			var retrySpecial map[string]interface{}
 			uploads, checks := 0, 0
@@ -460,9 +467,7 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 
 func TestFaceUploadReusedWithinActivity(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedFacePhoto(t, database, 2, []byte("face-bytes"))
 	uploads, checks := 0, 0
 	var checkedObjects []string
 	upstream := &signAuthorizationUpstream{
@@ -512,9 +517,10 @@ func TestFaceUploadReusedWithinActivity(t *testing.T) {
 		t.Fatalf("face checks reused objectIds %v, want the single upload", checkedObjects)
 	}
 
-	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes-2")).Error; err != nil {
+	if err := database.Where("user_uid = ?", 2).Delete(&model.FacePhoto{}).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedFacePhoto(t, database, 2, []byte("face-bytes-2"))
 	sign()
 	if uploads != 2 {
 		t.Fatalf("uploads = %d, want a new upload after the photo changed", uploads)
@@ -1088,12 +1094,10 @@ func TestFaceCheckUsesPersistedClientID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.Model(&model.User{}).Where("uid = ?", 2).Updates(map[string]interface{}{
-		"face_photo":       []byte("face-bytes"),
-		"client_id_cipher": cipher,
-	}).Error; err != nil {
+	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("client_id_cipher", cipher).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedFacePhoto(t, database, 2, []byte("face-bytes"))
 	var got []string
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
@@ -1133,9 +1137,7 @@ func TestFaceCheckUsesPersistedClientID(t *testing.T) {
 
 func TestFaceCheckOmitsClientIDWhenStorageIsEmpty(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedFacePhoto(t, database, 2, []byte("face-bytes"))
 	var got string
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {

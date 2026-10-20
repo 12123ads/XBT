@@ -564,35 +564,72 @@ curl -X POST http://localhost:3030/api/sign/photo \
 ```
 
 ### 5.8 人脸照片接口
-人脸照片用于需要人脸验证的签到活动。照片保存在 `users.face_photo`，上传时会自动压缩到 720×1280 以内并尽量控制在 100KB 以下。
 
-#### 5.8.1 查询人脸照片
+人脸照片用于需要人脸验证的签到活动。每个账号维护最多 5 张的受管照片池（`face_photos`），签到时随机选择一张；照片上传时压缩到 720×1280 以内并尽量控制在 100KB 以下。
+
+所有接口接受可选查询参数 `target_uid`：省略时操作自己的照片池；指定他人时要求双方存在同为「已选」的课程（与代签权限一致），否则返回 `403`。
+
+#### 5.8.1 查询照片池
 - Method: `GET`
-- Path: `/api/user/face`
+- Path: `/api/user/faces`
 - Auth: 是
 
-可选参数 `status_only=1` 只返回是否存在照片：
-
 ```json
-{ "has_face": true }
+{
+  "user_uid": 10001,
+  "max": 5,
+  "photos": [
+    {
+      "id": 3,
+      "user_uid": 10001,
+      "object_id": "face_temp-object-id",
+      "use_count": 4,
+      "is_failure_before": false,
+      "source": "official",
+      "created_at": "2026-10-20T10:00:00Z",
+      "image": "data:image/jpeg;base64,..."
+    }
+  ]
+}
 ```
 
-不传 `status_only` 时额外返回 `face_data`（JPEG data URL）。
+`source` 为 `upload`（手动上传）或 `official`（从学习通导入）。`is_failure_before=true` 表示该照片曾在人脸校验中被拒绝；存在失败历史时优先选择「未失败且用过」的照片。
 
-#### 5.8.2 上传/替换人脸照片
+#### 5.8.2 上传照片
 - Method: `POST`
-- Path: `/api/user/face`
+- Path: `/api/user/faces`
 - Auth: 是
 - Content-Type: `multipart/form-data`
 
-字段：`file`（必填，图片，最大 20MB）。
+字段：`file`（必填，图片，最大 20MB）。第 6 张返回 `409`。
 
-#### 5.8.3 删除人脸照片
+#### 5.8.3 删除照片
 - Method: `DELETE`
-- Path: `/api/user/face`
+- Path: `/api/user/faces/{id}`
 - Auth: 是
 
-说明：签到时若活动 `if_face=true`，后端会为目标账号上传该照片并换取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。
+返回 `404` 表示照片不存在或无权访问。
+
+#### 5.8.4 导入学习通官方照片
+- Method: `POST`
+- Path: `/api/user/faces/import`
+- Auth: 是
+
+使用目标账号自己的会话调用 `collectionfilephotoEnc` 获取官方照片，下载后在内存中强制裁剪 90%–99%、旋转 ±5°、去黑边、JPEG 重压（默认质量 85，超 100KB 依次降到 80/70 并可按比例缩小）并丢弃 EXIF；**只保存变换后的字节，原图不落盘、不上传**。成功响应额外包含 `transform`（`width/height/crop_width_ratio/crop_height_ratio/angle_degrees/quality`）。
+
+| 状态码 | 含义 |
+|---|---|
+| `422` | 账号未设置官方人脸照片，或官方照片无法解码 |
+| `409` | 照片池已满 |
+| `403` | 无权管理该账号 |
+| `502` | 上游请求失败 |
+
+#### 5.8.5 兼容接口（旧客户端）
+- `GET /api/user/face`：`status_only=1` 返回 `has_face/count`；否则额外返回最新一张的 `face_data`。
+- `POST /api/user/face`：等价于向自己的池新增一张。
+- `DELETE /api/user/face`：清空自己的照片池。
+
+说明：签到时若活动 `if_face=true`，后端会为目标账号选择一张照片、上传换取 `objectId` 并调用 `check-face-result` 获取 `currentFaceId/faceEnc/faceCode`，再提交签到参数；同一活动内相同照片的 `objectId` 会复用。
 
 ### 5.9 功能开关
 - Method: `GET`

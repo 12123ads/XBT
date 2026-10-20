@@ -126,6 +126,20 @@ func prepareLegacySchema(tx *gorm.DB) error {
 	return nil
 }
 
+// backfillLegacyFacePhotos moves the pre-S7b single photo column into the
+// managed pool. It runs before any code reads the pool, is idempotent, and
+// leaves the legacy column untouched so a downgrade never loses the photo.
+func backfillLegacyFacePhotos(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.User{}) || !tx.Migrator().HasColumn(&model.User{}, "face_photo") {
+		return nil
+	}
+	return tx.Exec(`INSERT INTO face_photos (user_uid, data, object_id, use_count, is_failure_before, source, created_at, updated_at)
+		SELECT u.uid, u.face_photo, '', 0, false, 'upload', NOW(), NOW()
+		FROM users u
+		WHERE length(u.face_photo) > 0
+		  AND NOT EXISTS (SELECT 1 FROM face_photos p WHERE p.user_uid = u.uid)`).Error
+}
+
 func dropLegacyVikunjaUniqueness(tx *gorm.DB) error {
 	if err := ensureUniqueIndex(tx, &model.VikunjaSyncItem{}, "vikunja_sync_items", "idx_vikunja_scope_item", []string{"user_uid", "item_key", "instance_url", "project_id"}); err != nil {
 		return err

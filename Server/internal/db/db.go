@@ -35,6 +35,7 @@ func New(cfg config.Config) (*gorm.DB, error) {
 		}
 		if err := tx.AutoMigrate(
 			&model.User{},
+			&model.FacePhoto{},
 			&model.Whitelist{},
 			&model.Course{},
 			&model.UserCourse{},
@@ -53,6 +54,9 @@ func New(cfg config.Config) (*gorm.DB, error) {
 			&model.VikunjaSettings{},
 			&model.VikunjaSyncItem{},
 		); err != nil {
+			return err
+		}
+		if err := backfillLegacyFacePhotos(tx); err != nil {
 			return err
 		}
 		return dropLegacyVikunjaUniqueness(tx)

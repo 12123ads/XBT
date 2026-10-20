@@ -13,7 +13,7 @@ import (
 func newAuthorizationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	database, _ := testutil.NewPostgres(t)
-	if err := database.AutoMigrate(&model.User{}, &model.Whitelist{}, &model.UserCourse{}, &model.SignActivity{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignOutRecord{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.FacePhoto{}, &model.Whitelist{}, &model.UserCourse{}, &model.SignActivity{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignOutRecord{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
 		t.Fatal(err)
 	}
 	return database

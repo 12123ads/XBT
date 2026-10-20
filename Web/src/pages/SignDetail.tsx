@@ -15,7 +15,8 @@ import {
   RectangleEllipsis,
   Share2,
   Copy,
-  Camera
+  Camera,
+  ScanFace
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import axios from 'axios';
@@ -36,6 +37,7 @@ import { QrInput } from '../components/sign/QrInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { PhotoInput } from '../components/sign/PhotoInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
+import FacePhotoManager from '../components/FacePhotoManager';
 
 const MAX_PHOTO_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -103,6 +105,7 @@ const SignDetail = () => {
   const [shareLink, setShareLink] = useState('');
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [photoTarget, setPhotoTarget] = useState<Classmate | null>(null);
   const [photoPreviewUrls, setPhotoPreviewUrls] = useState<string[]>([]);
   
   const [showProgress, setShowProgress] = useState(false);
@@ -720,7 +723,20 @@ const SignDetail = () => {
                       <p className="text-xs text-slate-400 font-mono font-bold tracking-tighter">{student.mobile_masked}</p>
                     </div>
                   </div>
-                  <div className={`transition-all shrink-0 ${selectedUids.includes(student.uid) ? 'text-blue-600' : 'text-slate-200'}`}>{selectedUids.includes(student.uid) ? <CheckCircle2 size={24} /> : <Circle size={24} />}</div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPhotoTarget(student);
+                      }}
+                      className="w-9 h-9 rounded-xl bg-slate-50 text-slate-500 flex items-center justify-center transition-colors hover:bg-blue-50 hover:text-blue-600"
+                      title="管理人脸照片"
+                    >
+                      <ScanFace size={18} />
+                    </button>
+                    <div className={`transition-all ${selectedUids.includes(student.uid) ? 'text-blue-600' : 'text-slate-200'}`}>{selectedUids.includes(student.uid) ? <CheckCircle2 size={24} /> : <Circle size={24} />}</div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -764,6 +780,41 @@ const SignDetail = () => {
                   const student = classmates.find(m => m.uid === uid);
                   return <ProgressCard key={uid} name={student?.name || "未知"} avatar={student?.avatar} mobile={student?.mobile_masked || ""} statusObj={signStatuses[uid]} />;
                 })}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+        {photoTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0"
+            onClick={() => setPhotoTarget(null)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 250 }}
+              className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
+              <div className="flex items-start justify-between mb-5">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">{photoTarget.name} 的人脸照片</h3>
+                  <p className="text-xs font-bold text-slate-500 mt-1">签到时会从照片池随机选一张；官方照片会先裁剪、旋转并重压。</p>
+                </div>
+                <button
+                  onClick={() => setPhotoTarget(null)}
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full shrink-0"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="pb-[calc(32px+var(--sab))]">
+                <FacePhotoManager targetUid={photoTarget.uid} />
               </div>
             </motion.div>
           </motion.div>
