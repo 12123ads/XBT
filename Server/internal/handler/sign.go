@@ -375,6 +375,7 @@ func (h *SignHandler) Execute(c *gin.Context) {
 		CourseID:      req.CourseID,
 		ClassID:       req.ClassID,
 		IfRefreshEWM:  req.IfRefreshEWM,
+		IfOpenAddress: req.IfOpenAddress,
 		ActivityName:  req.ActivityName,
 		CourseName:    req.CourseName,
 		CourseTeacher: req.CourseTeacher,

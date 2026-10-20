@@ -78,6 +78,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - `enc2` 仅在状态机写入后出现；不得凭空生成。
   - 同一账号多次调用 `deviceCode` 稳定；不同账号不同。
   - 二维码请求不再把 `validate` 预置为首发参数（首发由服务端状态机决定）。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/sign_params.go` 的 `buildStuSignParams` 统一生成 5 类参数；`deviceCode=HMAC-SHA256(chaoxing_aes_key, "xbt-device-code:v1:<uid>")`（稳定、按账号唯一、不使用硬件标识）；`fid` 由 `chaoxing_fid` 配置；`enc2`/`validate` 只透传状态机写入值；二维码首发不再预取 validate；`if_open_address` 以 `getPPTActiveInfo` 元数据为准（30s 缓存），请求字段仅兜底。测试见 `Server/internal/xxt/sign_params_test.go`、`Server/internal/service/sign_test.go`。
 
 #### XBT-S3 响应状态机
 - **输出**：类型化结果：`success`、`success2`（迟到/已结束）、`already_signed`、`captcha_required(enc2)`、`face_required(enc2)`、`location_out_of_range(distance)`、`qr_expired`、`session_expired`、`upstream_error(message)`。

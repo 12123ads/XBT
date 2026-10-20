@@ -27,7 +27,7 @@ func main() {
 
 	jwtSvc := service.NewJWTService(cfg.JWTSecret)
 	credentialCrypto := service.NewCredentialCrypto(cfg.CredentialSecret)
-	xxtClient := xxt.New(cfg.ChaoxingAESKey, cfg.ChaoxingUserAgent, cfg.AllowInsecureTLS, cfg.ActivityListLimit+1)
+	xxtClient := xxt.New(cfg.ChaoxingAESKey, cfg.ChaoxingUserAgent, cfg.ChaoxingFID, cfg.AllowInsecureTLS, cfg.ActivityListLimit+1)
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)

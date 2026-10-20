@@ -11,8 +11,14 @@ import (
 )
 
 type signAuthorizationUpstream struct {
-	lookup func(string, string, int64, int64, int64) (bool, error)
-	sign   func(string, string, xxt.FixedParams, int, map[string]interface{}) (string, error)
+	lookup    func(string, string, int64, int64, int64) (bool, error)
+	sign      func(string, string, xxt.FixedParams, int, map[string]interface{}) (string, error)
+	detail    xxt.SignDetail
+	detailErr error
+}
+
+func (u *signAuthorizationUpstream) GetSignDetail(string, string, int64, int64, int64, int64) (xxt.SignDetail, error) {
+	return u.detail, u.detailErr
 }
 
 func (u *signAuthorizationUpstream) HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error) {
@@ -297,5 +303,58 @@ func TestClassContributionsScopedToViewerGroup(t *testing.T) {
 	}
 	if empty.Group != nil || len(empty.Items) != 0 {
 		t.Fatalf("ungrouped viewer must get empty board, got %+v", empty)
+	}
+}
+
+func TestSignExecuteResolvesIfOpenAddressFromMetadata(t *testing.T) {
+	database := newAuthorizationTestDB(t)
+	cc := NewCredentialCrypto("sign-metadata-test")
+	for _, uid := range []int64{1, 2} {
+		seedAuthorizationUser(t, database, cc, uid)
+		selectAuthorizationCourse(t, database, uid, 10, 20)
+	}
+
+	cases := []struct {
+		name      string
+		detail    xxt.SignDetail
+		detailErr error
+		requested bool
+		want      bool
+	}{
+		{name: "metadata opens address", detail: xxt.SignDetail{IfOpenAddress: true}, want: true},
+		{name: "request flag fallback when metadata fails", detailErr: errors.New("metadata unavailable"), requested: true, want: true},
+		{name: "closed address", want: false},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			activityID := int64(100 + i)
+			if err := database.Create(&model.SignActivityScope{ActivityID: activityID, CourseID: 10, ClassID: 20}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var got xxt.FixedParams
+			upstream := &signAuthorizationUpstream{
+				detail:    tc.detail,
+				detailErr: tc.detailErr,
+				sign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (string, error) {
+					got = fixed
+					return "success", nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+				ActivityID:    activityID,
+				TargetUID:     2,
+				CourseID:      10,
+				ClassID:       20,
+				SignType:      xxt.SignLocation,
+				IfOpenAddress: tc.requested,
+			})
+			if err != nil || !result.Success || result.AlreadySigned {
+				t.Fatalf("sign failed: result=%+v err=%v", result, err)
+			}
+			if got.IfOpenAddress != tc.want {
+				t.Fatalf("IfOpenAddress=%v, want %v", got.IfOpenAddress, tc.want)
+			}
+		})
 	}
 }

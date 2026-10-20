@@ -184,6 +184,11 @@ Authorization: Bearer <JWT>
         "if_refresh_ewm": false,
         "if_photo": false,
         "if_face": false,
+        "if_need_vcode": false,
+        "if_open_address": false,
+        "location_latitude": 0,
+        "location_longitude": 0,
+        "location_range": 0,
         "record_source": 0,
         "record_source_name": "",
         "record_sign_time": 1760000500000,
@@ -304,14 +309,12 @@ GET /api/sign/classmates?course_id=222&class_id=111
   "course_id": 222,
   "class_id": 111,
   "if_refresh_ewm": false,
+  "if_open_address": false,
   "special_params": {
     "enc": "xxxx",
-    "location": {
-      "result": 1,
-      "address": "成都市郫都区xxx",
-      "latitude": 30.7501,
-      "longitude": 103.9272
-    }
+    "latitude": "30.7501",
+    "longitude": "103.9272",
+    "description": "成都市郫都区xxx"
   }
 }
 ```
@@ -319,6 +322,7 @@ GET /api/sign/classmates?course_id=222&class_id=111
 兼容说明：
 - 若未传 `target_uid`，但传了 `user_ids`，后端会使用 `user_ids` 的第一个 uid。
 - 若都未传，默认签当前登录用户。
+- `if_open_address` 对应活动元数据里的 `if_open_address`：服务端执行签到时会读取 `getPPTActiveInfo`（30s 缓存）作为权威来源，请求体字段只在读取失败时兜底。为 `true` 且 `special_params` 提供了有效经纬度时，签到类型 `2/3/4/5` 的提交参数都会带 `location`、`locationResult`（含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。未提供经纬度时不下发伪造坐标。
 
 响应体 `data`:
 
@@ -338,10 +342,10 @@ GET /api/sign/classmates?course_id=222&class_id=111
 - 二维码签到(`2`):
   - `enc` (required)
   - `c` (optional, 预签到场景可用)
-  - `location` (optional, 二维码附加位置变种；可传对象/数组或 JSON 字符串，后端会透传给学习通)
-  - `latitude` + `longitude` + `description` (optional, 兼容写法；后端会自动组装为 `location` 后透传)
+  - `latitude` + `longitude` + `description` (optional; `if_open_address=true` 时用于 `location`/`locationResult`)
 - 手势签到(`3`):
   - `sign_code` (required)
+  - `latitude` + `longitude` + `description` (optional; `if_open_address=true` 时用于 `location`/`locationResult`)
 - 位置签到(`4`):
   - `latitude` (required)
   - `longitude` (required)
@@ -350,6 +354,9 @@ GET /api/sign/classmates?course_id=222&class_id=111
   - 浏览器定位来源为 `WGS-84`，前端会离线转换为百度 `BD-09` 后提交。
 - 签到码签到(`5`):
   - `sign_code` (required)
+  - `latitude` + `longitude` + `description` (optional; `if_open_address=true` 时用于 `location`/`locationResult`)
+
+`deviceCode` 由服务端按账号稳定派生（`HMAC-SHA256(chaoxing_aes_key, "xbt-device-code:v1:<uid>")`，64 位小写十六进制），同账号多次签到一致、不同账号不同，不使用真实硬件标识；轮换 `chaoxing_aes_key` 会改变全部账号的 `deviceCode`。`validate`/`enc2` 只在验证码/人脸状态机内部写入，首发请求不携带。
 
 ### 5.5 签到分享接口
 

@@ -18,6 +18,7 @@ import (
 type signClient interface {
 	PreSign(mobile, password string, fixed xxt.FixedParams, code, enc string) error
 	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error)
+	GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (xxt.SignDetail, error)
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
 	UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error)
 	UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error)
@@ -65,6 +66,7 @@ type ExecuteSignRequest struct {
 	CourseID      int64
 	ClassID       int64
 	IfRefreshEWM  bool
+	IfOpenAddress bool
 	ActivityName  string
 	CourseName    string
 	CourseTeacher string
@@ -223,11 +225,22 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}
 
 	fixed := xxt.FixedParams{
-		ActiveID:     req.ActivityID,
-		UID:          req.TargetUID,
-		CourseID:     req.CourseID,
-		ClassID:      req.ClassID,
-		IfRefreshEWM: req.IfRefreshEWM,
+		ActiveID:      req.ActivityID,
+		UID:           req.TargetUID,
+		CourseID:      req.CourseID,
+		ClassID:       req.ClassID,
+		IfRefreshEWM:  req.IfRefreshEWM,
+		IfOpenAddress: req.IfOpenAddress,
+	}
+	// Types 2/3/4/5 carry the location parameter set when the activity opens
+	// address. The client flag is only a fallback: activity metadata is
+	// authoritative and is cached for 30s per account (XBT-S1).
+	if req.SignType != xxt.SignNormal {
+		if detail, err := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID); err == nil {
+			fixed.IfOpenAddress = fixed.IfOpenAddress || detail.IfOpenAddress
+		} else {
+			log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, err)
+		}
 	}
 	if req.SignType == xxt.SignQRCode {
 		enc, _ := req.Special["enc"].(string)

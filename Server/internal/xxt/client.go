@@ -43,6 +43,7 @@ type signMetadataCacheEntry struct {
 type Client struct {
 	aesKey         string
 	mobileUA       string
+	signFID        string
 	activeFetchMax int
 	http           *http.Client
 	sessionMu      sync.Mutex
@@ -105,9 +106,15 @@ type FixedParams struct {
 	CourseID     int64
 	ClassID      int64
 	IfRefreshEWM bool
+	// IfOpenAddress mirrors the activity's ifopenAddress flag (XBT-S1 metadata).
+	// When true, stuSignajax carries the location parameter set.
+	IfOpenAddress bool
 }
 
-func New(aesKey, mobileUA string, insecureTLS bool, activeFetchMax int) *Client {
+// New builds the 学习通 client. signFID is the unit/school id sent as `fid` on
+// stuSignajax submissions; keep it empty to preserve the historical "no unit"
+// request shape.
+func New(aesKey, mobileUA, signFID string, insecureTLS bool, activeFetchMax int) *Client {
 	tr := &http.Transport{}
 	if insecureTLS {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -118,6 +125,7 @@ func New(aesKey, mobileUA string, insecureTLS bool, activeFetchMax int) *Client 
 	return &Client{
 		aesKey:         aesKey,
 		mobileUA:       mobileUA,
+		signFID:        signFID,
 		activeFetchMax: activeFetchMax,
 		http: &http.Client{
 			Timeout:   20 * time.Second,
@@ -937,100 +945,39 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	cli := *c.http
 	cli.Jar = s.Jar
 
-	params := url.Values{}
-	params.Set("activeId", strconv.FormatInt(fixed.ActiveID, 10))
-	params.Set("uid", strconv.FormatInt(fixed.UID, 10))
-	params.Set("clientip", "")
-	params.Set("appType", "15")
-	params.Set("fid", "")
-	params.Set("name", s.Name)
-	if objectID := strings.TrimSpace(strVal(firstNonNil(special["object_id"], special["objectId"]))); objectID != "" {
-		params.Set("objectId", objectID)
-		params.Set("useragent", "")
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
+	if signType == SignQRCode && strVal(special["enc"]) == "" {
+		return "", fmt.Errorf("缺少二维码 enc 参数")
 	}
-	if faceID := strings.TrimSpace(strVal(special["current_face_id"])); faceID != "" {
-		params.Set("currentFaceId", faceID)
-		params.Set("ifCFP", "0")
-		params.Set("vpProbability", "-1")
-		params.Set("vpStrategy", "")
+	if (signType == SignGesture || signType == SignCode) && strVal(special["sign_code"]) == "" {
+		return "", fmt.Errorf("缺少 sign_code 参数")
 	}
-	if faceEnc := strings.TrimSpace(strVal(special["face_enc"])); faceEnc != "" {
-		params.Set("faceEnc", faceEnc)
-	}
-	if faceCode := strings.TrimSpace(strVal(special["face_code"])); faceCode != "" {
-		params.Set("faceCode", faceCode)
-	}
-	params.Set("validate", "")
-
-	switch signType {
-	case SignQRCode:
-		enc := strVal(special["enc"])
-		if enc == "" {
-			return "", fmt.Errorf("缺少二维码 enc 参数")
+	if signType == SignGesture {
+		if err := c.checkGestureCode(&cli, fixed.ActiveID, strVal(special["sign_code"])); err != nil {
+			return "", err
 		}
-		params.Set("enc", enc)
-		// 兼容 1.0 的二维码附加位置变种：透传 location 给学习通。
-		// 兼容两种输入：
-		// 1) special.location（1.0 旧格式）
-		// 2) special.latitude/longitude/description（2.0 前端当前格式）
-		if locationJSON, ok := buildQRCodeLocationParam(special); ok {
-			params.Set("location", locationJSON)
-		}
-		params.Set("useragent", "")
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
-	case SignGesture, SignCode:
-		signCode := strVal(special["sign_code"])
-		if signCode == "" {
-			return "", fmt.Errorf("缺少 sign_code 参数")
-		}
-		if signType == SignGesture {
-			checkURL := fmt.Sprintf("https://mobilelearn.chaoxing.com/widget/sign/pcStuSignController/checkSignCode?activeId=%d&signCode=%s", fixed.ActiveID, url.QueryEscape(signCode))
-			reqC, _ := http.NewRequest(http.MethodGet, checkURL, nil)
-			reqC.Header.Set("User-Agent", c.mobileUA)
-			respC, err := cli.Do(reqC)
-			if err == nil {
-				defer respC.Body.Close()
-				var check struct {
-					Result   int    `json:"result"`
-					ErrorMsg string `json:"errorMsg"`
-				}
-				_ = json.NewDecoder(respC.Body).Decode(&check)
-				if check.Result != 1 {
-					if check.ErrorMsg == "" {
-						check.ErrorMsg = "手势码校验失败"
-					}
-					return "", fmt.Errorf("%s", check.ErrorMsg)
-				}
-			}
-		}
-		params.Set("signCode", signCode)
-		params.Set("latitude", "")
-		params.Set("longitude", "")
-	case SignLocation:
-		params.Set("address", strVal(special["description"]))
-		params.Set("latitude", strVal(special["latitude"]))
-		params.Set("longitude", strVal(special["longitude"]))
-		params.Set("ifTiJiao", "1")
-	default:
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
 	}
 
-	// 二维码签到在部分场景下会出现 enc 只能使用一次的情况。
-	// 若先空 validate 试探再重试，会导致第二次请求被判定“签到校验未通过”。
-	// 这里与 1.0 行为对齐：二维码签到首发请求直接携带验证码。
-	if signType == SignQRCode {
-		validate, err := c.fetchCaptchaValidate(&cli, fixed)
-		if err != nil {
-			log.Printf("captcha fetch failed before qrcode sign: activity=%d uid=%d err=%v", fixed.ActiveID, fixed.UID, err)
-		} else {
-			params.Set("validate", validate)
-		}
-		return c.doStuSignRequest(&cli, params)
-	}
+	// 参数集由 sign_params.go 统一构造；enc2/validate 只透传状态机写入的值，
+	// 二维码首发不再预置 validate。
+	params := buildStuSignParams(stuSignParams{
+		SignType:      signType,
+		ActivityID:    fixed.ActiveID,
+		CourseID:      fixed.CourseID,
+		UID:           fixed.UID,
+		Name:          s.Name,
+		FID:           c.signFID,
+		DeviceCode:    c.deviceCode(fixed.UID),
+		IfOpenAddress: fixed.IfOpenAddress,
+		Position:      signPositionFromSpecial(special),
+		Enc:           strVal(special["enc"]),
+		SignCode:      strVal(special["sign_code"]),
+		ObjectID:      strings.TrimSpace(strVal(firstNonNil(special["object_id"], special["objectId"]))),
+		CurrentFaceID: strings.TrimSpace(strVal(special["current_face_id"])),
+		FaceEnc:       strings.TrimSpace(strVal(special["face_enc"])),
+		FaceCode:      strings.TrimSpace(strVal(special["face_code"])),
+		Enc2:          strings.TrimSpace(strVal(special["enc2"])),
+		Validate:      strings.TrimSpace(strVal(special["validate"])),
+	})
 
 	result, err := c.doStuSignRequest(&cli, params)
 	if err != nil {
@@ -1063,6 +1010,32 @@ func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (string, 
 	return strings.TrimSpace(string(body)), nil
 }
 
+// checkGestureCode verifies a gesture/order code before submitting the sign.
+// Transport failures are non-fatal (the sign request itself decides); an explicit
+// upstream rejection aborts with the upstream message.
+func (c *Client) checkGestureCode(cli *http.Client, activeID int64, signCode string) error {
+	checkURL := fmt.Sprintf("https://mobilelearn.chaoxing.com/widget/sign/pcStuSignController/checkSignCode?activeId=%d&signCode=%s", activeID, url.QueryEscape(signCode))
+	req, _ := http.NewRequest(http.MethodGet, checkURL, nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var check struct {
+		Result   int    `json:"result"`
+		ErrorMsg string `json:"errorMsg"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&check)
+	if check.Result != 1 {
+		if check.ErrorMsg == "" {
+			check.ErrorMsg = "手势码校验失败"
+		}
+		return fmt.Errorf("%s", check.ErrorMsg)
+	}
+	return nil
+}
+
 func sanitizeMultipartFilename(filename string) string {
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
@@ -1076,52 +1049,4 @@ func sanitizeMultipartFilename(filename string) string {
 
 func escapeMultipartFilename(filename string) string {
 	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(filename)
-}
-
-func buildQRCodeLocationParam(special map[string]interface{}) (string, bool) {
-	if locRaw, ok := special["location"]; ok && locRaw != nil {
-		switch v := locRaw.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				return v, true
-			}
-		default:
-			if b, err := json.Marshal(v); err == nil && string(b) != "null" && string(b) != `""` {
-				return string(b), true
-			}
-		}
-	}
-
-	latStr := strings.TrimSpace(strVal(special["latitude"]))
-	lngStr := strings.TrimSpace(strVal(special["longitude"]))
-	desc := strings.TrimSpace(strVal(special["description"]))
-	if latStr == "" && lngStr == "" && desc == "" {
-		return "", false
-	}
-
-	location := map[string]interface{}{
-		"result":  1,
-		"address": desc,
-	}
-	if lat, err := strconv.ParseFloat(latStr, 64); err == nil {
-		location["latitude"] = lat
-	} else if latStr != "" {
-		location["latitude"] = latStr
-	}
-	if lng, err := strconv.ParseFloat(lngStr, 64); err == nil {
-		location["longitude"] = lng
-	} else if lngStr != "" {
-		location["longitude"] = lngStr
-	}
-	if desc != "" {
-		location["mockData"] = map[string]interface{}{
-			"description": desc,
-		}
-	}
-
-	b, err := json.Marshal(location)
-	if err != nil || string(b) == "{}" {
-		return "", false
-	}
-	return string(b), true
 }

@@ -22,6 +22,7 @@ type SignExecuteRequest struct {
 	CourseID      int64                  `json:"course_id" binding:"required"`
 	ClassID       int64                  `json:"class_id" binding:"required"`
 	IfRefreshEWM  bool                   `json:"if_refresh_ewm"`
+	IfOpenAddress bool                   `json:"if_open_address"`
 	ActivityName  string                 `json:"activity_name"`
 	CourseName    string                 `json:"course_name"`
 	CourseTeacher string                 `json:"course_teacher"`

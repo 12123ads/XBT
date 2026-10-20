@@ -33,6 +33,7 @@ type Config struct {
 	CredentialSecret      string                 `yaml:"credential_secret"`
 	AllowInsecureTLS      bool                   `yaml:"allow_insecure_tls"`
 	ChaoxingAESKey        string                 `yaml:"chaoxing_aes_key"`
+	ChaoxingFID           string                 `yaml:"chaoxing_fid"`
 	ChaoxingUserAgent     string                 `yaml:"chaoxing_user_agent"`
 	ActivityListLimit     int                    `yaml:"activity_list_limit"`
 	CourseSignWebhookURL  string                 `yaml:"course_sign_webhook_url"`

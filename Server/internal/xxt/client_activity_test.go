@@ -18,7 +18,7 @@ func (f activityScopeTransport) RoundTrip(req *http.Request) (*http.Response, er
 
 func activityScopeTestClient(t *testing.T, transport http.RoundTripper) *Client {
 	t.Helper()
-	client := New("1234567890123456", "activity-scope-test", false, 5)
+	client := New("1234567890123456", "activity-scope-test", "", false, 5)
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
