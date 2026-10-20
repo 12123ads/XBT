@@ -22,13 +22,14 @@ import axios from 'axios';
 import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse } from '../types';
-import { getBrowserLocation } from '../utils/geolocation';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
+import { useSignLocation } from '../utils/useSignLocation';
 
 // Import refactored components
 import { GestureInput } from '../components/sign/GestureInput';
 import { PinInput } from '../components/sign/PinInput';
 import { LocationInput } from '../components/sign/LocationInput';
+import { LocationPickerSheet, type LocationPickerView } from '../components/sign/LocationPickerSheet';
 import { QrInput } from '../components/sign/QrInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { PhotoInput } from '../components/sign/PhotoInput';
@@ -91,11 +92,8 @@ const SignDetail = () => {
   const [isExecuting, setIsExecuting] = useState(false);
   
   const [signCode, setSignCode] = useState('');
-  const [lat, setLat] = useState('');
-  const [lng, setLng] = useState('');
-  const [locationStr, setLocationStr] = useState('');
-  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
-  const [isLocating, setIsLocating] = useState(false);
+  const { location: signLocation, setLocation: setSignLocation, isLocating, locateWithBrowser } = useSignLocation();
+  const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
@@ -270,25 +268,8 @@ const SignDetail = () => {
     photoPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
 
-  const applyLocation = (nextLat: string, nextLng: string, nextDescription: string) => {
-    setLat(nextLat);
-    setLng(nextLng);
-    setLocationStr(nextDescription);
-  };
-
   const handleUseBrowserLocation = async () => {
-    if (isLocating) return;
-    setIsLocating(true);
-    try {
-      const current = await getBrowserLocation();
-      applyLocation(current.lat, current.lng, current.description);
-      setIsLocationPickerOpen(false);
-      toast.success(`已获取当前位置，精度约 ${current.accuracy} 米`);
-    } catch (error: unknown) {
-      toast.error(getErrorMessage(error, '获取当前位置失败'));
-    } finally {
-      setIsLocating(false);
-    }
+    await locateWithBrowser();
   };
 
   const buildShareUrl = (token: string) => `${window.location.origin}${window.location.pathname}#/share/sign/${token}`;
@@ -343,7 +324,7 @@ const SignDetail = () => {
       return;
     }
 
-    if (activity.sign_type === 4 && (!lat || !lng)) {
+    if (activity.sign_type === 4 && (!signLocation?.lat || !signLocation?.lng)) {
       toast.error('请先选择签到地点');
       return;
     }
@@ -375,9 +356,9 @@ const SignDetail = () => {
     const special_params: SignSpecialParams = {};
     if (activity.sign_type === 3 || activity.sign_type === 5) special_params.sign_code = signCode;
     else if (activity.sign_type === 4) {
-      special_params.latitude = lat;
-      special_params.longitude = lng;
-      special_params.description = locationStr;
+      special_params.latitude = signLocation?.lat || '';
+      special_params.longitude = signLocation?.lng || '';
+      special_params.description = signLocation?.description || '';
     }
     if (isFaceSign) special_params.if_face = true;
 
@@ -633,9 +614,10 @@ const SignDetail = () => {
             {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
             {activity.sign_type === 4 && (
               <LocationInput
-                name={locationPresets.find((p) => p.lat === lat)?.name || (lat ? '浏览器当前位置' : '')}
-                description={locationStr}
-                onOpen={() => setIsLocationPickerOpen(true)}
+                name={signLocation?.name || ''}
+                description={signLocation?.description || ''}
+                onOpen={() => setLocationPickerView('list')}
+                onOpenMap={() => setLocationPickerView('map')}
                 onLocate={handleUseBrowserLocation}
                 isLocating={isLocating}
               />
@@ -742,37 +724,6 @@ const SignDetail = () => {
             </motion.div>
           </motion.div>
         )}
-        {isLocationPickerOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsLocationPickerOpen(false)}>
-            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
-              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
-              <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">
-                <motion.div
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleUseBrowserLocation}
-                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${lat && !locationPresets.some((p) => p.lat === lat && p.lng === lng) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
-                >
-                  <div className="flex-1 min-w-0 pr-4">
-                    <div className="font-bold text-slate-800 mb-0.5 text-sm">使用浏览器当前位置</div>
-                    <div className="text-[10px] text-slate-400 font-medium truncate">
-                      {isLocating ? '正在请求定位权限并转换为 BD-09' : '从系统定位服务读取并转换为 BD-09'}
-                    </div>
-                  </div>
-                  {isLocating ? <Loader2 size={20} className="text-blue-600 shrink-0 animate-spin" /> : <MapPin size={20} className="text-blue-600 shrink-0" />}
-                </motion.div>
-                {locationPresets.map((p, i) => {
-                const isSelected = p.lat === lat && p.lng === lng;
-                return (
-                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { applyLocation(p.lat, p.lng, p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
-                    <div className="flex-1 min-w-0 pr-4"><div className="font-bold text-slate-800 mb-0.5 text-sm">{p.name}</div><div className="text-[10px] text-slate-400 font-medium truncate">{p.description}</div></div>
-                    {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                  </motion.div>
-                );
-              })}</div>
-            </motion.div>
-          </motion.div>
-        )}
         {showProgress && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end justify-center p-0 bg-slate-900/60 backdrop-blur-md" onClick={closeProgress}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] px-8 pt-10 pb-0 shadow-2xl flex flex-col max-h-[85vh] relative" onClick={(e) => e.stopPropagation()}>
@@ -789,6 +740,14 @@ const SignDetail = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <LocationPickerSheet
+        open={locationPickerView !== null}
+        initialView={locationPickerView ?? 'list'}
+        value={signLocation}
+        presets={locationPresets}
+        onClose={() => setLocationPickerView(null)}
+        onChange={setSignLocation}
+      />
       <style>{`.custom-scrollbar::-webkit-scrollbar { width: 0px; }`}</style>
     </div>
   );

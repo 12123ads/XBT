@@ -127,6 +127,16 @@ export interface SignSpecialParams {
   if_face?: boolean;
 }
 
+export type LocationSource = 'preset' | 'browser' | 'map';
+
+export interface SelectedLocation {
+  lat: string;
+  lng: string;
+  description: string;
+  source: LocationSource;
+  name: string;
+}
+
 export interface SignStatusMessage {
   type: 'sign_status';
   activity_id: number;

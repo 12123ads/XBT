@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronLeft, Camera, EyeOff, Eye, MapPin, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, Camera, EyeOff, Eye, MapPin } from 'lucide-react';
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { ProgressCard } from '../components/sign/ProgressCard';
-import type { ApiResponse, SignActivity, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, Classmate, User } from '../types';
+import type { ApiResponse, SignActivity, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SelectedLocation, Classmate, User } from '../types';
 import { parseChaoxingQrText, type QrData } from '../utils/qr';
 import scanCursor from '../assets/scan_cursor.png';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
+import { useSignLocation } from '../utils/useSignLocation';
+import { LocationPickerSheet, type LocationPickerView } from '../components/sign/LocationPickerSheet';
 
 type NativeCameraBridge = {
   isReady?: () => boolean;
@@ -91,21 +93,14 @@ const FullScanner = () => {
   const isCameraReady = readyScannerSessionKey === scannerSessionKey;
 
 
-  const [lat, setLat] = useState('');
-  const [lng, setLng] = useState('');
-  const [locationStr, setLocationStr] = useState('');
-  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
-
-  const latRef = useRef('');
-  const lngRef = useRef('');
-  const locationStrRef = useRef('');
+  const { location: signLocation, setLocation: setSignLocation } = useSignLocation();
+  const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
+  const locationRef = useRef<SelectedLocation | null>(null);
   const lastScanTimeRef = useRef<number>(0);
 
   useEffect(() => {
-    latRef.current = lat;
-    lngRef.current = lng;
-    locationStrRef.current = locationStr;
-  }, [lat, lng, locationStr]);
+    locationRef.current = signLocation;
+  }, [signLocation]);
   
   useEffect(() => {
     const handleFullScreen = async () => {
@@ -601,10 +596,11 @@ const FullScanner = () => {
           }));
           try {
             const special_params: SignSpecialParams = { enc: currentQr.enc, c: currentQr.c };
-            if (latRef.current && lngRef.current) {
-              special_params.latitude = latRef.current;
-              special_params.longitude = lngRef.current;
-              special_params.description = locationStrRef.current;
+            const currentLocation = locationRef.current;
+            if (currentLocation) {
+              special_params.latitude = currentLocation.lat;
+              special_params.longitude = currentLocation.lng;
+              special_params.description = currentLocation.description;
             }
             const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: 2,
@@ -977,14 +973,14 @@ const FullScanner = () => {
                   exit={{ x: -120, opacity: 0 }}
                   transition={{ ease: "easeInOut", duration: 0.3, delay: 0.1 }}
                   type="button" 
-                  onClick={() => setIsLocationPickerOpen(true)} 
+                  onClick={() => setLocationPickerView('list')}
                   className="flex flex-col items-center space-y-2 group pointer-events-auto active:scale-95 transition-transform"
                 >
-                  <div className={`w-14 h-14 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 shadow-lg transition-colors ${lat ? 'bg-blue-600 text-white' : 'bg-black/40 text-white'}`}>
+                  <div className={`w-14 h-14 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 shadow-lg transition-colors ${signLocation ? 'bg-blue-600 text-white' : 'bg-black/40 text-white'}`}>
                     <MapPin size={22} />
                   </div>
                   <span className="text-[10px] text-white/80 font-bold tracking-wider truncate max-w-[60px]">
-                    {lat ? locationPresets.find((p) => p.lat === lat)?.name || "位置" : "位置"}
+                    {signLocation?.name || "位置"}
                   </span>
                 </motion.button>
 
@@ -1010,38 +1006,15 @@ const FullScanner = () => {
         </button>
       </div>
 
-      <AnimatePresence>
-        {isLocationPickerOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[150] flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsLocationPickerOpen(false)}>
-            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
-              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
-              <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">
-                <motion.div 
-                  whileTap={{ scale: 0.98 }} 
-                  onClick={() => { setLat(''); setLng(''); setLocationStr(''); setIsLocationPickerOpen(false); }} 
-                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${!lat ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
-                >
-                  <div className="flex-1 min-w-0 pr-4">
-                    <div className="font-bold text-slate-800 text-sm">不使用位置</div>
-                    <div className="text-[10px] text-slate-400 font-medium">不发送地理位置信息进行签到</div>
-                  </div>
-                  {!lat && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                </motion.div>
-
-                {locationPresets.map((p, i) => {
-                const isSelected = p.lat === lat && p.lng === lng;
-                return (
-                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { setLat(p.lat); setLng(p.lng); setLocationStr(p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
-                    <div className="flex-1 min-w-0 pr-4"><div className="font-bold text-slate-800 mb-0.5 text-sm">{p.name}</div><div className="text-[10px] text-slate-400 font-medium truncate">{p.description}</div></div>
-                    {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                  </motion.div>
-                );
-              })}</div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <LocationPickerSheet
+        open={locationPickerView !== null}
+        initialView={locationPickerView ?? 'list'}
+        value={signLocation}
+        presets={locationPresets}
+        allowEmpty
+        onClose={() => setLocationPickerView(null)}
+        onChange={setSignLocation}
+      />
 
       <AnimatePresence initial={false}>
         {isStealthMode && isAllSuccess && (

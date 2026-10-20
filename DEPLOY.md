@@ -319,3 +319,58 @@ docker compose build --no-cache web
 docker compose up -d web
 ```
 
+
+---
+
+## 13. 位置签到地图选点（高德 JS API）
+
+位置签到的“地图选点”使用高德 JS API 2.0，只在用户首次打开地图弹层时懒加载；未配置 key、SDK 加载失败或瓦片超时时，弹层内显示错误和“重试”，浏览器定位、预设地点和签到主流程仍然可用。
+
+### 13.1 申请 key 与配置域名白名单
+
+1. 在高德开放平台创建“Web端（JS API）”类型的 key，并生成安全密钥（securityJsCode）。
+2. 在高德控制台给 key 配置域名白名单。白名单填页面实际 origin 的域名（不带路径和协议由控制台决定）：
+   - Web 同源部署：`119.29.139.161:8081`（以实际部署域名为准）。
+   - Android：WebView 的页面 URL 来自 `Android/app/src/main/res/values/strings.xml` 的 `target_url`（当前为 `https://119.29.139.161:8081/`）。页面资源虽然由 APK 本地拦截，但页面 origin 仍是 `target_url`，因此白名单填该域名/端口；不需要填 `file://`、`localhost` 或 `127.0.0.1`。
+3. key 与安全密钥会进入前端 bundle，属于公开标识，不是服务端 secret；仍需依赖高德控制台的域名白名单和配额限制。
+
+### 13.2 注入构建变量
+
+前端只读取以下构建变量，不要在源码中写死：
+
+- `VITE_AMAP_KEY`：高德 JS API key。
+- `VITE_AMAP_SECURITY_CODE`：高德安全密钥（securityJsCode）。
+
+本地开发：
+
+```bash
+cp Web/.env.example Web/.env.local
+# 编辑 Web/.env.local，填入 VITE_AMAP_KEY / VITE_AMAP_SECURITY_CODE
+cd Web && npm run dev
+```
+
+Docker：
+
+```bash
+cd /opt/xbt
+docker compose build web \
+  --build-arg VITE_AMAP_KEY='your-key' \
+  --build-arg VITE_AMAP_SECURITY_CODE='your-security-code'
+docker compose up -d web
+```
+
+Android APK（`build-apk.sh` 会先执行 `npm run build`，环境变量会传入构建）：
+
+```bash
+export VITE_AMAP_KEY='your-key'
+export VITE_AMAP_SECURITY_CODE='your-security-code'
+./Android/build-apk.sh
+```
+
+真实 key 不要提交到仓库；`Web/.env.local` 已被 `.gitignore` 忽略。
+
+### 13.3 验证要点
+
+- 首次进入签到页时 Network 中没有 `webapi.amap.com`；打开“地图选点”后才出现地图 SDK 请求。
+- 地图选点提交的 `special_params.latitude` / `longitude` 为 BD-09、6 位小数；`description` 为逆地理编码地址，失败时为 `地图选点 {lng},{lat}`。
+- 移空 `VITE_AMAP_KEY` 重新构建后，地图区域显示“未配置地图 key（VITE_AMAP_KEY）”，预设地点和浏览器定位仍可完成签到。
