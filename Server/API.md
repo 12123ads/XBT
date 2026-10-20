@@ -195,7 +195,12 @@ Authorization: Bearer <JWT>
         "course_name": "高等数学",
         "course_id": 222,
         "class_id": 111,
-        "course_teacher": "李老师"
+        "course_teacher": "李老师",
+        "source": "im_group",
+        "sources": ["taskactivelist", "im_group"],
+        "im_atype": 2,
+        "im_sub_title": "10-20 10:00",
+        "im_message_time": 1760000200000
       }
     ]
   }
@@ -225,6 +230,9 @@ Authorization: Bearer <JWT>
 说明：
 - 每门课程默认最多返回最新 `5` 条签到活动（可通过后端 `Server/config.yaml` 中的 `activity_list_limit` 配置）。
 - 当该课程活动总数超过返回条数时，`has_more=true`。
+- `source` 为 `taskactivelist`（活动列表轮询）或 `im_group`（Easemob 群聊消息）；两者都发现同一 `active_id` 时只返回一条，`sources` 同时包含两个值，`source` 取 `im_group`。
+- `im_atype`、`im_sub_title`、`im_message_time` 仅在群聊来源存在时返回；`im_atype=2` 为签到，`74` 为签退。群聊来源只做发现与跳转，不自动提交签到。
+- 群聊来源失败不会影响 `taskactivelist` 结果；错误码通过 `GET /api/sign/im/status` 查询。
 
 ### 5.2 获取同班同学（可代签目标）
 - Method: `GET`
@@ -537,6 +545,41 @@ curl -X POST http://localhost:3030/api/sign/photo \
 ```
 
 说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。`class_admin_group_id/name` 仅当当前账号是某个班级的班级管理员时返回。
+
+### 5.9 群聊签到轮询状态
+- Method: `GET`
+- Path: `/api/sign/im/status`
+- Auth: 是
+
+响应体 `data`:
+
+```json
+{
+  "enabled": true,
+  "interval_seconds": 30,
+  "error_code": "",
+  "last_poll_at": 1760000200000,
+  "last_success_at": 1760000200000,
+  "group_count": 3,
+  "activity_count": 2
+}
+```
+
+`error_code` 可能值：
+- `""`: 最近一轮成功。
+- `im_auth_failed`: 学习通凭据或 IM 密码解密失败。
+- `im_not_configured`: 该账号没有 Easemob IM 账号。
+- `im_unauthorized`: 重取 token 后仍返回 401/408。
+- `im_token_failed`: token 端点失败。
+- `im_groups_failed` / `im_messages_failed`: 群列表/消息端点失败。
+- `im_parse_failed`: 上游响应无法解析。
+- `im_network`: 网络或未知失败。
+- `im_disabled`: 服务端关闭了群聊轮询（`im_disabled: true`）。
+
+说明：
+- 默认每账号 `30s` 轮询一次，可通过 `im_poll_interval_seconds` 配置；同一账号并发轮询不超过 1。
+- 轮询只缓存解析后的签到字段（`active_id/title/course/atype`），不持久化原始消息、IM 密码或 `access_token`。
+- 只有 `401/408` 会触发一次 token 重取并重试一次；第二次仍失败则记录 `im_unauthorized` 并结束本轮。
 
 ---
 

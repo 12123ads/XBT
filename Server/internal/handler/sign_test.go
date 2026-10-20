@@ -82,6 +82,12 @@ func (u *handlerSignUpstream) CheckFaceResult(string, string, int64, string, str
 
 func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstream) {
 	t.Helper()
+	database, router, upstream, _ := handlerSignFixtureParts(t)
+	return database, router, upstream
+}
+
+func handlerSignFixtureParts(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstream, *SignHandler) {
+	t.Helper()
 	database := newHandlerAccessDB(t)
 	cc := service.NewCredentialCrypto("handler-sign-test")
 	cipher, err := cc.Encrypt("password")
@@ -115,6 +121,7 @@ func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstre
 	router := gin.New()
 	authed := router.Group("", func(c *gin.Context) { c.Set(common.CtxUserUID, int64(1)); c.Next() })
 	authed.GET("/activities", h.Activities)
+	authed.GET("/im/status", h.IMStatus)
 	authed.GET("/classmates", h.Classmates)
 	authed.POST("/check", h.Check)
 	authed.POST("/execute", h.Execute)
@@ -123,7 +130,7 @@ func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstre
 	authed.POST("/accounts/:uid/sync", NewAdminAccountHandler(database, nil, nil).SyncUserCourses)
 	router.GET("/public/:token", h.GetShare)
 	router.POST("/public/:token", h.ExecuteShare)
-	return database, router, upstream
+	return database, router, upstream, h
 }
 
 func TestActivitiesReturnsSignMetadataAndKeepsLegacyFields(t *testing.T) {

@@ -159,3 +159,11 @@ qmx_location_presets:
     lng: 119.54320944987973
     lat: 35.478653540435666
     range: 500
+
+# 群聊签到来源（Easemob IM 轮询）。默认开启；没有 IM 账号的账号会自动跳过。
+# 端点由逆向得到，非公开契约，可按上游变更替换。
+im_disabled: false
+im_poll_interval_seconds: 30
+im_token_url: "https://a1-vip6.easemob.com/cx-dev/cxstudy/token"
+im_api_base_url: "https://a1-vip6.easemob.com/cx-dev/cxstudy"
+im_message_base_url: "https://a1-vip6.easecdn.com/cx-dev/cxstudy"

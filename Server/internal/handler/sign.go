@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm/clause"
 	"xbt2/server/internal/common"
 	"xbt2/server/internal/dto"
+	"xbt2/server/internal/im"
 	"xbt2/server/internal/model"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
@@ -37,6 +38,13 @@ type signActivityClient interface {
 	GetFaceFlag(mobile, password string, activityID, courseID, classID, uid int64) bool
 }
 
+// imActivitySource exposes the last polling snapshot. SignHandler treats IM
+// discovery as additive: a nil source or a failed poll never fails the normal
+// taskactivelist response.
+type imActivitySource interface {
+	Snapshot(uid int64) service.IMSnapshot
+}
+
 type SignHandler struct {
 	db          *gorm.DB
 	xxt         signActivityClient
@@ -44,6 +52,7 @@ type SignHandler struct {
 	signService *service.SignService
 	listLimit   int
 	settings    *service.RuntimeSettingsService
+	imSource    imActivitySource
 }
 
 func NewSignHandler(db *gorm.DB, xxtClient signActivityClient, cc *service.CredentialCrypto, signService *service.SignService, listLimit int, settings *service.RuntimeSettingsService) *SignHandler {
@@ -51,6 +60,10 @@ func NewSignHandler(db *gorm.DB, xxtClient signActivityClient, cc *service.Crede
 		listLimit = 5
 	}
 	return &SignHandler{db: db, xxt: xxtClient, cc: cc, signService: signService, listLimit: listLimit, settings: settings}
+}
+
+func (h *SignHandler) SetIMSignSource(source imActivitySource) {
+	h.imSource = source
 }
 
 func (h *SignHandler) LocationPresets(c *gin.Context) {
@@ -113,6 +126,10 @@ func (h *SignHandler) Activities(c *gin.Context) {
 		}
 		common.Fail(c, 500, err.Error())
 		return
+	}
+
+	if h.imSource != nil {
+		h.mergeIMActivities(uid, user, password, selected, resp)
 	}
 
 	// 课程分组按“组内最新活动时间”倒序
@@ -205,35 +222,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			detail = signDetailFromCache(cache)
 		}
 
-		recordSourceName := ""
-		recordSource := int64(0)
-		recordSignTime := int64(0)
-		var rec struct {
-			SourceUID  int64
-			SignTimeMS int64
-			SourceName string
-		}
-		recErr := h.db.Table("sign_records sr").
-			Select("sr.source_uid, sr.sign_time_ms, u.name as source_name").
-			Joins("left join users u on sr.source_uid = u.uid").
-			Where("sr.user_uid = ? and sr.activity_id = ?", uid, a.ActiveID).
-			Take(&rec).Error
-
-		if recErr == nil {
-			recordSource = rec.SourceUID
-			recordSignTime = rec.SignTimeMS
-			if rec.SourceUID == -1 {
-				recordSourceName = "学习通"
-			} else if rec.SourceName != "" {
-				recordSourceName = rec.SourceName
-			} else if rec.SourceUID == uid {
-				recordSourceName = user.Name
-			} else {
-				recordSourceName = "未知用户"
-			}
-		} else if recErr != nil && !errors.Is(recErr, gorm.ErrRecordNotFound) {
-			log.Printf("query sign record failed: uid=%d activity=%d err=%v", uid, a.ActiveID, recErr)
-		}
+		recordSource, recordSourceName, recordSignTime := h.signRecordView(uid, a.ActiveID, user)
 		items = append(items, gin.H{
 			"active_id":          a.ActiveID,
 			"activity_name":      a.Name,
@@ -255,6 +244,8 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			"course_id":          sc.CourseID,
 			"class_id":           sc.ClassID,
 			"course_teacher":     sc.Teacher,
+			"source":             im.SourceTaskActiveList,
+			"sources":            []string{im.SourceTaskActiveList},
 		})
 	}
 	hasMore := len(items) > h.listLimit

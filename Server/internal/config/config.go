@@ -7,9 +7,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+	"xbt2/server/internal/im"
 )
 
 type QMXLocationPreset struct {
@@ -42,6 +44,14 @@ type Config struct {
 	VikunjaBaseURL        string                 `yaml:"vikunja_base_url"`
 	QMXLocationPresets    []QMXLocationPreset    `yaml:"qmx_location_presets"`
 	CourseLocationPresets []CourseLocationPreset `yaml:"course_location_presets"`
+
+	// Group-chat sign discovery (Easemob IM polling). Endpoints are
+	// reverse-engineered and not a public contract, so they stay configurable.
+	IMDisabled            bool   `yaml:"im_disabled"`
+	IMPollIntervalSeconds int    `yaml:"im_poll_interval_seconds"`
+	IMTokenURL            string `yaml:"im_token_url"`
+	IMAPIBaseURL          string `yaml:"im_api_base_url"`
+	IMMessageBaseURL      string `yaml:"im_message_base_url"`
 }
 
 func Load() Config {
@@ -64,7 +74,35 @@ func Load() Config {
 	if len(cfg.CourseLocationPresets) == 0 {
 		cfg.CourseLocationPresets = defaultCourseLocationPresets()
 	}
+	cfg.applyIMDefaults()
 	return cfg
+}
+
+func (c *Config) applyIMDefaults() {
+	if c.IMPollIntervalSeconds <= 0 {
+		c.IMPollIntervalSeconds = 30
+	}
+	if strings.TrimSpace(c.IMTokenURL) == "" {
+		c.IMTokenURL = im.DefaultTokenURL
+	}
+	if strings.TrimSpace(c.IMAPIBaseURL) == "" {
+		c.IMAPIBaseURL = im.DefaultAPIBaseURL
+	}
+	if strings.TrimSpace(c.IMMessageBaseURL) == "" {
+		c.IMMessageBaseURL = im.DefaultMessageBaseURL
+	}
+}
+
+func (c Config) IMPollInterval() time.Duration {
+	seconds := c.IMPollIntervalSeconds
+	if seconds <= 0 {
+		seconds = 30
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (c Config) IMEnabled() bool {
+	return !c.IMDisabled
 }
 
 // NormalizeVikunjaBaseURL is shared by configured endpoints and credential bindings.

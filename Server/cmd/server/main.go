@@ -9,6 +9,7 @@ import (
 	"xbt2/server/internal/config"
 	"xbt2/server/internal/db"
 	"xbt2/server/internal/handler"
+	"xbt2/server/internal/im"
 	"xbt2/server/internal/middleware"
 	"xbt2/server/internal/qmx"
 	"xbt2/server/internal/service"
@@ -35,6 +36,9 @@ func main() {
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
+	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)
+	imSignSvc := service.NewIMSignService(database, xxtClient, imClient, credentialCrypto, cfg.IMPollInterval(), cfg.IMEnabled())
+	signHandler.SetIMSignSource(imSignSvc)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
 	adminSettingsHandler := handler.NewAdminSettingsHandler(runtimeSettingsSvc)
@@ -84,6 +88,7 @@ func main() {
 			authed.GET("/class-admin/overview", adminAccountHandler.ClassAdminOverview)
 			authed.POST("/class-admin/accounts", adminAccountHandler.CreateClassAccount)
 			authed.GET("/sign/activities", signHandler.Activities)
+			authed.GET("/sign/im/status", signHandler.IMStatus)
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
@@ -135,6 +140,7 @@ func main() {
 
 	qmxAutoSignSvc.StartScheduler(context.Background())
 	vikunjaSyncSvc.StartScheduler(context.Background())
+	imSignSvc.Start(context.Background())
 	log.Printf("xbt2 server listening on %s (app_env=%s, gin_mode=%s)", cfg.HTTPAddr, cfg.AppEnv, gin.Mode())
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("server start failed: %v", err)

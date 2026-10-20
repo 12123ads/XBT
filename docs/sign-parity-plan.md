@@ -137,6 +137,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - **明确不做**：批量枚举或抓取无关账号的照片；风格化/换脸类处理（裁剪/旋转/重压是强制项，不属于「不做」）。
 - **决策记录**：协议层全量对齐 CSF；`signToken`/`cxcid` 仍按「缺失也能签」处理（见 §8.2）。
 - 验收：`[face]` 响应触发一次带新照片的重试或明确失败提示；无照片返回明确提示；人脸请求字段与上游客户端一致；同一活动连续执行不重复上传同一张照片。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：S7a 已落地——`buildStuSignParams` 在带 `currentFaceId` 时固定发送 `faceCode=""`、`faceEncAid=""`，不再回传 `check-face-result` 的 `code`；`CheckFaceResult` 先判 HTTP 2xx 再解析 JSON，非 2xx 错误带状态码，无 `enc` 保留可读错误；`SignService.applyFaceCredentials` 以 `(uid, activityId, sha256(facePhoto))` 缓存 `face_temp` 的 `objectId`（单飞合并并发上传、6h TTL），同一活动重复执行只上传一次并重新调用 `check-face-result` 取新 `faceEnc`；`[face]`/`checkFace_` 仍由 S3 状态机映射为一次人脸恢复。回归测试见 `Server/internal/xxt/sign_params_test.go`、`face_check_test.go`、`Server/internal/service/sign_test.go`。`cxcid`/`signToken` 由并行的 XBT-S13 独立实现，不属于 S7a。
 
 #### XBT-S7b 多照片池与官方人脸照片导入（P2，延后）
 - **输入**：账号凭据、账号已保存的人脸照片；目标账号须是操作者本人或有代签权限的账号。
@@ -346,7 +347,7 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 |---|---|---|---|---|---|
 | 1 | 滑块验证码识别内核 | S5 只修协议与提交策略，仍为自建启发式；通过率门槛 ≥85%，低于 70% 触发 §8.1 的选项 C | YOLO11n + ONNX（AGPL） | 同一次签到可能需要更多 challenge；上游风控更敏感 | 待 S5 实测；不达标再立「非 AGPL 检测器」issue，不复制 CSF 模型 |
 | 2 | 人脸 `faceResult` 设备签名 | 已实现（XBT-S13）：登录时保存加密 `clientId`，`faceResult` 在可解密时追加 `cxcid`/`signToken`；缺失或解密失败仍不带签名 | 登录保存并解密 `clientId` 后签名 | 若上游对人脸请求加签名校验，xbt 人脸签到会整类失败 | **已完成**：见 §8.3.1 |
-| 3 | 签到来源：群聊实时消息 | 只有 `taskactivelist` 轮询（S8 补字段，不补来源） | Easemob IM 群聊监听 + 群列表 | xbt 依赖轮询周期，签到窗口短的活动可能漏签；无「从群聊进入签到」入口 | **做**：XBT-S14（轮询版，不建长连接），独立于 S1–S12 |
+| 3 | 签到来源：群聊实时消息 | 已实现（XBT-S14）：Easemob 群列表 + `messageroaming` 轮询，解析 `attachmentType=15`、`atype∈{2,74}`，按 `activeId` 与 `taskactivelist` 合并 | Easemob IM 群聊监听 + 群列表 | xbt 依赖轮询周期，签到窗口短的活动可能漏签；无「从群聊进入签到」入口 | **已完成**：见 §8.3.2（轮询版，默认 30s，不建长连接；staging 待验） |
 | 4 | 客户端身份伪装 | `chaoxing_user_agent` 为服务端全局配置，`appType=15` 固定，无 per-account/UI | 内置 `DEFAULT` / `XUEZAIXIDIAN` 及自定义 UA + 包名 | 校园定制版学校的课程/活动列表可能不匹配 | **不做**（2026-10-20 决策）；仅在文档标注为已知限制 |
 | 5 | 请求出口 IP | 签到由 `Server` 发起，`clientip` 固定空串，真实出口是服务器 IP | 由手机发起，出口是设备网络 | IP 与位置/设备画像可能不一致，风控特征不同；同一服务器多账号共用出口 | **接受现状**（2026-10-20 决策）；靠 S10 限流 + S11 串行降特征 |
 | 6 | 人脸照片存放位置 | 照片存服务器（新照片表），导入的官方照片经变换后落服务端 | 存设备本地文件 | 功能等价，数据责任与泄露面不同 | **接受现状**；权限边界与日志脱敏见 OMP-39 |
@@ -363,6 +364,16 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 - **迁移**：`AutoMigrate(&model.User{})` 新增两个可空 `text` 列，旧数据为空即走降级路径。
 - **验证**：`Server/internal/xxt/device_test.go` 覆盖固定 type-1 fixture、非法样本、`signToken` 期望值/字段顺序、缺失降级、设备资料稳定性与 per-account 差异、userInfo 错误不回显响应体；`Server/internal/service/sign_test.go` 覆盖两次签到传入同一持久化 clientId；`Server/internal/handler/auth_test.go` 覆盖登录持久化、两次登录复用设备资料、clientId 拉取失败仍登录成功。命令：`cd Server && go test ./...`。
 - **风险**：上游 clientId 是弱混淆产物，不是身份凭据；staging 若拒绝人脸请求，先只带 `cxcid` 不带 `signToken` 二分。
+
+#### 8.3.2 XBT-S14 群聊签到来源（2026-10-20 落地）
+
+- **协议**：`internal/im` 实现 token（`POST /token`，`grant_type=password`，`username=<uid>`，`password=DES/ECB/PKCS5Padding` 解密后的 `imAccount.password`）、`joined_chatgroups`、`messageroaming`。`messageroaming` 的 `msg` 为 base64 protobuf，只解析 `Meta.field4`（时间）、`Meta.field6`（消息体）与 `MessageBody.ext` 中的 `attachment`；不引入 protobuf 依赖。
+- **识别**：`attachmentType == 15`、存在 `att_chat_course`、`aid > 0`、`atype ∈ {2,74}`；提取 `title/subTitle/courseInfo.courseid/classid/coursename`。文本、图片、作业等消息直接跳过。
+- **合并**：`/api/sign/activities` 在 `taskactivelist` 分组完成后合并 IM 结果；同一 `active_id` 只保留一条，`sources` 记录 `taskactivelist` 与 `im_group`，`source` 优先 `im_group`。IM-only 活动写入 `sign_activity_scopes`，保证现有 `/sign/execute` 授权与跳转可用；不自动提交。
+- **凭据**：复用学习通会话调用 `userInfo` 读取 `msg.accountInfo.imAccount.password`（S13 只持久化 `clientId`，未保存 IM 密码；本实现按需读取，不新增数据库列），DES 解密失败返回 `im_auth_failed`。不落原始消息。
+- **轮询与失败**：`IMSignService` 默认每账号 30s，`im_poll_interval_seconds` 可配；per-uid `TryLock` 保证单账号并发不超过 1。`401/408` 重取 token 并重试一次；第二次失败返回 `im_unauthorized`。失败只写 `error_code`，保留上一轮成功结果，不影响普通活动列表。
+- **观测**：`GET /api/sign/im/status` 返回 `enabled/interval_seconds/last_poll_at/last_success_at/group_count/activity_count/error_code`；日志只含 `uid/active_id/source/result`，不含密码、token、消息体。
+- **验证**：`Server/internal/im/*_test.go` 覆盖 DES fixture、附件解析/丢弃规则、token 请求、401/408 重取、响应体不泄漏；`Server/internal/service/im_poll_test.go` 覆盖单飞、重取一次、连续失败、解密失败、日志脱敏、失败保留上一轮；`Server/internal/handler/im_merge_test.go` 覆盖双来源去重、IM-only 合并、scope/cache 落库、IM 失败不影响列表。命令：`cd Server && go test ./...`。staging 发现流程尚未执行（当前环境无课程群测试账号），上游端点/内容类型需用真实账号确认。
 
 ## 9. 排期估算（1 人后端 + 0.5 人前端）
 
@@ -393,4 +404,3 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 - CSF 活动发现：`app/.../api/ChaoxingActivityHelper.kt:40-200`
 - CSF 验证码模型：`app/src/main/java/.../api/ChaoxingCaptchaPredictor.kt`（640×640、score 0.25、NMS 0.45）、`app/src/main/assets/captcha.ort`（元数据：`Ultralytics YOLO11n model trained on config/block.yaml`、`AGPL-3.0 License`）、`components/CaptchaHandlerDialog.kt`（仅用 shadeImage 预测、单次校验、失败回落人工）
 - xbt 候选轮询：`Server/internal/xxt/captcha.go:24-96`（`for _, x := range candidates` → `verifyCaptchaAtX`）、`captcha.go:310-345`（候选最多 40 个）
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：S7a 已落地——`buildStuSignParams` 在带 `currentFaceId` 时固定发送 `faceCode=""`、`faceEncAid=""`，不再回传 `check-face-result` 的 `code`；`CheckFaceResult` 先判 HTTP 2xx 再解析 JSON，非 2xx 错误带状态码，无 `enc` 保留可读错误；`SignService.applyFaceCredentials` 以 `(uid, activityId, sha256(facePhoto))` 缓存 `face_temp` 的 `objectId`（单飞合并并发上传、6h TTL），同一活动重复执行只上传一次并重新调用 `check-face-result` 取新 `faceEnc`；`[face]`/`checkFace_` 仍由 S3 状态机映射为一次人脸恢复。回归测试见 `Server/internal/xxt/sign_params_test.go`、`face_check_test.go`、`Server/internal/service/sign_test.go`。`cxcid`/`signToken` 由并行的 XBT-S13 独立实现，不属于 S7a。
