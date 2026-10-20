@@ -153,6 +153,8 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 分支：全部在 `feature/captcha-protocol-fix` 上串行提交（未推送），每个 issue 一个 commit，禁止并行改同一工作区。
 - 顺序：S1 → S2 → S3 → S4 → S6 → S7a → S8 → S9 → S10；前端「移除固定 5 次重试」在 S3 后并行；E2E 在最后。
 - 归属：后端工程师执行 S1-S10，前端工程师执行重试/错误码 UI，测试工程师执行 E2E 回归；PM 只负责范围与验收，不做技术选型。
+- 依赖：已用 Paperclip `blockedByIssueIds` 建链；S1→S2→S3→S4→S6→S7a→S8→S9→S10，S3→S11，S10+S11→S12。
+- 已知调度缺口：S2 在依赖写入前已被调度器拉起到 `in_progress`，与 S1 并行；已在其 issue 留言要求「S1 完成前不改仓库」。若两者都产生改动，以 `git status` 与逐文件 `git add` 为准，PM 会按提交结果复核。
 
 ## 4. 契约变更
 
