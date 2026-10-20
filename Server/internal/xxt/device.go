@@ -266,10 +266,15 @@ func decryptClientIDWithKey(clientID string, key *rsa.PublicKey) (ClientIdentity
 	return ClientIdentity{CID: payload.CID, SC: payload.SC}, true
 }
 
+// faceResultKey resolves the protocol key used to verify clientId before a
+// faceResult is signed. Tests replace it to exercise both signed and unsigned
+// payloads without the upstream private key.
+var faceResultKey = deviceInfoRSAKey
+
 // buildFaceResult assembles the check-face-result payload. The device signature
 // is additive: without a usable clientId the payload keeps its original shape.
 func buildFaceResult(currentFaceID, cxtime, clientID string) map[string]interface{} {
-	key, err := deviceInfoRSAKey()
+	key, err := faceResultKey()
 	if err != nil {
 		return faceResultBase(currentFaceID, cxtime)
 	}
