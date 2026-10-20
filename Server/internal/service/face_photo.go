@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -16,29 +17,26 @@ var (
 	ErrFacePhotoNotFound  = errors.New("face photo not found")
 	ErrFacePhotoForbidden = errors.New("face photo management forbidden")
 	ErrFacePhotoTooLarge  = errors.New("face photo exceeds the size limit")
+	ErrFacePhotoInvalid   = errors.New("face photo is not a decodable image")
 )
 
 type facePhotoClient interface {
-	FetchProfileFace(mobile, password string) ([]byte, error)
+	FetchProfileFaceContext(ctx context.Context, mobile, password string) ([]byte, error)
 }
 
 // FacePhotoService owns the managed photo pool. All reads and writes are
-// scoped by the operator's delegation rights; official imports are transformed
-// in memory and only the transform output ever reaches the database.
+// scoped by the operator's delegation rights. Stored bytes are base images:
+// official imports keep the downloaded original untouched and every sign
+// transforms a base in memory immediately before upload (OMP-52).
 type FacePhotoService struct {
-	db   *gorm.DB
-	cc   *CredentialCrypto
-	xxt  facePhotoClient
-	rand facephoto.RandSource
+	db  *gorm.DB
+	cc  *CredentialCrypto
+	xxt facePhotoClient
 }
 
 func NewFacePhotoService(db *gorm.DB, cc *CredentialCrypto, xxtClient facePhotoClient) *FacePhotoService {
 	return &FacePhotoService{db: db, cc: cc, xxt: xxtClient}
 }
-
-// SetRand installs the transform randomness used for official imports. Tests
-// inject a fixed seed; production leaves it nil (time-seeded).
-func (s *FacePhotoService) SetRand(rnd facephoto.RandSource) { s.rand = rnd }
 
 func (s *FacePhotoService) List(operatorUID, targetUID int64) ([]model.FacePhoto, error) {
 	if err := s.Authorize(operatorUID, targetUID); err != nil {
@@ -63,10 +61,14 @@ func (s *FacePhotoService) Get(operatorUID int64, photoID uint) (model.FacePhoto
 }
 
 func (s *FacePhotoService) Add(operatorUID, targetUID int64, data []byte, source string) (model.FacePhoto, error) {
+	return s.add(operatorUID, targetUID, data, source, facephoto.MaxUploadBytes)
+}
+
+func (s *FacePhotoService) add(operatorUID, targetUID int64, data []byte, source string, maxBytes int) (model.FacePhoto, error) {
 	if len(data) == 0 {
 		return model.FacePhoto{}, errors.New("face photo is empty")
 	}
-	if len(data) > facephoto.MaxUploadBytes {
+	if len(data) > maxBytes {
 		return model.FacePhoto{}, ErrFacePhotoTooLarge
 	}
 	if err := s.Authorize(operatorUID, targetUID); err != nil {
@@ -110,43 +112,41 @@ func (s *FacePhotoService) Delete(operatorUID int64, photoID uint) error {
 }
 
 // ImportOfficial fetches the account's official photo with the account's own
-// session and persists only the mandatory transform output. The downloaded
-// original stays in this function's scope and is never written anywhere.
-func (s *FacePhotoService) ImportOfficial(operatorUID, targetUID int64) (model.FacePhoto, facephoto.Result, error) {
+// session and stores it untouched as a base image. Transformation is deferred
+// to each sign execution and its output is never persisted.
+func (s *FacePhotoService) ImportOfficial(ctx context.Context, operatorUID, targetUID int64) (model.FacePhoto, error) {
 	if err := s.Authorize(operatorUID, targetUID); err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, err
+		return model.FacePhoto{}, err
 	}
 	var count int64
 	if err := s.db.Model(&model.FacePhoto{}).Where("user_uid = ?", targetUID).Count(&count).Error; err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, err
+		return model.FacePhoto{}, err
 	}
 	if count >= facephoto.MaxPhotos {
-		return model.FacePhoto{}, facephoto.Result{}, ErrFacePhotoLimit
+		return model.FacePhoto{}, ErrFacePhotoLimit
 	}
 
 	target, err := LoadActiveUser(s.db, targetUID)
 	if err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, ErrFacePhotoForbidden
+		return model.FacePhoto{}, ErrFacePhotoForbidden
 	}
 	password, err := s.cc.Decrypt(target.CredentialCipher)
 	if err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, fmt.Errorf("account credential unavailable")
+		return model.FacePhoto{}, fmt.Errorf("account credential unavailable")
 	}
 
-	original, err := s.xxt.FetchProfileFace(target.Mobile, password)
+	original, err := s.xxt.FetchProfileFaceContext(ctx, target.Mobile, password)
 	if err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, err
+		return model.FacePhoto{}, err
 	}
-	transformed, err := facephoto.Transform(original, facephoto.Options{Rand: s.rand})
-	if err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, fmt.Errorf("transform official face photo: %w", err)
+	if err := facephoto.ValidateSource(original); err != nil {
+		if len(original) > facephoto.MaxBaseBytes {
+			return model.FacePhoto{}, ErrFacePhotoTooLarge
+		}
+		return model.FacePhoto{}, fmt.Errorf("%w: %v", ErrFacePhotoInvalid, err)
 	}
 
-	photo, err := s.Add(operatorUID, targetUID, transformed.JPEG, "official")
-	if err != nil {
-		return model.FacePhoto{}, facephoto.Result{}, err
-	}
-	return photo, transformed, nil
+	return s.add(operatorUID, targetUID, original, "official", facephoto.MaxBaseBytes)
 }
 
 // Authorize allows the operator to act on their own pool, or on another

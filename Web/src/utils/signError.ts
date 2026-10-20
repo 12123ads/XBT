@@ -32,6 +32,8 @@ export const decideSignFailure = (result: SignFailureResult): SignFailureDecisio
       return { action: 'rescan_qr', message: textOr(result.message, '二维码已过期，请重新扫码') };
     case 'face_required':
       return { action: 'update_face', message: textOr(result.message, '人脸验证未通过，请更新人脸照片后重试') };
+    case 'face_photo_unavailable':
+      return { action: 'update_face', message: textOr(result.message, '未设置人脸照片且无法获取官方照片，请先上传') };
     case 'location_point_required':
       return { action: 'relocate', message: textOr(result.message, '请先在地图选点') };
     case 'location_out_of_range': {

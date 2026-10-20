@@ -98,9 +98,44 @@ func TestTransformHonorsSizeCap(t *testing.T) {
 	}
 }
 
+func TestTransformVariesAcrossCallsWithOneSource(t *testing.T) {
+	src := encodeJPEG(t, gradientImage(400, 400), 90)
+	rnd := rand.New(rand.NewPCG(11, 13))
+
+	first, err := facephoto.Transform(src, facephoto.Options{Rand: rnd})
+	if err != nil {
+		t.Fatalf("first Transform: %v", err)
+	}
+	second, err := facephoto.Transform(src, facephoto.Options{Rand: rnd})
+	if err != nil {
+		t.Fatalf("second Transform: %v", err)
+	}
+	if first.CropWidthRatio == second.CropWidthRatio &&
+		first.CropHeightRatio == second.CropHeightRatio &&
+		first.AngleDegrees == second.AngleDegrees {
+		t.Fatalf("two calls drew identical geometry: %+v", first)
+	}
+	if bytes.Equal(first.JPEG, second.JPEG) {
+		t.Fatal("two calls from one injected source produced identical bytes")
+	}
+}
+
 func TestTransformRejectsUndecodableInput(t *testing.T) {
 	if _, err := facephoto.Transform([]byte("not an image"), facephoto.Options{}); err == nil {
 		t.Fatal("expected an error for undecodable input")
+	}
+}
+
+func TestValidateSourceAcceptsOriginalAndRejectsGarbage(t *testing.T) {
+	src := encodeJPEG(t, gradientImage(320, 240), 90)
+	if err := facephoto.ValidateSource(src); err != nil {
+		t.Fatalf("ValidateSource(original) = %v", err)
+	}
+	if err := facephoto.ValidateSource([]byte("not an image")); err == nil {
+		t.Fatal("ValidateSource accepted non-image bytes")
+	}
+	if err := facephoto.ValidateSource(nil); err == nil {
+		t.Fatal("ValidateSource accepted empty bytes")
 	}
 }
 

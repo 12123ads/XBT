@@ -136,37 +136,39 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 实现状态（2026-10-20）：`Server/internal/xxt/client.go` 的 `parseActivityCenter`、`Server/internal/xxt/location.go` 的 `ValidGeoPoint`、`Server/internal/service/sign.go` 的 `prepareSignLocation`；Web 错误码映射为 `relocate` 并提示「请先在地图选点」。测试见 `client_sign_metadata_test.go`、`sign_test.go`。
 
 #### XBT-S7 人脸流程加固
-- **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一活动内复用已上传的 `objectId`，不重复上传同一张照片；`check-face-result` 先判 HTTP 状态再解 JSON。
-- **S7b 多照片池（P2，延后；产品决策 2026-10-20 更新）**：每账号最多 5 张、随机选择、记录使用次数/失败标记；**允许直接抓取该账号在学习通的官方人脸照片**；**从学习通拉下来的照片必须经过裁剪 + 旋转 + 重压后才允许保存或上传，原图不得落盘、不得上传**（参数见 XBT-S7b）。
-- **S7b 实现边界**：仅对已保存凭据的账号抓取；操作者只能操作自己有权代签的账号；不提供按手机号任意查询；签到复用已上传 `objectId`。
+- **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一执行内复用已上传的 `objectId`，不重复上传同一份变换结果；`check-face-result` 先判 HTTP 状态再解 JSON。
+- **S7b 多照片池（P2，延后；产品决策 2026-10-20 更新）**：每账号最多 5 张、随机选择、记录使用次数/失败标记；**允许直接抓取该账号在学习通的官方人脸照片**；池内保存**基线图**（官方照为下载原图），**每次签到执行前在内存中裁剪 + 旋转 + 重压一次**，变换结果只用于本次上传、不落库（用户评论 `396fa4c1`，方案 A）。
+- **S7b 实现边界**：仅对已保存凭据的账号抓取；操作者只能操作自己有权代签的账号；不提供按手机号任意查询；账号无人像时签发流程自动拉取一次官方照，同一执行内重试复用变换结果。
 - **明确不做**：批量枚举或抓取无关账号的照片；风格化/换脸类处理（裁剪/旋转/重压是强制项，不属于「不做」）。
 - **决策记录**：协议层全量对齐 CSF；`signToken`/`cxcid` 仍按「缺失也能签」处理（见 §8.2）。
-- 验收：`[face]` 响应触发一次带新照片的重试或明确失败提示；无照片返回明确提示；人脸请求字段与上游客户端一致；同一活动连续执行不重复上传同一张照片。
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：S7a 已落地——`buildStuSignParams` 在带 `currentFaceId` 时固定发送 `faceCode=""`、`faceEncAid=""`，不再回传 `check-face-result` 的 `code`；`CheckFaceResult` 先判 HTTP 2xx 再解析 JSON，非 2xx 错误带状态码，无 `enc` 保留可读错误；`SignService.applyFaceCredentials` 以 `(uid, activityId, sha256(facePhoto))` 缓存 `face_temp` 的 `objectId`（单飞合并并发上传、6h TTL），同一活动重复执行只上传一次并重新调用 `check-face-result` 取新 `faceEnc`；`[face]`/`checkFace_` 仍由 S3 状态机映射为一次人脸恢复。回归测试见 `Server/internal/xxt/sign_params_test.go`、`face_check_test.go`、`Server/internal/service/sign_test.go`。`cxcid`/`signToken` 由并行的 XBT-S13 独立实现，不属于 S7a。
+- 验收：`[face]` 响应触发一次带新照片的重试或明确失败提示；无人像且拉取失败返回 `face_photo_unavailable`；人脸请求字段与上游客户端一致；每次执行重新变换，同一执行内的重试不重复上传。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：S7a 已落地——`buildStuSignParams` 在带 `currentFaceId` 时固定发送 `faceCode=""`、`faceEncAid=""`，不再回传 `check-face-result` 的 `code`；`CheckFaceResult` 先判 HTTP 2xx 再解析 JSON，非 2xx 错误带状态码，无 `enc` 保留可读错误；`SignService.applyFaceCredentials` 以本次变换结果的 `sha256` 作为 `face_temp` 缓存键（单飞合并并发上传、6h TTL）：同一次执行内的重试复用同一份变换结果、只上传一次；不同执行重新变换并上传（缓存键随变换结果变化）。`[face]`/`checkFace_` 仍由 S3 状态机映射为一次人脸恢复。回归测试见 `Server/internal/xxt/sign_params_test.go`、`face_check_test.go`、`Server/internal/service/sign_test.go`。`cxcid`/`signToken` 由并行的 XBT-S13 独立实现，不属于 S7a。
 
 #### XBT-S7b 多照片池与官方人脸照片导入（P2，2026-10-20 落地）
 - **输入**：账号凭据、账号已保存的人脸照片；目标账号须是操作者本人或有代签权限的账号。
 - **输出**：
   1. 每账号最多 5 张照片，本地保存图片与 `objectId`，记录 `useCount`、`isFailureBefore`。
   2. 每次签到随机选一张；上次失败过的账号优先选「未失败且用过」的照片。
-  3. 官方照片导入：`collectionfilephotoEnc` 取 `oldObjectId` → 下载 `https://p.cldisk.com/star4/<objectId>/origin.jpg`，**在内存中强制变换后才落盘**；签到前上传一次并复用 `objectId`。
-  4. **官方照片强制变换（不可跳过）**：
+  3. 官方照片导入：`collectionfilephotoEnc` 取 `oldObjectId` → 下载 `https://p.cldisk.com/star4/<objectId>/origin.jpg`，**原样存为基线**（`source=official`，上限 8MB 且需可解码），不再在导入时变换。
+  4. **签发时强制变换（不可跳过）**：每次执行对选中的基线做一次变换，结果只用于本次上传：
      1. 裁剪：宽高各取 90%–99% 的随机比例，起始偏移在该比例允许的范围内随机；
      2. 旋转：`[-5°, +5°]` 均匀随机角度，双线性/双三次插值；
      3. 去黑边：旋转后按安全矩形中心裁剪，保证无黑边/透明像素；
      4. 重压：JPEG 重编码，质量默认 85（可配 80–90）；若结果超过照片体积上限（100KB），按 85→80→70 逐步降质直到满足；70 仍超限时保持 70 按比例缩小尺寸（每次 80%，最多 8 次）直至满足，全程不报错；
      5. 重编码同时丢弃 EXIF（含方向、设备、时间），不保留原始元数据；
      6. 变换必须接受可注入随机源，便于单测确定性断言。
-  5. 照片池只保存变换后的字节；原始下载字节仅在请求作用域内短暂存在。
-  6. UI：照片列表、上传、删除、失败标记、重新拉取（重新拉取会重新变换）；代签页可管理目标账号照片。
-  7. 实现状态（2026-10-20）：**全部落地**。强制变换在 `Server/internal/facephoto`（`Transform`）；照片池 `face_photos` 表、5 张上限、随机/失败降级选图、导入 handler、代签账号权限与 Web UI 均已实现，详见 §8.3.3。
+  5. 照片池只保存基线；变换结果仅在执行作用域内存在，上传缓存键为变换结果的 SHA-256。同一次执行内的重试复用同一份变换与 `objectId`；不同执行重新变换并上传。
+  6. 无人像时的签发路径：`facePhotoForSign` 遇到空池，用目标账号凭据调用一次 `ImportOfficial`（请求 ctx + 5s 超时）；成功后当次直接用新基线，失败返回 `face_photo_unavailable`，其它签到类型不受影响。同一执行内不重复拉取。
+  7. UI：照片列表、上传、删除、失败标记、重新拉取；代签页可管理目标账号照片。
+  8. 实现状态（2026-10-20，OMP-52）：**全部落地**。导入只存基线；`SignService` 每次执行调用 `facephoto.Transform` 后上传；自动导入受 `facePhotoImportTimeout` 约束；详见 §8.3.3。
 - **验收标准**：
   - 第 6 张被拒绝；删除后计数下降。
   - 随机选择与失败降级可用固定种子在单测中断言。
-  - 官方照片导入成功后可签到；对方未设置人脸照片时返回明确提示。
+  - 官方照片导入成功后可签到；无人像时自动拉取并成功签一次；拉取失败返回 `face_photo_unavailable`，其它签到类型照常成功。
   - 用固定随机种子单测断言：裁剪比例 ∈ [0.90, 0.99]、角度 ∈ [-5°, 5°]、输出字节 ≠ 输入字节、输出无 EXIF、无黑边像素；对 3 组种子各跑一次。
-  - 体积上限：构造一张接近上限的原图，导入后输出 ≤100KB 且未返回错误（自动降质生效）。
-  - 代码路径上不存在「下载原图直接保存/上传」的分支：审查导入 handler，落盘字节必须来自变换函数输出。
+  - 体积上限：接近上限的基线每次变换后输出 ≤100KB 且未返回错误（自动降质生效）。
+  - `ImportOfficial` 后 DB 字节 == 上游下载字节；连续两次执行后 `face_photos.data` 的 SHA-256 不变。
+  - 同一执行内重试只上传一次。
   - 越权访问他人照片返回 403；日志/响应不含密码与 token。
 - **不做**：风格化/换脸；按手机号任意查询/批量抓取；跨账号共享照片。**裁剪/旋转/重压是强制项**，不是可选项。
 
@@ -189,7 +191,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 
 ### 3.5 执行安排（2026-10-20 决策）
 
-- 范围：**协议全量对齐 CSF**，即 XBT-S1..S10；XBT-S5 已在 `feature/captcha-protocol-fix` 完成。**S7b 多照片做，但排在 S12 之后（P2）**，允许直接抓官方照片，且**抓下来的照片必须先裁剪/旋转/重压再保存或上传**。
+- 范围：**协议全量对齐 CSF**，即 XBT-S1..S10；XBT-S5 已在 `feature/captcha-protocol-fix` 完成。**S7b 多照片做，但排在 S12 之后（P2）**，允许直接抓官方照片；官方原图作为基线落库，**每次执行前在内存中裁剪/旋转/重压一次再上传**（2026-10-20 方案 A）。
 - 分支：全部在 `feature/captcha-protocol-fix` 上串行提交（未推送），每个 issue 一个 commit，禁止并行改同一工作区。
 - 顺序：S1 → S2 → S3 → S4 → S6 → S7a → S8 → S9 → S10；前端「移除固定 5 次重试」在 S3 后并行；E2E 在最后。
 - 归属：后端工程师执行 S1-S10，前端工程师执行重试/错误码 UI，测试工程师执行 E2E 回归；PM 只负责范围与验收，不做技术选型。
@@ -260,6 +262,8 @@ grep -n "activeType != 2\|taskactivelist\|signDetail" Server/internal/xxt/client
 5. **合规**：仅用于授权范围内的课程签到辅助；不扩展作弊能力。
 6. **人脸照片变换后的可用性**：裁剪/旋转/重压会改变人脸特征，可能被上游 `check-face-result` 拒绝或降低通过率。必须用 staging 测试账号验证「变换后仍能通过」；若通过率明显下降，先调低变换强度（裁剪比例上限、角度上限），不得通过增加照片数量来掩盖。
 7. **强制变换的可测试性**：变换必须支持注入随机源，否则「每次都变换」无法被单测证明；固定种子的断言是本项唯一可自动化的验收手段。
+8. **官方原图落库（OMP-52，方案 A）**：`face_photos.data` 现在保存官方原始照片（明文 `bytea`），泄露面高于此前「只存变换结果」的方案。这是用户 2026-10-20 明确选择的取舍；如需收紧，后续单独评估列加密或外部密钥，不再回退「原图不得落盘」。
+9. **上游上传量增加**：不同执行会重新变换并上传，同一活动的多次执行各产生一次 `face_temp` 上传；同一次执行内的重试仍只上传一次。需在 S10 的人脸上传计数中观察，避免高频重试放大风控风险。
 
 ## 8. 开放问题（附推荐）
 
@@ -401,11 +405,13 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 - **上限与并发**：`FacePhotoService.Add` 在事务内对目标 `users` 行 `SELECT ... FOR UPDATE` 后计数，第 6 张返回 `ErrFacePhotoLimit`（HTTP 409）；删除后计数立即下降。
 - **选图**：`facephoto.Select` 接受可注入随机源。账号存在失败历史时优先「未失败且用过」，其次「未失败」，最后全体；同一次 execute 内复用已选照片，重试不换图、不重复计数。
 - **失败标记**：`check-face-result` 无 `enc` 包装为 `xxt.ErrFaceRejected`，只在该错误或提交阶段再次返回 `[face]` 时置 `is_failure_before=true`；传输/HTTP/解码错误不会误伤照片。上传+校验成功即 `use_count+1`，并持久化最新 `objectId`。
-- **官方导入**：`collectionfilephotoEnc`（账号自身会话）取 `oldObjectId` → `https://p.cldisk.com/star4/<objectId>/origin.jpg` → 内存内 `facephoto.Transform` → 只把变换输出写入池。原始下载字节不落盘、不写日志；未设置官方照片返回 HTTP 422 可读提示。
+- **官方导入（OMP-52 方案 A）**：`collectionfilephotoEnc`（账号自身会话）取 `oldObjectId` → `https://p.cldisk.com/star4/<objectId>/origin.jpg` → **原样写入池**（`source=official`，≤8MB 且可解码，最大 1600 万像素）。响应返回 `transform_deferred=true`，不再返回 `transform`；未设置官方照片/无法解码/超限均返回 HTTP 422 可读提示。原始字节不写日志。
+- **签发时变换**：`SignService.applyFaceCredentials` 每次执行取到基线后调用 `facephoto.Transform`，上传字节只放内存；同一次 `ExecuteSignRequest` 内缓存变换结果，`face_temp` 缓存键为变换结果的 SHA-256，因此同一执行内重试只上传一次，不同执行会重新变换并上传。
+- **无人像自动导入**：`facePhotoForSign` 遇到 `facephoto.ErrNoPhotos` 时调用 `FacePhotoService.ImportOfficial`（目标账号凭据，请求 ctx + 5s 超时，单次执行最多一次）；成功后当次即用，失败返回 `face_photo_unavailable` 且不阻断非人脸签到。日志字段 `face_photo_source=pool|official_auto`。
 - **权限**：本人始终可管理；管理他人时要求双方存在「同为已选」的课程（与 `AuthorizeTargets` 的代签集合一致），否则 403。不提供按手机号查询或批量枚举。
 - **API**：`GET/POST /api/user/faces`、`DELETE /api/user/faces/:id`、`POST /api/user/faces/import`，均支持 `target_uid`；旧 `GET/POST/DELETE /api/user/face` 保留为兼容入口（GET 返回最新一张，DELETE 清空池）。
-- **UI**：`FacePhotoManager` 复用于主页与签到详情；支持列表、拍照/相册上传、逐张删除、失败/官方标记、使用次数与「拉取官方照片」。
-- **验证**：`cd Server && go test ./...`（含照片池上限/权限/导入/选图/迁移回填与 handler 端点）；`cd Web && npm run lint && npm run build`。
+- **UI**：`FacePhotoManager` 复用于主页与签到详情；支持列表、拍照/相册上传、逐张删除、失败/官方标记、使用次数与「拉取官方照片」。签到错误新增 `face_photo_unavailable` 映射。
+- **验证**：`cd Server && go vet ./... && go test ./...`（含照片池上限/权限/导入原样落库/签发时变换/自动导入/同执行单次上传/基线 SHA-256 不变）；`cd Web && npm run build`。
 
 ## 9. 排期估算（1 人后端 + 0.5 人前端）
 

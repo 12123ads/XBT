@@ -2,10 +2,14 @@ package service
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
+	mathrand "math/rand/v2"
 	"testing"
 
 	"gorm.io/gorm"
@@ -15,15 +19,21 @@ import (
 )
 
 type fakeProfileFaceClient struct {
-	data   []byte
-	err    error
-	calls  int
-	mobile string
+	data        []byte
+	err         error
+	calls       int
+	mobile      string
+	ctxErr      error
+	hasDeadline bool
 }
 
-func (f *fakeProfileFaceClient) FetchProfileFace(mobile, _ string) ([]byte, error) {
+func (f *fakeProfileFaceClient) FetchProfileFaceContext(ctx context.Context, mobile, _ string) ([]byte, error) {
 	f.calls++
 	f.mobile = mobile
+	_, f.hasDeadline = ctx.Deadline()
+	if f.ctxErr != nil {
+		return nil, f.ctxErr
+	}
 	return f.data, f.err
 }
 
@@ -118,14 +128,13 @@ func TestFacePhotoAuthorization(t *testing.T) {
 	}
 }
 
-func TestImportOfficialPhotoStoresOnlyTransformedBytes(t *testing.T) {
+func TestImportOfficialPhotoStoresBaseBytes(t *testing.T) {
 	database, cc := newFacePhotoFixture(t)
 	original := jpegFixture(t, 240, 320)
 	upstream := &fakeProfileFaceClient{data: original}
 	svc := NewFacePhotoService(database, cc, upstream)
-	svc.SetRand(fixedPhotoRand{})
 
-	photo, transformed, err := svc.ImportOfficial(1, 2)
+	photo, err := svc.ImportOfficial(context.Background(), 1, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,27 +144,18 @@ func TestImportOfficialPhotoStoresOnlyTransformedBytes(t *testing.T) {
 	if photo.Source != "official" || photo.UserUID != 2 {
 		t.Fatalf("photo = %+v", photo)
 	}
-	if bytes.Equal(photo.Data, original) {
-		t.Fatal("downloaded original bytes were persisted")
+	if !bytes.Equal(photo.Data, original) {
+		t.Fatal("official import did not store the downloaded bytes unchanged")
 	}
-	if transformed.CropWidthRatio < 0.90 || transformed.CropWidthRatio > 0.99 {
-		t.Fatalf("crop width ratio = %.4f", transformed.CropWidthRatio)
-	}
-	if transformed.AngleDegrees < -5 || transformed.AngleDegrees > 5 {
-		t.Fatalf("angle = %.4f", transformed.AngleDegrees)
-	}
-	if len(photo.Data) > facephoto.MaxUploadBytes {
-		t.Fatalf("stored bytes = %d", len(photo.Data))
-	}
-	if exif := bytes.Index(photo.Data, []byte("Exif")); exif >= 0 {
-		t.Fatal("stored photo still carries EXIF")
+	if len(photo.Data) > facephoto.MaxBaseBytes {
+		t.Fatalf("stored base bytes = %d", len(photo.Data))
 	}
 }
 
 func TestImportOfficialPhotoWithoutProfilePhoto(t *testing.T) {
 	database, cc := newFacePhotoFixture(t)
 	svc := NewFacePhotoService(database, cc, &fakeProfileFaceClient{err: xxt.ErrNoProfileFacePhoto})
-	_, _, err := svc.ImportOfficial(1, 2)
+	_, err := svc.ImportOfficial(context.Background(), 1, 2)
 	if !errors.Is(err, xxt.ErrNoProfileFacePhoto) {
 		t.Fatalf("err = %v, want ErrNoProfileFacePhoto", err)
 	}
@@ -165,26 +165,23 @@ func TestImportOfficialPhotoWithoutProfilePhoto(t *testing.T) {
 	}
 }
 
-func TestImportedOfficialPhotoCompletesFaceSign(t *testing.T) {
+func TestImportedOfficialBaseIsTransformedAtSignTime(t *testing.T) {
 	database, cc := newFacePhotoFixture(t)
 	original := jpegFixture(t, 240, 320)
 	photoSvc := NewFacePhotoService(database, cc, &fakeProfileFaceClient{data: original})
-	photoSvc.SetRand(fixedPhotoRand{})
-	imported, _, err := photoSvc.ImportOfficial(1, 2)
+	imported, err := photoSvc.ImportOfficial(context.Background(), 1, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
+	baseHash := sha256.Sum256(imported.Data)
 
-	uploaded := 0
+	var uploaded []byte
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
 			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
 		},
 		uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
-			uploaded++
-			if !bytes.Equal(data, imported.Data) {
-				t.Fatal("sign uploaded bytes that differ from the transformed pool entry")
-			}
+			uploaded = append([]byte(nil), data...)
 			return "face-temp-object", nil
 		},
 		checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
@@ -192,6 +189,7 @@ func TestImportedOfficialPhotoCompletesFaceSign(t *testing.T) {
 		},
 	}
 	signSvc := NewSignService(database, upstream, cc, nil)
+	signSvc.SetRand(fixedPhotoRand{})
 	result, err := signSvc.ExecuteOne(1, ExecuteSignRequest{
 		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
 		Special: map[string]interface{}{"if_face": true},
@@ -199,8 +197,17 @@ func TestImportedOfficialPhotoCompletesFaceSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Success || uploaded != 1 {
-		t.Fatalf("result=%+v uploads=%d", result, uploaded)
+	if !result.Success {
+		t.Fatalf("result=%+v", result)
+	}
+	if len(uploaded) == 0 || bytes.Equal(uploaded, imported.Data) {
+		t.Fatal("sign uploaded the stored base instead of a transform")
+	}
+	if len(uploaded) > facephoto.MaxUploadBytes {
+		t.Fatalf("uploaded bytes = %d", len(uploaded))
+	}
+	if bytes.Contains(uploaded, []byte("Exif")) {
+		t.Fatal("uploaded transform still carries EXIF")
 	}
 	var stored model.FacePhoto
 	if err := database.Where("id = ?", imported.ID).Take(&stored).Error; err != nil {
@@ -208,6 +215,174 @@ func TestImportedOfficialPhotoCompletesFaceSign(t *testing.T) {
 	}
 	if stored.UseCount != 1 || stored.ObjectID != "face-temp-object" {
 		t.Fatalf("stored = %+v", stored)
+	}
+	if sha256.Sum256(stored.Data) != baseHash {
+		t.Fatal("base photo bytes changed after a sign")
+	}
+}
+
+func TestSignImportsOfficialPhotoWhenPoolIsEmpty(t *testing.T) {
+	database, cc := newFacePhotoFixture(t)
+	original := jpegFixture(t, 240, 320)
+	upstreamFace := &fakeProfileFaceClient{data: original}
+	photoSvc := NewFacePhotoService(database, cc, upstreamFace)
+
+	var uploaded []byte
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
+			uploaded = append([]byte(nil), data...)
+			return "face-temp-object", nil
+		},
+		checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
+			return xxt.FaceCheckResult{CurrentFaceID: objectID, FaceEnc: "face-enc"}, nil
+		},
+	}
+	signSvc := NewSignService(database, upstream, cc, nil)
+	signSvc.SetFacePhotoService(photoSvc)
+	signSvc.SetRand(fixedPhotoRand{})
+
+	result, err := signSvc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+		Special: map[string]interface{}{"if_face": true},
+		Context: context.Background(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("result=%+v", result)
+	}
+	if upstreamFace.calls != 1 || !upstreamFace.hasDeadline {
+		t.Fatalf("official import calls=%d deadline=%v", upstreamFace.calls, upstreamFace.hasDeadline)
+	}
+	if len(uploaded) == 0 || bytes.Equal(uploaded, original) {
+		t.Fatal("sign uploaded the downloaded original or nothing")
+	}
+	var photos []model.FacePhoto
+	if err := database.Where("user_uid = ?", 2).Find(&photos).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(photos) != 1 || photos[0].Source != "official" || !bytes.Equal(photos[0].Data, original) {
+		t.Fatalf("stored base = %+v", photos)
+	}
+}
+
+func TestSignWithoutPhotoReturnsUnavailable(t *testing.T) {
+	database, cc := newFacePhotoFixture(t)
+	upstreamFace := &fakeProfileFaceClient{err: xxt.ErrNoProfileFacePhoto}
+	photoSvc := NewFacePhotoService(database, cc, upstreamFace)
+
+	signs := 0
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			signs++
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(string, string, string, string, []byte) (string, error) {
+			t.Fatal("upload attempted without a base photo")
+			return "", nil
+		},
+		checkFace: func(string, string, int64, string, string) (xxt.FaceCheckResult, error) {
+			t.Fatal("face check attempted without a base photo")
+			return xxt.FaceCheckResult{}, nil
+		},
+	}
+	signSvc := NewSignService(database, upstream, cc, nil)
+	signSvc.SetFacePhotoService(photoSvc)
+	signSvc.SetRand(fixedPhotoRand{})
+
+	failed, err := signSvc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+		Special: map[string]interface{}{"if_face": true},
+		Context: context.Background(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Success || failed.ErrorCode != SignErrorFacePhotoUnavailable {
+		t.Fatalf("result=%+v, want %q", failed, SignErrorFacePhotoUnavailable)
+	}
+	if upstreamFace.calls != 1 || signs != 0 {
+		t.Fatalf("official import calls=%d signs=%d, want one import attempt and no submit", upstreamFace.calls, signs)
+	}
+
+	plain, err := signSvc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plain.Success || signs != 1 {
+		t.Fatalf("non-face sign result=%+v signs=%d", plain, signs)
+	}
+	if upstreamFace.calls != 1 {
+		t.Fatalf("non-face sign triggered an official import: calls=%d", upstreamFace.calls)
+	}
+}
+
+func TestBasePhotoTransformsPerExecution(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	base := jpegFixture(t, 120, 160)
+	photo := seedFacePhoto(t, database, 2, base)
+	baseHash := sha256.Sum256(photo.Data)
+
+	var uploads [][]byte
+	upstream := &signAuthorizationUpstream{
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+		uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
+			uploads = append(uploads, append([]byte(nil), data...))
+			return fmt.Sprintf("face-object-%d", len(uploads)), nil
+		},
+		checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
+			return xxt.FaceCheckResult{CurrentFaceID: objectID, FaceEnc: "face-enc-" + objectID}, nil
+		},
+	}
+	signSvc := NewSignService(database, upstream, cc, nil)
+	signSvc.SetRand(mathrand.New(mathrand.NewPCG(7, 11)))
+	sign := func() {
+		t.Helper()
+		result, err := signSvc.ExecuteOne(1, ExecuteSignRequest{
+			ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal,
+			Special: map[string]interface{}{"if_face": true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Success {
+			t.Fatalf("sign failed: %+v", result)
+		}
+		if err := database.Where("user_uid = ? AND activity_id = ?", 2, 100).Delete(&model.SignRecord{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sign()
+	sign()
+	if len(uploads) != 2 {
+		t.Fatalf("uploads = %d, want a fresh transform upload per execution", len(uploads))
+	}
+	if bytes.Equal(uploads[0], uploads[1]) {
+		t.Fatal("two executions uploaded identical transforms")
+	}
+	for _, data := range uploads {
+		if len(data) > facephoto.MaxUploadBytes {
+			t.Fatalf("uploaded bytes = %d", len(data))
+		}
+		if bytes.Contains(data, []byte("Exif")) {
+			t.Fatal("uploaded transform still carries EXIF")
+		}
+	}
+	var stored model.FacePhoto
+	if err := database.Where("id = ?", photo.ID).Take(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sha256.Sum256(stored.Data) != baseHash {
+		t.Fatal("base photo bytes changed across executions")
 	}
 }
 

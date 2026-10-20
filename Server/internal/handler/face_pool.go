@@ -74,23 +74,25 @@ func (h *AuthHandler) DeleteFaceByID(c *gin.Context) {
 	common.Success(c, nil)
 }
 
-// ImportFace pulls the account's official photo, transforms it in memory and
-// stores only the transform output.
+// ImportFace pulls the account's official photo and stores it untouched as a
+// base image. The per-execution transform happens at sign time.
 func (h *AuthHandler) ImportFace(c *gin.Context) {
 	targetUID, ok := faceTargetUID(c)
 	if !ok {
 		return
 	}
-	photo, transformed, err := h.facePhotos.ImportOfficial(common.GetUserUID(c), targetUID)
+	photo, err := h.facePhotos.ImportOfficial(c.Request.Context(), common.GetUserUID(c), targetUID)
 	if err != nil {
 		switch {
 		case errors.Is(err, xxt.ErrNoProfileFacePhoto):
 			common.Fail(c, http.StatusUnprocessableEntity, "该账号未设置学习通官方人脸照片，无法导入")
+		case errors.Is(err, service.ErrFacePhotoInvalid):
+			common.Fail(c, http.StatusUnprocessableEntity, "官方人脸照片无法解码，请稍后重试")
+		case errors.Is(err, service.ErrFacePhotoTooLarge):
+			common.Fail(c, http.StatusUnprocessableEntity, "官方人脸照片超过 8MB 上限")
 		case errors.Is(err, service.ErrFacePhotoForbidden), errors.Is(err, service.ErrFacePhotoLimit),
-			errors.Is(err, service.ErrFacePhotoTooLarge), errors.Is(err, service.ErrFacePhotoNotFound):
+			errors.Is(err, service.ErrFacePhotoNotFound):
 			h.failFacePhoto(c, err)
-		case strings.Contains(err.Error(), "transform official face photo"):
-			common.Fail(c, http.StatusUnprocessableEntity, "官方人脸照片处理失败，请稍后重试")
 		default:
 			log.Printf("import official face photo: target_uid=%d err=%v", targetUID, err)
 			common.Fail(c, http.StatusBadGateway, "导入官方人脸照片失败，请稍后重试")
@@ -98,14 +100,7 @@ func (h *AuthHandler) ImportFace(c *gin.Context) {
 		return
 	}
 	payload := facePhotoPayload(photo, true)
-	payload["transform"] = gin.H{
-		"width":             transformed.Width,
-		"height":            transformed.Height,
-		"crop_width_ratio":  transformed.CropWidthRatio,
-		"crop_height_ratio": transformed.CropHeightRatio,
-		"angle_degrees":     transformed.AngleDegrees,
-		"quality":           transformed.Quality,
-	}
+	payload["transform_deferred"] = true
 	common.Success(c, payload)
 }
 

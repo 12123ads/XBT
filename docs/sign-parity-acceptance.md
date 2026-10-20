@@ -88,7 +88,7 @@ dist/assets/index-DGAkS9Ai.js  1,043.76 kB │ gzip: 307.09 kB
 | 手势 | 通用参数 + `signCode` + `checkSignCode` + 位置 | `checkSignCode` 1 次；提交 1 次 | 未执行 |
 | 位置 | 通用参数 + `address/latitude/longitude/ifTiJiao=1` + `location`/`locationResult` | `errorLocation_` 最多 +1 次，重试使用未随机化基点 | 未执行 |
 | 签到码 | 通用参数 + `signCode` + 位置 | 提交 1 次 | 未执行 |
-| 人脸 | `objectId/currentFaceId/ifCFP=0/vpProbability=-1/vpStrategy/faceCode=""/faceEncAid=""/faceEnc`；恢复时带 `enc2`；`check-face-result` 的 `faceResult` 带设备签名（可用 clientId 时） | 人脸挑战最多 +1 次；同一照片同活动只上传 1 次 | 未执行 |
+| 人脸 | `objectId/currentFaceId/ifCFP=0/vpProbability=-1/vpStrategy/faceCode=""/faceEncAid=""/faceEnc`；恢复时带 `enc2`；`check-face-result` 的 `faceResult` 带设备签名（可用 clientId 时） | 人脸挑战最多 +1 次；同一次执行内只上传 1 次（不同执行重新变换上传） | 未执行 |
 | 验证码 | 首次不带 `validate/enc2`；重试带 `validate` + `enc2`；`get/conf` + 取图 + 校验各 1 次 | 最多 +1 次提交 | 未执行 |
 | 已截止 | preSign 返回截止标记；不提交 `stuSignajax` | 0 次提交 | 未执行 |
 | 官方已签 | preSign 返回已签状态；不提交 `stuSignajax` | 0 次提交 | 未执行 |
@@ -108,7 +108,7 @@ dist/assets/index-DGAkS9Ai.js  1,043.76 kB │ gzip: 307.09 kB
 3. **真实 `clientId` 兼容性**：S13 签名路径回放使用固定测试密钥（`device_test.go` 的 `clientIDFixture`）替换 `faceResultKey`，验证的是「可解密则签名、不可解密则降级」的分支；上游真实私钥签发的 `clientId` 无法在当前环境验证。
 4. **真实验证码识别率**：回放使用确定性合成图片（固定答案 x=100），不代表真实滑块识别通过率。
 5. **Web/浏览器端到端**：只执行了 `npm run build`；未用真实浏览器验证签到页交互与错误码展示。
-6. **S7b（人脸照片池/官方照片导入）**：本报告的范围仍只到 S12；S7b 随后由 OMP-39 实现（`face_photos` 表、5 张上限、随机/失败降级选图、官方照片内存变换与导入、代签账号权限、Web UI），本地单测与 API 冒烟已通过，但「变换后的官方照片能被真实 `check-face-result` 接受」仍需 staging 账号实测。实现细节见 `docs/sign-parity-plan.md` §8.3.3。
+6. **S7b（人脸照片池/官方照片导入）**：本报告的范围仍只到 S12；S7b 随后由 OMP-39 实现，OMP-52 又将其改为「官方原图作为基线落库、每次执行在内存变换后上传」：`ImportOfficial` 原样保存并返回 `transform_deferred=true`，空池自动导入一次，同一执行内重试只上传一次，基线字节在执行前后 SHA-256 不变——以上均有本地单测；但「变换后的照片能被真实 `check-face-result` 接受」仍需 staging 账号实测。实现细节见 `docs/sign-parity-plan.md` §8.3.3。
 7. **403 真实重登**：回放验证了客户端预算（1 次重登 + 1 次重试）与终态错误，未对真实学习通会话验证。
 
 ## 5. 剩余风险

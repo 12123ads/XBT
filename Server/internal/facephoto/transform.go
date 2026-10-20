@@ -22,8 +22,16 @@ const (
 	// MinQuality and MaxQuality bound the configurable re-encode quality.
 	MinQuality = 80
 	MaxQuality = 90
-	// MaxUploadBytes is the byte ceiling enforced on stored/uploaded photos.
+	// MaxUploadBytes is the byte ceiling enforced on uploaded/transformed
+	// photos.
 	MaxUploadBytes = 100 * 1024
+	// MaxBaseBytes bounds a stored base image. Official originals are kept
+	// untouched (OMP-52), so this ceiling is above MaxUploadBytes.
+	MaxBaseBytes = 8 << 20
+	// MaxSourcePixels bounds the decoded dimensions of a base image so a
+	// malformed header cannot force a huge allocation during a sign. 16MP
+	// covers a 4000x4000 source; Transform downscales to 720x1280 afterwards.
+	MaxSourcePixels = 16_000_000
 	// MaxWidth and MaxHeight match the manual upload limits enforced by the
 	// face upload handler.
 	MaxWidth  = 720
@@ -56,8 +64,28 @@ type Options struct {
 	MaxBytes int
 }
 
+// ValidateSource checks that src is a decodable JPEG or PNG no larger than
+// MaxBaseBytes. It reads only image dimensions and never rewrites the bytes:
+// an imported official original is stored exactly as downloaded.
+func ValidateSource(src []byte) error {
+	if len(src) == 0 {
+		return errors.New("face photo base is empty")
+	}
+	if len(src) > MaxBaseBytes {
+		return fmt.Errorf("face photo base is %d bytes, over the %d byte limit", len(src), MaxBaseBytes)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(src))
+	if err != nil {
+		return fmt.Errorf("decode face photo base: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxSourcePixels {
+		return fmt.Errorf("face photo base is %dx%d, over the %d pixel limit", cfg.Width, cfg.Height, MaxSourcePixels)
+	}
+	return nil
+}
+
 // Result describes the transformed photo. JPEG is the only bytes a caller may
-// persist or upload; the downloaded original must never be stored.
+// upload; it is never persisted (the base image stays in the pool).
 type Result struct {
 	JPEG            []byte
 	Width           int

@@ -164,6 +164,7 @@ export interface SignCheckItem {
 export type SignErrorCode =
   | 'captcha_required'
   | 'face_required'
+  | 'face_photo_unavailable'
   | 'location_out_of_range'
   | 'location_point_required'
   | 'qr_expired'

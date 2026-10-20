@@ -44,11 +44,13 @@ func main() {
 	}
 
 	authHandler := handler.NewAuthHandler(database, jwtSvc, credentialCrypto, xxtClient)
-	authHandler.SetFacePhotoService(service.NewFacePhotoService(database, credentialCrypto, xxtClient))
+	facePhotoSvc := service.NewFacePhotoService(database, credentialCrypto, xxtClient)
+	authHandler.SetFacePhotoService(facePhotoSvc)
 	courseHandler := handler.NewCourseHandler(database, xxtClient, credentialCrypto)
 	learningHandler := handler.NewLearningHandler(database, xxtClient, credentialCrypto)
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
+	signSvc.SetFacePhotoService(facePhotoSvc)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
 	signHandler.SetSignLimiter(ratelimit.New(cfg.SignRateLimitPerMinute, cfg.SignRateLimitBurst, cfg.SignMaxConcurrent))
 	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)

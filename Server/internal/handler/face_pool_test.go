@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -28,7 +29,7 @@ type facePoolUpstream struct {
 	calls int
 }
 
-func (u *facePoolUpstream) FetchProfileFace(string, string) ([]byte, error) {
+func (u *facePoolUpstream) FetchProfileFaceContext(context.Context, string, string) ([]byte, error) {
 	u.calls++
 	return u.data, u.err
 }
@@ -149,12 +150,7 @@ type facePhotoResponse struct {
 			Source          string `json:"source"`
 			IsFailureBefore bool   `json:"is_failure_before"`
 		} `json:"photos"`
-		Transform struct {
-			CropWidthRatio  float64 `json:"crop_width_ratio"`
-			CropHeightRatio float64 `json:"crop_height_ratio"`
-			AngleDegrees    float64 `json:"angle_degrees"`
-			Quality         int     `json:"quality"`
-		} `json:"transform"`
+		TransformDeferred bool `json:"transform_deferred"`
 	} `json:"data"`
 }
 
@@ -215,11 +211,10 @@ func TestFacePoolRejectsUnrelatedAccount(t *testing.T) {
 	}
 }
 
-func TestFacePoolImportStoresTransformOutput(t *testing.T) {
+func TestFacePoolImportStoresBaseImage(t *testing.T) {
 	original := faceJPEG(t)
 	upstream := &facePoolUpstream{data: original}
 	fixture := newFacePoolFixture(t, upstream)
-	fixture.service.SetRand(fixedFacePhotoRand{})
 	req := httptest.NewRequest(http.MethodPost, "/user/faces/import?target_uid=2", nil)
 	req.Header.Set("Authorization", "Bearer "+fixture.tokens[1])
 	recorder := performFaceRequest(fixture.router, req)
@@ -230,18 +225,18 @@ func TestFacePoolImportStoresTransformOutput(t *testing.T) {
 	if response.Data.Source != "official" || response.Data.UserUID != 2 {
 		t.Fatalf("response = %+v", response.Data)
 	}
-	if response.Data.Transform.CropWidthRatio < 0.90 || response.Data.Transform.CropWidthRatio > 0.99 {
-		t.Fatalf("crop ratio = %.4f", response.Data.Transform.CropWidthRatio)
+	if !response.Data.TransformDeferred {
+		t.Fatal("import did not report a deferred transform")
 	}
-	if response.Data.Transform.Quality < 70 || response.Data.Transform.Quality > 90 {
-		t.Fatalf("quality = %d", response.Data.Transform.Quality)
+	if upstream.calls != 1 {
+		t.Fatalf("upstream calls = %d", upstream.calls)
 	}
 	var stored model.FacePhoto
 	if err := fixture.db.Where("id = ?", response.Data.ID).Take(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(stored.Data, original) {
-		t.Fatal("original download was persisted")
+	if !bytes.Equal(stored.Data, original) {
+		t.Fatal("import did not store the downloaded original unchanged")
 	}
 }
 
@@ -263,8 +258,3 @@ func TestFacePoolImportWithoutOfficialPhoto(t *testing.T) {
 		t.Fatal("missing readable message")
 	}
 }
-
-type fixedFacePhotoRand struct{}
-
-func (fixedFacePhotoRand) Float64() float64 { return 0.5 }
-func (fixedFacePhotoRand) IntN(n int) int   { return n / 2 }

@@ -43,11 +43,18 @@ type SignService struct {
 	faceUploadMu    sync.Mutex
 	faceUploads     map[faceUploadKey]faceUploadEntry
 	faceUploadGroup singleflight.Group
+	// faceImportGroup coalesces concurrent empty-pool imports for the same
+	// account, so one fetch is shared instead of storing duplicate bases.
+	faceImportGroup singleflight.Group
 	// sampleLocation is replaceable in tests. Production uses the uniform
 	// sampler from xxt with the global random source.
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
-	// facePhotoRand is replaceable in tests so pool selection is assertable.
+	// facePhotoRand is replaceable in tests so pool selection and per-execution
+	// transforms are assertable.
 	facePhotoRand facephoto.RandSource
+	// facePhotos is the on-demand official photo importer. A nil importer
+	// leaves accounts without a pool entry unable to sign with a face.
+	facePhotos FacePhotoImporter
 	// faceDevice fetches clientId when storage cannot provide a signature. It
 	// is nil when the upstream client does not implement FaceDeviceClient.
 	faceDevice FaceDeviceClient
@@ -114,6 +121,23 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 
 const courseSignNotificationDebounce = 8 * time.Second
 
+// FacePhotoImporter fetches and stores an account's official photo as a base
+// image. *FacePhotoService implements it; tests may inject a narrower stub.
+type FacePhotoImporter interface {
+	ImportOfficial(ctx context.Context, operatorUID, targetUID int64) (model.FacePhoto, error)
+}
+
+// SetFacePhotoService enables the sign-time fallback that imports the official
+// photo when an account has no pool entry yet.
+func (s *SignService) SetFacePhotoService(importer FacePhotoImporter) {
+	s.facePhotos = importer
+}
+
+// SetRand installs the randomness used for pool selection and the transform
+// that runs inside every execution. Tests inject a deterministic source;
+// production leaves it nil (time-seeded).
+func (s *SignService) SetRand(rnd facephoto.RandSource) { s.facePhotoRand = rnd }
+
 type courseSignNotificationKey struct {
 	ActivityID int64
 	CourseID   int64
@@ -152,6 +176,17 @@ type ExecuteSignRequest struct {
 	// inside the same execution reuses it and never counts it twice.
 	facePhotoID      uint
 	facePhotoCounted bool
+	// facePhotoSource labels the selected base for logs: pool or
+	// official_auto (imported during this execution).
+	facePhotoSource string
+	// faceTransform caches the transform output for this execution. The base
+	// image in the database is never modified; the cached bytes keep the
+	// upload key stable across retries of the same execution.
+	faceTransform []byte
+	// facePhotoImportDone makes the on-demand official import happen at most
+	// once per execution, including the failure case.
+	facePhotoImportDone bool
+	facePhotoImportErr  error
 }
 
 type ExecutePhotoSignRequest struct {
@@ -225,9 +260,12 @@ type SignExecuteResult struct {
 // Error codes exposed by /api/sign/execute. They mirror xxt.SignResultKind so
 // the web client never parses raw upstream strings.
 const (
-	SignErrorNone                  = ""
-	SignErrorCaptchaRequired       = "captcha_required"
-	SignErrorFaceRequired          = "face_required"
+	SignErrorNone            = ""
+	SignErrorCaptchaRequired = "captcha_required"
+	SignErrorFaceRequired    = "face_required"
+	// SignErrorFacePhotoUnavailable means the account had no pool entry and the
+	// on-demand official import did not produce a usable base image.
+	SignErrorFacePhotoUnavailable  = "face_photo_unavailable"
 	SignErrorLocationOutRange      = "location_out_of_range"
 	SignErrorLocationPointRequired = "location_point_required"
 	SignErrorQRExpired             = "qr_expired"
@@ -239,6 +277,20 @@ const (
 	SignErrorSignOutUnavailable = "sign_out_unavailable"
 	SignErrorSignOutUnpublished = "sign_out_not_published"
 )
+
+// ErrFacePhotoUnavailable reports that no usable base image could be prepared:
+// the pool was empty and the official import failed, or a stored base could
+// not be decoded/transformed.
+var ErrFacePhotoUnavailable = errors.New("face photo unavailable")
+
+// facePhotoUnavailableError keeps a user-facing message while matching
+// ErrFacePhotoUnavailable. The underlying cause belongs in logs, not the API.
+type facePhotoUnavailableError struct{ message string }
+
+func (e facePhotoUnavailableError) Error() string { return e.message }
+func (e facePhotoUnavailableError) Is(target error) bool {
+	return target == ErrFacePhotoUnavailable
+}
 
 func (s *SignService) CheckSignStates(operatorUID, activityID, courseID, classID int64, userIDs []int64) ([]SignCheckItem, error) {
 	targets := make([]int64, 0, len(userIDs)+1)
@@ -533,7 +585,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (res
 
 	if ifFace, _ := req.Special["if_face"].(bool); ifFace {
 		if err := s.applyFaceCredentials(&target, password, &req); err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: faceCredentialErrorCode(err), Message: err.Error()}, nil
 		}
 	}
 
@@ -630,7 +682,7 @@ func (s *SignService) submitSign(target *model.User, password string, req *Execu
 		case result.Kind == xxt.SignResultFaceRequired && !faceRetried:
 			faceRetried = true
 			if err := s.applyFaceCredentials(target, password, req); err != nil {
-				return xxt.SignResult{}, &SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
+				return xxt.SignResult{}, &SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: faceCredentialErrorCode(err), Message: err.Error()}, nil
 			}
 			if result.Enc2 != "" {
 				req.Special["enc2"] = result.Enc2
@@ -811,7 +863,7 @@ func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOut
 	if outDetail.IfFace {
 		signReq.Special["if_face"] = true
 		if err := s.applyFaceCredentials(&target, password, &signReq); err != nil {
-			result.ErrorCode = SignErrorFaceRequired
+			result.ErrorCode = faceCredentialErrorCode(err)
 			result.Message = err.Error()
 			return result, nil
 		}
@@ -1069,6 +1121,11 @@ func locationOutOfRangeMessage(distance float64) string {
 // for activities nobody will touch again.
 const faceUploadTTL = 6 * time.Hour
 
+// facePhotoImportTimeout bounds the on-demand official photo fetch used when
+// an account has no pool entry. It mirrors the clientId backfill budget so a
+// slow upstream cannot stall the sign window.
+const facePhotoImportTimeout = 5 * time.Second
+
 type faceUploadKey struct {
 	UserUID    int64
 	ActivityID int64
@@ -1080,21 +1137,44 @@ type faceUploadEntry struct {
 	UploadedAt time.Time
 }
 
+// faceCredentialErrorCode separates "no usable photo" from an upstream face
+// rejection so the client can tell the user to upload a photo.
+func faceCredentialErrorCode(err error) string {
+	if errors.Is(err, ErrFacePhotoUnavailable) {
+		return SignErrorFacePhotoUnavailable
+	}
+	return SignErrorFaceRequired
+}
+
 func (s *SignService) applyFaceCredentials(target *model.User, password string, req *ExecuteSignRequest) error {
 	photo, err := s.facePhotoForSign(req)
 	if err != nil {
 		return err
 	}
+	source := req.facePhotoSource
+	if source == "" {
+		source = "pool"
+	}
+	if req.faceTransform == nil {
+		transformed, err := facephoto.Transform(photo.Data, facephoto.Options{Rand: s.facePhotoRand})
+		if err != nil {
+			log.Printf("face photo transform failed: uid=%d photo_id=%d face_photo_source=%s err=%v", req.TargetUID, photo.ID, source, err)
+			return facePhotoUnavailableError{message: "人脸照片处理失败，请更新人脸照片后重试"}
+		}
+		req.faceTransform = transformed.JPEG
+		log.Printf("face photo transform: uid=%d photo_id=%d face_photo_source=%s bytes=%d", req.TargetUID, photo.ID, source, len(req.faceTransform))
+	}
 	key := faceUploadKey{
 		UserUID:    req.TargetUID,
 		ActivityID: req.ActivityID,
-		PhotoHash:  sha256.Sum256(photo.Data),
+		PhotoHash:  sha256.Sum256(req.faceTransform),
 	}
 	objectID, err := s.faceObjectID(key, func() (string, error) {
-		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", photo.Data)
+		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", req.faceTransform)
 	})
 	if err != nil {
 		s.recordFaceUse(req, "", false)
+		log.Printf("face photo upload failed: uid=%d photo_id=%d face_photo_source=%s err=%v", req.TargetUID, photo.ID, source, err)
 		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
 	clientID := s.faceClientID(req.Context, target, password)
@@ -1117,6 +1197,8 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 
 // facePhotoForSign keeps one pool entry for the whole execution. A retry
 // inside the state machine reuses the photo instead of selecting another one.
+// An account with no pool entry imports the official photo once and uses it
+// as this execution's base.
 func (s *SignService) facePhotoForSign(req *ExecuteSignRequest) (model.FacePhoto, error) {
 	if req.facePhotoID != 0 {
 		var photo model.FacePhoto
@@ -1131,12 +1213,53 @@ func (s *SignService) facePhotoForSign(req *ExecuteSignRequest) (model.FacePhoto
 	}
 	photo, err := PickForSign(s.db, req.TargetUID, s.facePhotoRand)
 	if errors.Is(err, facephoto.ErrNoPhotos) {
-		return model.FacePhoto{}, errors.New("该同学未设置人脸照片，请先在主页上传")
+		photo, err = s.importOfficialForSign(req)
+		if err != nil {
+			return model.FacePhoto{}, err
+		}
+		req.facePhotoID = photo.ID
+		req.facePhotoSource = "official_auto"
+		return photo, nil
 	}
 	if err != nil {
 		return model.FacePhoto{}, fmt.Errorf("读取人脸照片失败：%v", err)
 	}
 	req.facePhotoID = photo.ID
+	req.facePhotoSource = "pool"
+	return photo, nil
+}
+
+// importOfficialForSign performs the one on-demand import allowed for this
+// execution, bounded by the request context and facePhotoImportTimeout.
+func (s *SignService) importOfficialForSign(req *ExecuteSignRequest) (model.FacePhoto, error) {
+	if req.facePhotoImportDone {
+		if req.facePhotoImportErr != nil {
+			return model.FacePhoto{}, req.facePhotoImportErr
+		}
+		return model.FacePhoto{}, facePhotoUnavailableError{message: "该同学未设置人脸照片，请先在主页上传"}
+	}
+	req.facePhotoImportDone = true
+	if s.facePhotos == nil {
+		req.facePhotoImportErr = facePhotoUnavailableError{message: "该同学未设置人脸照片，请先在主页上传"}
+		return model.FacePhoto{}, req.facePhotoImportErr
+	}
+
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, facePhotoImportTimeout)
+	defer cancel()
+	value, err, _ := s.faceImportGroup.Do(strconv.FormatInt(req.TargetUID, 10), func() (interface{}, error) {
+		return s.facePhotos.ImportOfficial(ctx, req.TargetUID, req.TargetUID)
+	})
+	if err != nil {
+		log.Printf("face photo official import failed: uid=%d err=%v", req.TargetUID, err)
+		req.facePhotoImportErr = facePhotoUnavailableError{message: "该同学未设置人脸照片，且无法获取官方照片，请先在主页上传"}
+		return model.FacePhoto{}, req.facePhotoImportErr
+	}
+	photo := value.(model.FacePhoto)
+	log.Printf("face photo official import succeeded: uid=%d photo_id=%d", req.TargetUID, photo.ID)
 	return photo, nil
 }
 

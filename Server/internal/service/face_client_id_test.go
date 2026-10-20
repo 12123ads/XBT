@@ -36,7 +36,7 @@ func runFaceSign(t *testing.T, svc *SignService, database *gorm.DB) SignExecuteR
 
 func TestFaceSignBackfillsClientIDOnce(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 
 	fetches := 0
 	var checked []string
@@ -94,7 +94,7 @@ func TestFaceSignBackfillsClientIDOnce(t *testing.T) {
 
 func TestFaceSignContinuesWhenBackfillFails(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 
 	var checked string
 	signs := 0
@@ -154,7 +154,7 @@ func TestFaceSignSkipsBackfillWithStoredClientID(t *testing.T) {
 	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("client_id_cipher", cipher).Error; err != nil {
 		t.Fatal(err)
 	}
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 
 	fetches := 0
 	var checked string
@@ -187,7 +187,7 @@ func TestFaceSignSkipsBackfillWithStoredClientID(t *testing.T) {
 
 func TestFaceSignBackfillCooldownAfterFailure(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 
 	fetches := 0
 	var checked []string

@@ -1,6 +1,7 @@
 package xxt
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,13 +27,20 @@ var ErrNoProfileFacePhoto = errors.New("account has no official face photo")
 // ProfileFaceObjectID returns the objectId of the account's official face
 // photo. The request uses that account's own session.
 func (c *Client) ProfileFaceObjectID(mobile, password string) (string, error) {
+	return c.ProfileFaceObjectIDContext(context.Background(), mobile, password)
+}
+
+// ProfileFaceObjectIDContext is ProfileFaceObjectID bounded by ctx. Session
+// establishment still uses the client's login timeout, as with the other
+// request-scoped upstream calls.
+func (c *Client) ProfileFaceObjectIDContext(ctx context.Context, mobile, password string) (string, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return "", err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
-	req, err := http.NewRequest(http.MethodGet, profileFaceMetadataURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, profileFaceMetadataURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -68,12 +76,17 @@ func (c *Client) ProfileFaceObjectID(mobile, password string) (string, error) {
 }
 
 // DownloadProfileFace fetches the original bytes for objectID. Callers must
-// transform the result in memory before persisting or uploading it.
+// transform the result in memory unless they are storing it as the base image.
 func (c *Client) DownloadProfileFace(objectID string) ([]byte, error) {
+	return c.DownloadProfileFaceContext(context.Background(), objectID)
+}
+
+// DownloadProfileFaceContext is DownloadProfileFace bounded by ctx.
+func (c *Client) DownloadProfileFaceContext(ctx context.Context, objectID string) ([]byte, error) {
 	if err := validateFaceObjectID(objectID); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf(profileFaceImageURL, url.PathEscape(objectID)), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(profileFaceImageURL, url.PathEscape(objectID)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -103,13 +116,18 @@ func (c *Client) DownloadProfileFace(objectID string) ([]byte, error) {
 }
 
 // FetchProfileFace resolves and downloads the account's official face photo.
-// The returned bytes are the untouched original; transform them before use.
+// The returned bytes are the untouched original.
 func (c *Client) FetchProfileFace(mobile, password string) ([]byte, error) {
-	objectID, err := c.ProfileFaceObjectID(mobile, password)
+	return c.FetchProfileFaceContext(context.Background(), mobile, password)
+}
+
+// FetchProfileFaceContext is FetchProfileFace bounded by ctx.
+func (c *Client) FetchProfileFaceContext(ctx context.Context, mobile, password string) ([]byte, error) {
+	objectID, err := c.ProfileFaceObjectIDContext(ctx, mobile, password)
 	if err != nil {
 		return nil, err
 	}
-	return c.DownloadProfileFace(objectID)
+	return c.DownloadProfileFaceContext(ctx, objectID)
 }
 
 func validateFaceObjectID(objectID string) error {

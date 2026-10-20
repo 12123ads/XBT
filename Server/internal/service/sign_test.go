@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	mathrand "math/rand/v2"
 	"reflect"
 	"testing"
 
@@ -438,7 +440,8 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, cc := newSignStateMachineFixture(t)
-			seedFacePhoto(t, database, 2, []byte("face-bytes"))
+			base := jpegFixture(t, 80, 120)
+			seedFacePhoto(t, database, 2, base)
 			var calls int
 			var retrySpecial map[string]interface{}
 			uploads, checks := 0, 0
@@ -456,8 +459,8 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 				},
 				uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
 					uploads++
-					if string(data) != "face-bytes" {
-						t.Fatalf("uploaded photo = %q", data)
+					if len(data) == 0 || bytes.Equal(data, base) {
+						t.Fatal("upload did not carry a fresh transform of the base image")
 					}
 					return "face-object", nil
 				},
@@ -490,20 +493,20 @@ func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestFaceUploadReusedWithinActivity(t *testing.T) {
+func TestFaceUploadTransformsPerExecution(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	base := jpegFixture(t, 80, 120)
+	photo := seedFacePhoto(t, database, 2, base)
 	uploads, checks := 0, 0
 	var checkedObjects []string
+	var uploaded [][]byte
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
 			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
 		},
 		uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
 			uploads++
-			if string(data) != "face-bytes" && string(data) != "face-bytes-2" {
-				t.Fatalf("uploaded photo = %q", data)
-			}
+			uploaded = append(uploaded, append([]byte(nil), data...))
 			return fmt.Sprintf("face-object-%d", uploads), nil
 		},
 		checkFace: func(_ string, _ string, _ int64, objectID, _ string) (xxt.FaceCheckResult, error) {
@@ -513,6 +516,7 @@ func TestFaceUploadReusedWithinActivity(t *testing.T) {
 		},
 	}
 	svc := NewSignService(database, upstream, cc, nil)
+	svc.SetRand(mathrand.New(mathrand.NewPCG(3, 9)))
 	sign := func() {
 		t.Helper()
 		result, err := svc.ExecuteOne(1, ExecuteSignRequest{
@@ -532,26 +536,38 @@ func TestFaceUploadReusedWithinActivity(t *testing.T) {
 
 	sign()
 	sign()
-	if uploads != 1 {
-		t.Fatalf("uploads = %d, want one upload for two executions in the same activity", uploads)
+	if uploads != 2 {
+		t.Fatalf("uploads = %d, want a new transform upload per execution", uploads)
+	}
+	if bytes.Equal(uploaded[0], uploaded[1]) {
+		t.Fatal("two executions uploaded the same transform")
 	}
 	if checks != 2 {
 		t.Fatalf("face checks = %d, want one per execution", checks)
 	}
-	if checkedObjects[0] != "face-object-1" || checkedObjects[1] != checkedObjects[0] {
-		t.Fatalf("face checks reused objectIds %v, want the single upload", checkedObjects)
+	if checkedObjects[0] != "face-object-1" || checkedObjects[1] != "face-object-2" {
+		t.Fatalf("face checks used objectIds %v, want one upload each", checkedObjects)
+	}
+
+	var stored model.FacePhoto
+	if err := database.Where("id = ?", photo.ID).Take(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored.Data, base) {
+		t.Fatal("base photo bytes changed across executions")
 	}
 
 	if err := database.Where("user_uid = ?", 2).Delete(&model.FacePhoto{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	seedFacePhoto(t, database, 2, []byte("face-bytes-2"))
+	base2 := jpegFixture(t, 90, 130)
+	seedFacePhoto(t, database, 2, base2)
 	sign()
-	if uploads != 2 {
-		t.Fatalf("uploads = %d, want a new upload after the photo changed", uploads)
+	if uploads != 3 {
+		t.Fatalf("uploads = %d, want a new upload after the base photo changed", uploads)
 	}
-	if checkedObjects[2] != "face-object-2" {
-		t.Fatalf("changed photo checked with %q", checkedObjects[2])
+	if checkedObjects[2] != "face-object-3" {
+		t.Fatalf("changed base checked with %q", checkedObjects[2])
 	}
 }
 
@@ -1229,7 +1245,7 @@ func TestFaceCheckUsesPersistedClientID(t *testing.T) {
 	if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("client_id_cipher", cipher).Error; err != nil {
 		t.Fatal(err)
 	}
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 	var got []string
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
@@ -1269,7 +1285,7 @@ func TestFaceCheckUsesPersistedClientID(t *testing.T) {
 
 func TestFaceCheckOmitsClientIDWhenStorageIsEmpty(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
-	seedFacePhoto(t, database, 2, []byte("face-bytes"))
+	seedFacePhoto(t, database, 2, jpegFixture(t, 80, 120))
 	var got string
 	upstream := &signAuthorizationUpstream{
 		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {

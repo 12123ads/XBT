@@ -384,7 +384,8 @@ GET /api/sign/classmates?course_id=222&class_id=111
 |---|---|---|---|
 | `""` | 签到成功（含 `success2` 迟到/已结束、本地已有记录） | `false` | `success=true` |
 | `captcha_required` | 验证码校验未通过 | `true` | 服务端已带 `validate`+`enc2` 自动重试一次 |
-| `face_required` | 人脸验证未通过或未设置人脸照片 | `false` | 服务端已自动做人脸恢复重试一次 |
+| `face_required` | 人脸验证未通过 | `false` | 服务端已自动做人脸恢复重试一次 |
+| `face_photo_unavailable` | 无人像且无法取得可用基线照片 | `false` | 照片池为空且自动拉取官方照片失败（或基线无法解码）；其它签到类型不受影响 |
 | `location_out_of_range` | 位置超出范围 | `false` | 预设点校验或上游返回距离时带 `distance_m`（米）；服务端已关闭随机化重试一次 |
 | `location_point_required` | 位置签到缺少可用圆心且未选点 | `false` | 活动元数据圆心为 `(0,0)`/缺失或读取失败；不提交上游，前端提示「请先在地图选点」 |
 | `qr_expired` | 二维码已过期 | `false` | 需要重新扫码 |
@@ -567,7 +568,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 ### 5.8 人脸照片接口
 
-人脸照片用于需要人脸验证的签到活动。每个账号维护最多 5 张的受管照片池（`face_photos`），签到时随机选择一张；照片上传时压缩到 720×1280 以内并尽量控制在 100KB 以下。
+人脸照片用于需要人脸验证的签到活动。每个账号维护最多 5 张的受管照片池（`face_photos`）。池内存放**基线图**：手动上传的图会先压缩到 720×1280 以内；官方导入的图按下载原样保存。每次签到执行时（`if_face=true`）才对当次选中的基线做一次裁剪/旋转/重压，变换结果只用于本次上传，不写库。账号没有任何照片时，签发流程会自动拉取一次官方照片作为基线。
 
 所有接口接受可选查询参数 `target_uid`：省略时操作自己的照片池；指定他人时要求双方存在同为「已选」的课程（与代签权限一致），否则返回 `403`。
 
@@ -617,11 +618,11 @@ curl -X POST http://localhost:3030/api/sign/photo \
 - Path: `/api/user/faces/import`
 - Auth: 是
 
-使用目标账号自己的会话调用 `collectionfilephotoEnc` 获取官方照片，下载后在内存中强制裁剪 90%–99%、旋转 ±5°、去黑边、JPEG 重压（默认质量 85，超 100KB 依次降到 80/70 并可按比例缩小）并丢弃 EXIF；**只保存变换后的字节，原图不落盘、不上传**。成功响应额外包含 `transform`（`width/height/crop_width_ratio/crop_height_ratio/angle_degrees/quality`）。
+使用目标账号自己的会话调用 `collectionfilephotoEnc` 获取官方照片，并把下载到的原图**原样保存为基线**（`source=official`，上限 8MB 且需可解码）。签到执行时才在内存中做裁剪 90%–99%、旋转 ±5°、去黑边、JPEG 重压（默认质量 85，超 100KB 依次降到 80/70 并可按比例缩小）并丢弃 EXIF；变换结果不落库。成功响应额外包含 `transform_deferred: true`，不再返回 `transform` 字段（前端可忽略该字段）。
 
 | 状态码 | 含义 |
 |---|---|
-| `422` | 账号未设置官方人脸照片，或官方照片无法解码 |
+| `422` | 账号未设置官方人脸照片、原图无法解码或超过 8MB |
 | `409` | 照片池已满 |
 | `403` | 无权管理该账号 |
 | `502` | 上游请求失败 |
@@ -631,7 +632,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 - `POST /api/user/face`：等价于向自己的池新增一张。
 - `DELETE /api/user/face`：清空自己的照片池。
 
-说明：签到时若活动 `if_face=true`，后端会为目标账号选择一张照片、上传换取 `objectId` 并调用 `check-face-result` 获取 `currentFaceId/faceEnc/faceCode`，再提交签到参数；同一活动内相同照片的 `objectId` 会复用。
+说明：签到时若活动 `if_face=true`，后端会为目标账号选择一张基线照片，在本次执行内变换一次后上传换取 `objectId`，并调用 `check-face-result` 获取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。同一次执行内的重试复用同一份变换结果与 `objectId`；不同执行会重新变换并上传。账号没有任何照片时，后端会用该账号凭据自动拉取一次官方照片作为基线；失败返回 `face_photo_unavailable`，不影响其它签到类型。
 
 ### 5.9 功能开关
 - Method: `GET`
