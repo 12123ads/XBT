@@ -18,6 +18,18 @@ type GeoPoint struct {
 	Longitude float64
 }
 
+// ValidGeoPoint reports whether a pair can be used as a location center.
+// (0,0) is treated as missing: it is what the metadata endpoint returns when
+// the teacher never set a point, and submitting it produces a ~12,000 km
+// distance error upstream (XBT-S19).
+func ValidGeoPoint(point GeoPoint) bool {
+	if point.Latitude == 0 && point.Longitude == 0 {
+		return false
+	}
+	return point.Latitude >= -90 && point.Latitude <= 90 &&
+		point.Longitude >= -180 && point.Longitude <= 180
+}
+
 // DistanceMeters returns the great-circle distance between two points. It is
 // accurate enough for the tens-to-hundreds-of-metres activity ranges and keeps
 // the server-side check independent of the map provider.

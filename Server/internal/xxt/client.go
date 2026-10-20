@@ -582,6 +582,7 @@ func parsePPTActiveInfo(raw []byte) (SignDetail, bool) {
 	if signOutPublishTime == noSignOutPublishSentinel {
 		signOutPublishTime = 0
 	}
+	center := parseActivityCenter(data)
 	return SignDetail{
 		StartTime:          parseTimeMillis(firstNonNil(data["starttime"], data["startTime"])),
 		EndTime:            parseTimeMillis(firstNonNil(data["endtime"], data["endTime"])),
@@ -591,14 +592,76 @@ func parsePPTActiveInfo(raw []byte) (SignDetail, bool) {
 		IfFace:             boolFromAny(firstNonNil(data["openCheckFaceFlag"], data["ifFaceCheck"])),
 		IfNeedVCode:        boolFromAny(firstNonNil(data["ifNeedVCode"], data["ifneedvcode"])),
 		IfOpenAddress:      boolFromAny(firstNonNil(data["ifopenAddress"], data["ifOpenAddress"])),
-		LocationLatitude:   float64FromAny(firstNonNil(data["locationLatitude"], data["locationlatitude"])),
-		LocationLongitude:  float64FromAny(firstNonNil(data["locationLongitude"], data["locationlongitude"])),
+		LocationLatitude:   center.Latitude,
+		LocationLongitude:  center.Longitude,
 		LocationRange:      int(int64FromAny(firstNonNil(data["locationRange"], data["locationrange"]))),
 		SignInID:           int64FromAny(firstNonNil(data["signInId"], data["signinid"])),
 		SignOutID:          int64FromAny(firstNonNil(data["signOutId"], data["signoutid"])),
 		SignOutPublishTime: signOutPublishTime,
 		Ext:                signExtString(data["ext"]),
 	}, true
+}
+
+// parseActivityCenter extracts the activity's check-in circle center. The
+// documented shape is locationLatitude/locationLongitude, but the endpoint can
+// carry zero there while exposing the point in a nested `location` object or a
+// JSON string, or under top-level latitude/longitude (XBT-S19). A (0,0) pair is
+// missing, not a real center: submitting it makes upstream report a ~12,000 km
+// distance. Only the first valid pair is used.
+func parseActivityCenter(data map[string]interface{}) GeoPoint {
+	if center, ok := centerFromMap(data, []string{"locationLatitude", "locationlatitude"}, []string{"locationLongitude", "locationlongitude"}); ok {
+		return center
+	}
+	for _, key := range []string{"location", "address", "locationInfo"} {
+		if center, ok := centerFromValue(data[key]); ok {
+			return center
+		}
+	}
+	if center, ok := centerFromMap(data, []string{"latitude", "lat"}, []string{"longitude", "lng", "lon"}); ok {
+		return center
+	}
+	return GeoPoint{}
+}
+
+func centerFromValue(v interface{}) (GeoPoint, bool) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		return centerFromMap(value, []string{"latitude", "lat", "locationLatitude"}, []string{"longitude", "lng", "lon", "locationLongitude"})
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if !strings.HasPrefix(trimmed, "{") {
+			return GeoPoint{}, false
+		}
+		var nested map[string]interface{}
+		if json.Unmarshal([]byte(trimmed), &nested) != nil {
+			return GeoPoint{}, false
+		}
+		return centerFromMap(nested, []string{"latitude", "lat", "locationLatitude"}, []string{"longitude", "lng", "lon", "locationLongitude"})
+	default:
+		return GeoPoint{}, false
+	}
+}
+
+func centerFromMap(data map[string]interface{}, latitudeKeys, longitudeKeys []string) (GeoPoint, bool) {
+	latitude, ok := firstMapValue(data, latitudeKeys...)
+	if !ok {
+		return GeoPoint{}, false
+	}
+	longitude, ok := firstMapValue(data, longitudeKeys...)
+	if !ok {
+		return GeoPoint{}, false
+	}
+	center := GeoPoint{Latitude: float64FromAny(latitude), Longitude: float64FromAny(longitude)}
+	return center, ValidGeoPoint(center)
+}
+
+func firstMapValue(data map[string]interface{}, keys ...string) (interface{}, bool) {
+	for _, key := range keys {
+		if value, ok := data[key]; ok && value != nil {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func signExtString(v interface{}) string {

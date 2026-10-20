@@ -349,10 +349,23 @@ func TestSignExecuteResolvesIfOpenAddressFromMetadata(t *testing.T) {
 		detail    xxt.SignDetail
 		detailErr error
 		requested bool
+		special   map[string]interface{}
 		want      bool
 	}{
-		{name: "metadata opens address", detail: xxt.SignDetail{IfOpenAddress: true}, want: true},
-		{name: "request flag fallback when metadata fails", detailErr: errors.New("metadata unavailable"), requested: true, want: true},
+		{
+			name:   "metadata opens address",
+			detail: xxt.SignDetail{IfOpenAddress: true, LocationLatitude: 30, LocationLongitude: 120, LocationRange: 50},
+			want:   true,
+		},
+		{
+			name:      "request flag fallback when metadata fails",
+			detailErr: errors.New("metadata unavailable"),
+			requested: true,
+			// A location sign cannot be submitted without a point once
+			// metadata is unavailable (XBT-S19).
+			special: map[string]interface{}{"latitude": "30", "longitude": "120"},
+			want:    true,
+		},
 		{name: "closed address", want: false},
 	}
 	for i, tc := range cases {
@@ -378,6 +391,7 @@ func TestSignExecuteResolvesIfOpenAddressFromMetadata(t *testing.T) {
 				ClassID:       20,
 				SignType:      xxt.SignLocation,
 				IfOpenAddress: tc.requested,
+				Special:       tc.special,
 			})
 			if err != nil || !result.Success || result.AlreadySigned {
 				t.Fatalf("sign failed: result=%+v err=%v", result, err)
@@ -945,6 +959,113 @@ func locationMetadata() xxt.SignDetail {
 		LocationLatitude:  30,
 		LocationLongitude: 120,
 		LocationRange:     50,
+	}
+}
+
+func TestSignExecuteRequiresLocationPointWithoutUsableCenter(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		detail    xxt.SignDetail
+		detailErr error
+	}{
+		{
+			name:   "zero center",
+			detail: xxt.SignDetail{SignType: xxt.SignLocation, IfOpenAddress: true, LocationRange: 300},
+		},
+		{
+			name:   "zero center and zero radius",
+			detail: xxt.SignDetail{SignType: xxt.SignLocation, IfOpenAddress: true},
+		},
+		{
+			name:      "metadata unavailable",
+			detailErr: errors.New("getPPTActiveInfo unavailable"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			preSignCalls, signCalls := 0, 0
+			upstream := &signAuthorizationUpstream{
+				detail:    tc.detail,
+				detailErr: tc.detailErr,
+				preSign: func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error) {
+					preSignCalls++
+					return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+				},
+				sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+					signCalls++
+					return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+				ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
+			})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			if result.Success || result.ErrorCode != SignErrorLocationPointRequired || result.Message != "请先在地图选点" {
+				t.Fatalf("result = %+v, want location_point_required", result)
+			}
+			if preSignCalls != 0 || signCalls != 0 {
+				t.Fatalf("missing center reached upstream: preSign=%d sign=%d", preSignCalls, signCalls)
+			}
+		})
+	}
+}
+
+func TestSignExecuteKeepsSelectedLocationWhenCenterMissing(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	var captured map[string]interface{}
+	upstream := &signAuthorizationUpstream{
+		detail: xxt.SignDetail{SignType: xxt.SignLocation, IfOpenAddress: true, LocationRange: 300},
+		sign: func(_ string, _ string, _ xxt.FixedParams, _ int, special map[string]interface{}) (xxt.SignResult, error) {
+			captured = copySpecial(special)
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
+		Special: map[string]interface{}{
+			"latitude": "35.475740", "longitude": "119.535984", "description": "七号教学楼",
+		},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("result=%+v err=%v, want selected point accepted", result, err)
+	}
+	position := xxt.PositionFromSpecial(captured)
+	if position == nil || position.Latitude != 35.47574 || position.Longitude != 119.535984 || position.Address != "七号教学楼" {
+		t.Fatalf("selected point changed: %+v", position)
+	}
+}
+
+func TestSignExecuteRejectsZeroSelectedLocationWithoutCenter(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	preSignCalls, signCalls := 0, 0
+	upstream := &signAuthorizationUpstream{
+		detail: xxt.SignDetail{SignType: xxt.SignLocation, IfOpenAddress: true, LocationRange: 300},
+		preSign: func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error) {
+			preSignCalls++
+			return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+		},
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			signCalls++
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
+		Special: map[string]interface{}{"latitude": "0", "longitude": "0"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteOne error = %v", err)
+	}
+	if result.Success || result.ErrorCode != SignErrorLocationPointRequired {
+		t.Fatalf("result = %+v, want location_point_required", result)
+	}
+	if preSignCalls != 0 || signCalls != 0 {
+		t.Fatalf("zero point reached upstream: preSign=%d sign=%d", preSignCalls, signCalls)
 	}
 }
 

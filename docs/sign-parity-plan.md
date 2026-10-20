@@ -130,6 +130,11 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 验收：10k 次采样全部落在半径内；`errorLocation_12` 返回 `distance_m=12` 且只重试一次；前端位置选择器展示“距签到点 N 米 / 超出范围”。
 - **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/location.go` 提供 haversine 距离、预设点范围校验与面积均匀圆内采样（6 位小数）；`service.ExecuteOne` 在 preSign 之前按活动元数据校验用户预设点，超范围直接返回 `location_out_of_range` + `distance_m`，未选点时以元数据圆心生成采样点；`errorLocation_` 首次重试发送未随机化的基准点（预设点或元数据圆心），第二次失败返回上游距离；`stuSignajax` 构造器对类型 0/2/3/4/5 在 `if_open_address=true` 时统一携带 `location`/`locationResult`（仅后者含 `mockData`）。Web 位置选择器、地图选点和已选位置展示“距签到点 N 米 / 超出范围”，地图选点超范围时禁止确认。测试见 `Server/internal/xxt/location_test.go`、`Server/internal/xxt/sign_params_test.go`、`Server/internal/service/sign_test.go`。
 
+#### XBT-S19 位置圆心缺失防护
+- 现象：`getPPTActiveInfo` 返回 `locationLatitude=0`/`locationLongitude=0` 且 `ifopenAddress=1` 时，未选点的位置签到不带有效坐标，上游按 `(0,0)` 计算距离（约 1200 万米）。
+- 处理：解析层把 `(0,0)` 视为缺失，并在标量字段无效时依次读取 `location`（对象或 JSON 字符串）、`address`/`locationInfo` 对象与顶层 `latitude`/`longitude`；执行层对 `sign_type=4` 在未提供 `special_params.latitude/longitude` 且无可用圆心/半径（含元数据读取失败）时返回 `location_point_required`，不发起 `preSign`/`stuSignajax`。已选点行为不变。
+- 实现状态（2026-10-20）：`Server/internal/xxt/client.go` 的 `parseActivityCenter`、`Server/internal/xxt/location.go` 的 `ValidGeoPoint`、`Server/internal/service/sign.go` 的 `prepareSignLocation`；Web 错误码映射为 `relocate` 并提示「请先在地图选点」。测试见 `client_sign_metadata_test.go`、`sign_test.go`。
+
 #### XBT-S7 人脸流程加固
 - **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一活动内复用已上传的 `objectId`，不重复上传同一张照片；`check-face-result` 先判 HTTP 状态再解 JSON。
 - **S7b 多照片池（P2，延后；产品决策 2026-10-20 更新）**：每账号最多 5 张、随机选择、记录使用次数/失败标记；**允许直接抓取该账号在学习通的官方人脸照片**；**从学习通拉下来的照片必须经过裁剪 + 旋转 + 重压后才允许保存或上传，原图不得落盘、不得上传**（参数见 XBT-S7b）。

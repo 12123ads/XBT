@@ -360,7 +360,8 @@ GET /api/sign/classmates?course_id=222&class_id=111
   - 若 `special_params` 提供了经纬度，服务端先按 haversine 距离校验预设点；超出 `location_range` 直接返回 `location_out_of_range` 与 `distance_m`，不会请求 `preSign`/`stuSignajax`。
   - 服务端随后在元数据圆内面积均匀随机取点（6 位小数）提交；未提供经纬度时同样按元数据圆心生成，因此签到类型 `0/2/3/4/5` 的提交参数都会带 `location`、`locationResult`（仅后者含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。
   - 上游返回 `errorLocation_<米>` 时关闭随机化，用未随机化的基准点（用户预设点或元数据圆心）重试一次；第二次仍失败返回上游距离。
-- 无可用圆心/半径时不做校验与随机化：提供了经纬度就按原值提交，未提供则不下发伪造坐标。
+- 元数据可能返回 `locationLatitude=0`/`locationLongitude=0`（教师未设置圆心）。服务端把 `(0,0)` 视为缺失，并依次尝试 `location`（对象或 JSON 字符串）、`address`/`locationInfo` 对象及顶层 `latitude`/`longitude`；只接受合法且非 `(0,0)` 的坐标。
+- 位置签到（`sign_type=4`）在未提供 `special_params.latitude/longitude` 且没有可用圆心/半径（包括元数据读取失败）时，直接返回 `location_point_required`，且不会请求 `preSign`/`stuSignajax`；前端应提示「请先在地图选点」。已提供合法经纬度时保持原行为：按原值提交（元数据有圆心则先做范围校验）。非位置类型在元数据缺失时保持原降级行为。
 
 响应体 `data`:
 
@@ -385,6 +386,7 @@ GET /api/sign/classmates?course_id=222&class_id=111
 | `captcha_required` | 验证码校验未通过 | `true` | 服务端已带 `validate`+`enc2` 自动重试一次 |
 | `face_required` | 人脸验证未通过或未设置人脸照片 | `false` | 服务端已自动做人脸恢复重试一次 |
 | `location_out_of_range` | 位置超出范围 | `false` | 预设点校验或上游返回距离时带 `distance_m`（米）；服务端已关闭随机化重试一次 |
+| `location_point_required` | 位置签到缺少可用圆心且未选点 | `false` | 活动元数据圆心为 `(0,0)`/缺失或读取失败；不提交上游，前端提示「请先在地图选点」 |
 | `qr_expired` | 二维码已过期 | `false` | 需要重新扫码 |
 | `activity_expired` | 签到已截止 | `false` | 上游 `preSign` 判定已截止，不写记录 |
 | `session_expired` | 学习通会话失效 | `false` | 需要重新登录 |
@@ -466,7 +468,7 @@ GET /api/sign/classmates?course_id=222&class_id=111
 | `sign_out_unavailable` | 该签到未发布签退活动 | `false` | 元数据无 `signOutId` |
 | `sign_out_not_published` | 签退尚未到发布时间 | `false` | `signOutPublishTimeStamp` 晚于当前时间 |
 
-其余 `error_code`（`captcha_required`、`face_required`、`location_out_of_range`、`qr_expired`、`activity_expired`、`session_expired`、`upstream_error`）与 `/api/sign/execute` 相同。签退成功写入独立的 `sign_out_records`（`user_uid + 主签到 activity_id` 唯一），不改写 `sign_records`；重复签退返回 `already_signed_out=true`，且不再请求上游。分享链接不支持签退：为签退活动创建分享或执行这类分享都返回 `400`「分享链接不支持签退活动」。
+其余 `error_code`（`captcha_required`、`face_required`、`location_out_of_range`、`location_point_required`、`qr_expired`、`activity_expired`、`session_expired`、`upstream_error`）与 `/api/sign/execute` 相同。签退成功写入独立的 `sign_out_records`（`user_uid + 主签到 activity_id` 唯一），不改写 `sign_records`；重复签退返回 `already_signed_out=true`，且不再请求上游。分享链接不支持签退：为签退活动创建分享或执行这类分享都返回 `400`「分享链接不支持签退活动」。
 
 ### 5.6 签到分享接口
 

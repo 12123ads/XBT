@@ -28,6 +28,11 @@ func TestParsePPTActiveInfoFixtures(t *testing.T) {
 		"ext":{"source":"test","flag":true}
 	}}`
 	partial := `{"data":{"starttime":"1700000000000","otherId":"5","ifopenAddress":1}}`
+	nestedJSON := `{"data":{"otherId":4,"ifopenAddress":1,"location":"{\"latitude\":31.2304,\"longitude\":121.4737}"}}`
+	nestedObject := `{"data":{"otherId":4,"ifopenAddress":1,"location":{"lat":"31.2304","lng":"121.4737"}}}`
+	zeroWithNested := `{"data":{"otherId":4,"ifopenAddress":1,"locationLatitude":0,"locationLongitude":0,"location":{"latitude":31.2304,"longitude":121.4737}}}`
+	zeroWithAddress := `{"data":{"otherId":4,"ifopenAddress":1,"locationLatitude":0,"locationLongitude":0,"location":"教学楼","address":"七号教学楼"}}`
+	topLevelCoordinates := `{"data":{"otherId":4,"ifopenAddress":1,"latitude":31.2304,"longitude":121.4737}}`
 
 	for _, tc := range []struct {
 		name  string
@@ -64,6 +69,59 @@ func TestParsePPTActiveInfoFixtures(t *testing.T) {
 				StartTime:     1700000000000,
 				SignType:      SignCode,
 				IfOpenAddress: true,
+			},
+		},
+		{
+			name:  "nested location json string",
+			raw:   nestedJSON,
+			valid: true,
+			want: SignDetail{
+				SignType:          SignLocation,
+				IfOpenAddress:     true,
+				LocationLatitude:  31.2304,
+				LocationLongitude: 121.4737,
+			},
+		},
+		{
+			name:  "nested location object",
+			raw:   nestedObject,
+			valid: true,
+			want: SignDetail{
+				SignType:          SignLocation,
+				IfOpenAddress:     true,
+				LocationLatitude:  31.2304,
+				LocationLongitude: 121.4737,
+			},
+		},
+		{
+			name:  "zero scalar center falls back to nested location",
+			raw:   zeroWithNested,
+			valid: true,
+			want: SignDetail{
+				SignType:          SignLocation,
+				IfOpenAddress:     true,
+				LocationLatitude:  31.2304,
+				LocationLongitude: 121.4737,
+			},
+		},
+		{
+			name:  "address text is not a center",
+			raw:   zeroWithAddress,
+			valid: true,
+			want: SignDetail{
+				SignType:      SignLocation,
+				IfOpenAddress: true,
+			},
+		},
+		{
+			name:  "top level coordinates",
+			raw:   topLevelCoordinates,
+			valid: true,
+			want: SignDetail{
+				SignType:          SignLocation,
+				IfOpenAddress:     true,
+				LocationLatitude:  31.2304,
+				LocationLongitude: 121.4737,
 			},
 		},
 		{name: "empty response", raw: `{}`, valid: false},

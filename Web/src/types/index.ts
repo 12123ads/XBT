@@ -165,6 +165,7 @@ export type SignErrorCode =
   | 'captcha_required'
   | 'face_required'
   | 'location_out_of_range'
+  | 'location_point_required'
   | 'qr_expired'
   | 'session_expired'
   | 'upstream_error';

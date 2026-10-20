@@ -225,14 +225,15 @@ type SignExecuteResult struct {
 // Error codes exposed by /api/sign/execute. They mirror xxt.SignResultKind so
 // the web client never parses raw upstream strings.
 const (
-	SignErrorNone             = ""
-	SignErrorCaptchaRequired  = "captcha_required"
-	SignErrorFaceRequired     = "face_required"
-	SignErrorLocationOutRange = "location_out_of_range"
-	SignErrorQRExpired        = "qr_expired"
-	SignErrorActivityExpired  = "activity_expired"
-	SignErrorSessionExpired   = "session_expired"
-	SignErrorUpstream         = "upstream_error"
+	SignErrorNone                  = ""
+	SignErrorCaptchaRequired       = "captcha_required"
+	SignErrorFaceRequired          = "face_required"
+	SignErrorLocationOutRange      = "location_out_of_range"
+	SignErrorLocationPointRequired = "location_point_required"
+	SignErrorQRExpired             = "qr_expired"
+	SignErrorActivityExpired       = "activity_expired"
+	SignErrorSessionExpired        = "session_expired"
+	SignErrorUpstream              = "upstream_error"
 	// Sign-out prerequisites are explicit results, never silent successes.
 	SignErrorSignInRequired     = "sign_in_required"
 	SignErrorSignOutUnavailable = "sign_out_unavailable"
@@ -979,18 +980,46 @@ func copySignSpecial(source map[string]interface{}) map[string]interface{} {
 // point inside the activity circle. When the caller did not select a point the
 // metadata center becomes both the sampling origin and the retry point. An
 // out-of-range preset is rejected before any preSign/stuSignajax request.
+//
+// A location check-in without a caller-selected point can only be signed when
+// metadata supplies a usable center and radius. Otherwise the request returns
+// location_point_required instead of letting the parameter builder submit
+// -1/-1 (which upstream reports as a ~12,000 km distance, XBT-S19).
 func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.SignDetail, metadataOK bool) (SignExecuteResult, bool) {
-	if !metadataOK || !detail.IfOpenAddress {
+	locationSign := req.SignType == xxt.SignLocation || (metadataOK && detail.SignType == xxt.SignLocation)
+	selected := xxt.PositionFromSpecial(req.Special)
+	if selected != nil && !xxt.ValidGeoPoint(xxt.GeoPoint{Latitude: selected.Latitude, Longitude: selected.Longitude}) {
+		selected = nil
+	}
+
+	if !metadataOK {
+		if selected == nil && locationSign {
+			return locationPointRequired(req.TargetUID), false
+		}
+		if selected != nil {
+			req.locationBase = selected
+		}
+		return SignExecuteResult{}, true
+	}
+	if !detail.IfOpenAddress {
 		return SignExecuteResult{}, true
 	}
 	center := xxt.GeoPoint{Latitude: detail.LocationLatitude, Longitude: detail.LocationLongitude}
 	radius := float64(detail.LocationRange)
-	if !validGeoPoint(center) || radius <= 0 {
+	if !xxt.ValidGeoPoint(center) || radius <= 0 {
+		if selected == nil && locationSign {
+			return locationPointRequired(req.TargetUID), false
+		}
+		if selected != nil {
+			// A caller-selected point stays authoritative when metadata has no
+			// usable circle; this preserves the pre-S19 behavior.
+			req.locationBase = selected
+		}
 		return SignExecuteResult{}, true
 	}
 
 	base := xxt.SignPosition{Latitude: center.Latitude, Longitude: center.Longitude}
-	if selected := xxt.PositionFromSpecial(req.Special); selected != nil {
+	if selected != nil {
 		distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: selected.Latitude, Longitude: selected.Longitude}, center)
 		if distance > radius {
 			return SignExecuteResult{
@@ -1011,12 +1040,13 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 	return SignExecuteResult{}, true
 }
 
-func validGeoPoint(point xxt.GeoPoint) bool {
-	if point.Latitude == 0 && point.Longitude == 0 {
-		return false
+func locationPointRequired(userID int64) SignExecuteResult {
+	return SignExecuteResult{
+		UserID:    userID,
+		Success:   false,
+		ErrorCode: SignErrorLocationPointRequired,
+		Message:   "请先在地图选点",
 	}
-	return point.Latitude >= -90 && point.Latitude <= 90 &&
-		point.Longitude >= -180 && point.Longitude <= 180
 }
 
 // applySignPosition writes the protocol fields read by PositionFromSpecial.
