@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -22,6 +23,16 @@ type signAuthorizationUpstream struct {
 	// metadata records (primary and sign-out activity).
 	details map[int64]xxt.SignDetail
 	preSign func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error)
+	// fetchClientID is the on-demand backfill hook. A nil hook returns an empty
+	// clientId, which callers must treat as unsigned.
+	fetchClientID func(context.Context, string, string, xxt.DeviceInfo) (string, error)
+}
+
+func (u *signAuthorizationUpstream) FetchClientIDContext(ctx context.Context, mobile, password string, info xxt.DeviceInfo) (string, error) {
+	if u.fetchClientID == nil {
+		return "", nil
+	}
+	return u.fetchClientID(ctx, mobile, password, info)
 }
 
 func (u *signAuthorizationUpstream) GetSignDetail(_ string, _ string, activityID, _ int64, _ int64, _ int64) (xxt.SignDetail, error) {

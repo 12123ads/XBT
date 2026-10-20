@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -47,7 +48,14 @@ type SignService struct {
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
 	// facePhotoRand is replaceable in tests so pool selection is assertable.
 	facePhotoRand facephoto.RandSource
-	metrics       *observe.SignMetrics
+	// faceDevice fetches clientId when storage cannot provide a signature. It
+	// is nil when the upstream client does not implement FaceDeviceClient.
+	faceDevice FaceDeviceClient
+	// faceClientIDMu guards the per-account failure cooldown. A failed backfill
+	// must not hit upstream on every subsequent sign.
+	faceClientIDMu       sync.Mutex
+	faceClientIDFailures map[int64]time.Time
+	metrics              *observe.SignMetrics
 }
 
 // signExecutionStats collects the fields that must appear in the single
@@ -83,19 +91,25 @@ func (s *signExecutionStats) record(result xxt.SignResult) {
 }
 
 func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
-	return &SignService{
-		db:                  db,
-		xxt:                 xxtClient,
-		cc:                  cc,
-		courseWebhook:       courseWebhook,
-		courseNotifyBatches: map[courseSignNotificationKey]*courseSignNotificationBatch{},
-		faceUploads:         map[faceUploadKey]faceUploadEntry{},
-		metrics:             observe.NewSignMetrics(),
+	svc := &SignService{
+		db:                   db,
+		xxt:                  xxtClient,
+		cc:                   cc,
+		courseWebhook:        courseWebhook,
+		courseNotifyBatches:  map[courseSignNotificationKey]*courseSignNotificationBatch{},
+		faceUploads:          map[faceUploadKey]faceUploadEntry{},
+		faceClientIDFailures: map[int64]time.Time{},
+		metrics:              observe.NewSignMetrics(),
 		sampleLocation: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
 			position := xxt.SampleLocation(center, radiusMeters, nil)
 			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
 		},
 	}
+	// *xxt.Client satisfies FaceDeviceClient; narrower test doubles may not.
+	if lookup, ok := xxtClient.(FaceDeviceClient); ok {
+		svc.faceDevice = lookup
+	}
+	return svc
 }
 
 const courseSignNotificationDebounce = 8 * time.Second
@@ -125,6 +139,9 @@ type ExecuteSignRequest struct {
 	CourseName    string
 	CourseTeacher string
 	Special       map[string]interface{}
+	// Context scopes on-demand upstream work (clientId backfill) to the
+	// caller's request. A nil Context means context.Background().
+	Context context.Context
 	// locationBase is the unrandomized point used for the single
 	// errorLocation_ retry. It is set by ExecuteOne, never by handlers.
 	locationBase *xxt.SignPosition
@@ -151,6 +168,8 @@ type ExecutePhotoSignRequest struct {
 	Filename      string
 	ContentType   string
 	Photo         []byte
+	// Context scopes on-demand upstream work to the caller's request.
+	Context context.Context
 }
 
 // SignOutRequest asks for one user's sign-out of the sign-out activity that
@@ -1048,14 +1067,7 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 		s.recordFaceUse(req, "", false)
 		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
-	clientID := ""
-	if target.ClientIDCipher != "" {
-		if plain, err := s.cc.Decrypt(target.ClientIDCipher); err == nil {
-			clientID = plain
-		} else {
-			log.Printf("face clientId decrypt failed: uid=%d err=%v", target.UID, err)
-		}
-	}
+	clientID := s.faceClientID(req.Context, target, password)
 	if clientID != "" {
 		req.faceUsedClientID = true
 	}
@@ -1440,6 +1452,7 @@ func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignReques
 		CourseName:    req.CourseName,
 		CourseTeacher: req.CourseTeacher,
 		Special:       special,
+		Context:       req.Context,
 	})
 }
 

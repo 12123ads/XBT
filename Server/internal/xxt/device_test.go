@@ -1,6 +1,7 @@
 package xxt
 
 import (
+	"context"
 	"crypto/md5"
 	"crypto/rsa"
 	"crypto/x509"
@@ -210,7 +211,7 @@ func TestGenerateDeviceInfoIsStableAndPerAccount(t *testing.T) {
 	}
 }
 
-func TestFetchClientIDReadsMessageFieldAndNeverLeaksBody(t *testing.T) {
+func TestFetchClientIDContextReadsMessageFieldAndNeverLeaksBody(t *testing.T) {
 	var body string
 	transport := activityScopeTransport(func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/apis/login/userLogin4Uname.do") {
@@ -241,7 +242,7 @@ func TestFetchClientIDReadsMessageFieldAndNeverLeaksBody(t *testing.T) {
 	info := GenerateDeviceInfo(7, "13800000007")
 
 	body = `{"msg":{"clientId":"client-id-value","accountInfo":{"imAccount":{"password":"must-not-return"}}}}`
-	clientID, err := client.FetchClientID("13800000007", "pw", info)
+	clientID, err := client.FetchClientIDContext(context.Background(), "13800000007", "pw", info)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestFetchClientIDReadsMessageFieldAndNeverLeaksBody(t *testing.T) {
 	}
 
 	body = `{"msg":{}}`
-	clientID, err = client.FetchClientID("13800000007", "pw", info)
+	clientID, err = client.FetchClientIDContext(context.Background(), "13800000007", "pw", info)
 	if err != nil || clientID != "" {
 		t.Fatalf("missing clientId: got %q err=%v", clientID, err)
 	}
@@ -265,7 +266,7 @@ func TestFetchClientIDReadsMessageFieldAndNeverLeaksBody(t *testing.T) {
 	})
 	client = activityScopeTestClient(t, transport)
 	client.sessions["13800000007"] = &Session{Mobile: "13800000007", Password: "pw", UID: 7, Jar: jar, LastLoginAt: time.Now()}
-	if _, err := client.FetchClientID("13800000007", "pw", info); err == nil {
+	if _, err := client.FetchClientIDContext(context.Background(), "13800000007", "pw", info); err == nil {
 		t.Fatal("expected an HTTP error")
 	} else if strings.Contains(err.Error(), "secret-value") {
 		t.Fatalf("error leaked the response body: %v", err)

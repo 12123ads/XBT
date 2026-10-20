@@ -28,7 +28,7 @@ func (f authLoginFunc) PreLogin(mobile, password string) (*xxt.LoginResult, erro
 	return f(mobile, password)
 }
 
-func (f authLoginFunc) FetchClientID(string, string, xxt.DeviceInfo) (string, error) {
+func (f authLoginFunc) FetchClientIDContext(context.Context, string, string, xxt.DeviceInfo) (string, error) {
 	return "", nil
 }
 
@@ -258,7 +258,7 @@ func (u *authFaceUpstream) PreLogin(string, string) (*xxt.LoginResult, error) {
 	return &xxt.LoginResult{UID: u.uid, Name: "face user"}, nil
 }
 
-func (u *authFaceUpstream) FetchClientID(_ string, _ string, info xxt.DeviceInfo) (string, error) {
+func (u *authFaceUpstream) FetchClientIDContext(_ context.Context, _ string, _ string, info xxt.DeviceInfo) (string, error) {
 	u.deviceInfo = append(u.deviceInfo, info)
 	return u.clientID, u.clientErr
 }

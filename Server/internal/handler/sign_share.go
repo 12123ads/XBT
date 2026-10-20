@@ -177,6 +177,7 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 			CourseName:    share.CourseName,
 			CourseTeacher: share.CourseTeacher,
 			Special:       req.Special,
+			Context:       c.Request.Context(),
 		})
 		if err != nil {
 			if creatorErr := h.checkShareCreator(share); creatorErr != nil {

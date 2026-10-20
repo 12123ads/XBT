@@ -575,6 +575,7 @@ func (h *SignHandler) Photo(c *gin.Context) {
 		Filename:      filename,
 		ContentType:   contentType,
 		Photo:         photo,
+		Context:       c.Request.Context(),
 	})
 	if err != nil {
 		h.failSign(c, err)

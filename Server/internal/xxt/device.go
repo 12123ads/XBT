@@ -2,6 +2,7 @@ package xxt
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
@@ -97,10 +98,11 @@ func GenerateDeviceInfo(uid int64, mobile string) DeviceInfo {
 	}
 }
 
-// FetchClientID calls the upstream account-info endpoint with the account's
-// device profile and returns msg.clientId. An empty clientId is not an error;
-// callers must keep working without a face signature.
-func (c *Client) FetchClientID(mobile, password string, info DeviceInfo) (string, error) {
+// FetchClientIDContext calls the upstream account-info endpoint with the
+// account's device profile and returns msg.clientId. An empty clientId is not
+// an error; callers must keep working without a face signature. ctx bounds the
+// request so an on-demand backfill can respect the caller's deadline.
+func (c *Client) FetchClientIDContext(ctx context.Context, mobile, password string, info DeviceInfo) (string, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return "", err
@@ -116,7 +118,7 @@ func (c *Client) FetchClientID(mobile, password string, info DeviceInfo) (string
 
 	form := url.Values{}
 	form.Set("data", data)
-	req, err := http.NewRequest(http.MethodPost, userInfoURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, userInfoURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}

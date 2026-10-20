@@ -11,6 +11,7 @@ import (
 	"xbt2/server/internal/common"
 	"xbt2/server/internal/dto"
 	"xbt2/server/internal/model"
+	"xbt2/server/internal/service"
 )
 
 func (h *AdminAccountHandler) classAdminGroup(c *gin.Context) (model.ClassGroup, bool) {
@@ -148,7 +149,7 @@ func (h *AdminAccountHandler) CreateClassAccount(c *gin.Context) {
 		common.Fail(c, 500, "credential encrypt failed")
 		return
 	}
-	deviceCipher, clientIDCipher := ensureFaceDevice(h.db, h.cc, h.xxt, loginResult.UID, req.Mobile, req.Password)
+	deviceCipher, clientIDCipher, _ := service.EnsureFaceDevice(c.Request.Context(), h.db, h.cc, h.xxt, loginResult.UID, req.Mobile, req.Password)
 
 	user := model.User{
 		UID:              loginResult.UID,

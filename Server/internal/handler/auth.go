@@ -22,7 +22,7 @@ import (
 
 type loginClient interface {
 	PreLogin(mobile, password string) (*xxt.LoginResult, error)
-	FetchClientID(mobile, password string, info xxt.DeviceInfo) (string, error)
+	service.FaceDeviceClient
 }
 
 var errLoginNotAllowed = errors.New("login not allowed")
@@ -76,7 +76,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		common.Fail(c, 500, "credential encrypt failed")
 		return
 	}
-	deviceCipher, clientIDCipher := ensureFaceDevice(database, h.cc, h.xxtCli, loginResult.UID, req.Mobile, req.Password)
+	deviceCipher, clientIDCipher, _ := service.EnsureFaceDevice(c.Request.Context(), database, h.cc, h.xxtCli, loginResult.UID, req.Mobile, req.Password)
 
 	var user model.User
 	var token string
