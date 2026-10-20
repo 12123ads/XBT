@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
 // deviceCodeDomain separates the device-code derivation from other HMAC uses of
@@ -102,13 +101,18 @@ func buildStuSignParams(p stuSignParams) url.Values {
 		params.Set("longitude", positionLongitude(p))
 		params.Set("ifTiJiao", "1")
 	default:
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
+		if p.Position != nil {
+			params.Set("latitude", positionLatitude(p))
+			params.Set("longitude", positionLongitude(p))
+		} else {
+			params.Set("latitude", "-1")
+			params.Set("longitude", "-1")
+		}
 	}
 
 	if p.IfOpenAddress && p.Position != nil {
 		switch p.SignType {
-		case SignQRCode, SignGesture, SignLocation, SignCode:
+		case SignNormal, SignQRCode, SignGesture, SignLocation, SignCode:
 			params.Set("location", p.positionJSON(false))
 			params.Set("locationResult", p.positionJSON(true))
 		}
@@ -163,30 +167,6 @@ func formatCoordinate(v float64) string {
 
 func roundCoordinate(v float64) float64 {
 	return math.Round(v*1e6) / 1e6
-}
-
-// signPositionFromSpecial reads the user-selected point from the API payload:
-// {latitude, longitude, description}. Values may be strings (web) or numbers
-// (share/other clients). Both coordinates are required; partial input is dropped.
-func signPositionFromSpecial(special map[string]interface{}) *SignPosition {
-	latStr := strings.TrimSpace(strVal(special["latitude"]))
-	lngStr := strings.TrimSpace(strVal(special["longitude"]))
-	if latStr == "" || lngStr == "" {
-		return nil
-	}
-	lat, err := strconv.ParseFloat(latStr, 64)
-	if err != nil {
-		return nil
-	}
-	lng, err := strconv.ParseFloat(lngStr, 64)
-	if err != nil {
-		return nil
-	}
-	return &SignPosition{
-		Latitude:  lat,
-		Longitude: lng,
-		Address:   strings.TrimSpace(strVal(special["description"])),
-	}
 }
 
 // deviceCode derives a stable pseudo device identifier for one account.

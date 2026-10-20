@@ -7,6 +7,71 @@ export const DEFAULT_MAP_CENTER_BD09 = { lng: 119.535984, lat: 35.47574 };
 
 const LAST_MAP_SELECTION_KEY = 'xbt.location-map-last-selection.v1';
 
+const EARTH_RADIUS_METERS = 6371008.8;
+
+export interface SignLocationCenter {
+  lat: number;
+  lng: number;
+}
+
+export interface SignDistanceDescription {
+  distanceM: number;
+  outOfRange: boolean;
+  label: string;
+}
+
+/**
+ * Great-circle distance between two BD-09 points. Mirrors the server-side
+ * haversine check so the picker and the server agree on "out of range".
+ */
+export const distanceMetersBetween = (
+  aLat: string | number,
+  aLng: string | number,
+  bLat: string | number,
+  bLng: string | number,
+) => {
+  const lat1 = Number(aLat) * Math.PI / 180;
+  const lat2 = Number(bLat) * Math.PI / 180;
+  const dLat = lat2 - lat1;
+  const dLng = (Number(bLng) - Number(aLng)) * Math.PI / 180;
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(Math.min(1, h)));
+};
+
+export const describeSignDistance = (
+  lat: string | number,
+  lng: string | number,
+  center: SignLocationCenter | null | undefined,
+  radius: number | null | undefined,
+): SignDistanceDescription | null => {
+  if (!center || typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) return null;
+  const distance = distanceMetersBetween(lat, lng, center.lat, center.lng);
+  if (!Number.isFinite(distance)) return null;
+  const meters = Math.max(0, Math.round(distance));
+  const outOfRange = distance > radius;
+  return {
+    distanceM: distance,
+    outOfRange,
+    label: outOfRange ? `超出范围，距签到点 ${meters} 米` : `距签到点 ${meters} 米`,
+  };
+};
+
+export const signLocationCenterFromActivity = (
+  activity: { if_open_address?: boolean; location_latitude?: number; location_longitude?: number; location_range?: number },
+): { center: SignLocationCenter; radius: number } | null => {
+  if (!activity.if_open_address) return null;
+  const lat = activity.location_latitude;
+  const lng = activity.location_longitude;
+  const radius = activity.location_range;
+  if (typeof lat !== 'number' || typeof lng !== 'number' || typeof radius !== 'number') return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(radius) || radius <= 0) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { center: { lat, lng }, radius };
+};
+
+
 export const formatCoordinate = (value: string | number) => {
   const parsed = typeof value === 'number'
     ? value

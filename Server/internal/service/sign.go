@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,9 @@ type SignService struct {
 	courseWebhook       *EnterpriseWechatWebhookNotifier
 	courseNotifyMu      sync.Mutex
 	courseNotifyBatches map[courseSignNotificationKey]*courseSignNotificationBatch
+	// sampleLocation is replaceable in tests. Production uses the uniform
+	// sampler from xxt with the global random source.
+	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
 }
 
 func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
@@ -41,6 +45,10 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 		cc:                  cc,
 		courseWebhook:       courseWebhook,
 		courseNotifyBatches: map[courseSignNotificationKey]*courseSignNotificationBatch{},
+		sampleLocation: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+			position := xxt.SampleLocation(center, radiusMeters, nil)
+			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
+		},
 	}
 }
 
@@ -71,6 +79,9 @@ type ExecuteSignRequest struct {
 	CourseName    string
 	CourseTeacher string
 	Special       map[string]interface{}
+	// locationBase is the unrandomized point used for the single
+	// errorLocation_ retry. It is set by ExecuteOne, never by handlers.
+	locationBase *xxt.SignPosition
 }
 
 type ExecutePhotoSignRequest struct {
@@ -288,6 +299,14 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}
 	if req.Special == nil {
 		req.Special = map[string]interface{}{}
+	} else {
+		// Share links reuse one request map across targets; randomization and
+		// state-machine fields must not leak between accounts.
+		copied := make(map[string]interface{}, len(req.Special)+4)
+		for key, value := range req.Special {
+			copied[key] = value
+		}
+		req.Special = copied
 	}
 	if _, provided := req.Special["if_face"]; !provided {
 		var activity model.SignActivity
@@ -332,11 +351,15 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}
 	// Activity metadata is authoritative for both the location toggle and the
 	// opaque `ext` that preSign must post (30s cache per account, XBT-S1).
-	if detail, err := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID); err == nil {
+	detail, detailErr := s.xxt.GetSignDetail(target.Mobile, password, req.ActivityID, req.CourseID, req.ClassID, req.TargetUID)
+	if detailErr == nil {
 		fixed.IfOpenAddress = fixed.IfOpenAddress || detail.IfOpenAddress
 		fixed.Ext = detail.Ext
 	} else {
-		log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, err)
+		log.Printf("sign metadata lookup failed: activity=%d uid=%d err=%v", req.ActivityID, req.TargetUID, detailErr)
+	}
+	if result, ok := s.prepareSignLocation(&req, detail, detailErr == nil); !ok {
+		return result, nil
 	}
 
 	enc, _ := req.Special["enc"].(string)
@@ -387,10 +410,12 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 			}
 			continue
 		case result.Kind == xxt.SignResultLocationOutOfRange && !locationRetried:
-			// XBT-S6 introduces point sampling; until then the retry follows
-			// the protocol (one retry with randomization disabled) but sends
-			// the same selected point.
+			// The first errorLocation_ retry must not randomize again: send the
+			// unrandomized base point (validated preset or metadata center).
 			locationRetried = true
+			if req.locationBase != nil {
+				applySignPosition(req.Special, req.locationBase)
+			}
 			continue
 		}
 		break
@@ -406,7 +431,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	case xxt.SignResultLocationOutOfRange:
 		message := "签到位置超出范围，请重新选择位置"
 		if result.DistanceM > 0 {
-			message = fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", result.DistanceM)
+			message = locationOutOfRangeMessage(result.DistanceM)
 		}
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorLocationOutRange, DistanceM: result.DistanceM, Message: message}, nil
 	case xxt.SignResultQRExpired:
@@ -424,9 +449,66 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}
 }
 
-// applyFaceCredentials uploads the stored face photo and obtains the face
-// challenge fields required by stuSignajax. It is used both before the first
-// attempt and for the single face recovery after [face]/checkFace_.
+// prepareSignLocation validates a caller-selected point against the activity
+// metadata and replaces the submitted coordinates with a uniformly sampled
+// point inside the activity circle. When the caller did not select a point the
+// metadata center becomes both the sampling origin and the retry point. An
+// out-of-range preset is rejected before any preSign/stuSignajax request.
+func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.SignDetail, metadataOK bool) (SignExecuteResult, bool) {
+	if !metadataOK || !detail.IfOpenAddress {
+		return SignExecuteResult{}, true
+	}
+	center := xxt.GeoPoint{Latitude: detail.LocationLatitude, Longitude: detail.LocationLongitude}
+	radius := float64(detail.LocationRange)
+	if !validGeoPoint(center) || radius <= 0 {
+		return SignExecuteResult{}, true
+	}
+
+	base := xxt.SignPosition{Latitude: center.Latitude, Longitude: center.Longitude}
+	if selected := xxt.PositionFromSpecial(req.Special); selected != nil {
+		distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: selected.Latitude, Longitude: selected.Longitude}, center)
+		if distance > radius {
+			return SignExecuteResult{
+				UserID:    req.TargetUID,
+				Success:   false,
+				ErrorCode: SignErrorLocationOutRange,
+				DistanceM: distance,
+				Message:   locationOutOfRangeMessage(distance),
+			}, false
+		}
+		base = *selected
+	}
+
+	sampled := s.sampleLocation(center, radius)
+	position := xxt.SignPosition{Latitude: sampled.Latitude, Longitude: sampled.Longitude, Address: base.Address}
+	applySignPosition(req.Special, &position)
+	req.locationBase = &base
+	return SignExecuteResult{}, true
+}
+
+func validGeoPoint(point xxt.GeoPoint) bool {
+	if point.Latitude == 0 && point.Longitude == 0 {
+		return false
+	}
+	return point.Latitude >= -90 && point.Latitude <= 90 &&
+		point.Longitude >= -180 && point.Longitude <= 180
+}
+
+// applySignPosition writes the protocol fields read by PositionFromSpecial.
+// Coordinates always use six decimals so sampled and preset points share one
+// format.
+func applySignPosition(special map[string]interface{}, position *xxt.SignPosition) {
+	special["latitude"] = strconv.FormatFloat(position.Latitude, 'f', 6, 64)
+	special["longitude"] = strconv.FormatFloat(position.Longitude, 'f', 6, 64)
+	if position.Address != "" {
+		special["description"] = position.Address
+	}
+}
+
+func locationOutOfRangeMessage(distance float64) string {
+	return fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", distance)
+}
+
 func (s *SignService) applyFaceCredentials(target *model.User, password string, req *ExecuteSignRequest) error {
 	if len(target.FacePhoto) == 0 {
 		var fresh model.User

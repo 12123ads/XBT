@@ -849,3 +849,163 @@ func TestSignCheckPreSignFailureKeepsLocalState(t *testing.T) {
 		t.Fatalf("failed merge wrote %d records: %v", count, err)
 	}
 }
+
+func locationMetadata() xxt.SignDetail {
+	return xxt.SignDetail{
+		IfOpenAddress:     true,
+		LocationLatitude:  30,
+		LocationLongitude: 120,
+		LocationRange:     50,
+	}
+}
+
+func TestSignExecuteRejectsPresetOutsideActivityRadius(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	signCalls, preSignCalls := 0, 0
+	upstream := &signAuthorizationUpstream{
+		detail: locationMetadata(),
+		preSign: func(string, string, xxt.FixedParams, int, string, string) (xxt.PreSignResult, error) {
+			preSignCalls++
+			return xxt.PreSignResult{Status: xxt.PreSignReady}, nil
+		},
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			signCalls++
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
+		Special: map[string]interface{}{
+			"latitude": "30.001", "longitude": "120", "description": "校外",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteOne error = %v", err)
+	}
+	if result.Success || result.ErrorCode != SignErrorLocationOutRange {
+		t.Fatalf("result = %+v, want location_out_of_range", result)
+	}
+	if result.DistanceM < 100 || result.DistanceM > 120 {
+		t.Fatalf("distance_m = %v, want about 111m", result.DistanceM)
+	}
+	if signCalls != 0 || preSignCalls != 0 {
+		t.Fatalf("out-of-range preset reached upstream: sign=%d preSign=%d", signCalls, preSignCalls)
+	}
+}
+
+func TestSignExecuteSamplesLocationAndRetriesWithoutRandomization(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		second   xxt.SignResult
+		wantCode string
+		wantDist float64
+	}{
+		{name: "retry succeeds", second: xxt.SignResult{Kind: xxt.SignResultSuccess}},
+		{name: "retry still out of range", second: xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 7}, wantCode: SignErrorLocationOutRange, wantDist: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			var attempts []map[string]interface{}
+			upstream := &signAuthorizationUpstream{
+				detail: locationMetadata(),
+				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, special map[string]interface{}) (xxt.SignResult, error) {
+					attempts = append(attempts, copySpecial(special))
+					if len(attempts) == 1 {
+						return xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12}, nil
+					}
+					return tc.second, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			svc.sampleLocation = func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
+				if center.Latitude != 30 || center.Longitude != 120 || radiusMeters != 50 {
+					t.Fatalf("sampler args = %+v radius=%v", center, radiusMeters)
+				}
+				return xxt.GeoPoint{Latitude: center.Latitude + 0.0001, Longitude: center.Longitude}
+			}
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+				ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation,
+				Special: map[string]interface{}{
+					"latitude": "30.0002", "longitude": "120.000000", "description": "教学楼",
+				},
+			})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			if len(attempts) != 2 {
+				t.Fatalf("upstream sign calls = %d, want exactly 2", len(attempts))
+			}
+			if got := attempts[0]["latitude"]; got != "30.000100" {
+				t.Fatalf("first attempt latitude = %v, want sampled 30.000100", got)
+			}
+			if got := attempts[1]["latitude"]; got != "30.000200" {
+				t.Fatalf("retry latitude = %v, want unrandomized preset 30.000200", got)
+			}
+			if got := attempts[1]["longitude"]; got != "120.000000" {
+				t.Fatalf("retry longitude = %v", got)
+			}
+			if got := attempts[1]["description"]; got != "教学楼" {
+				t.Fatalf("retry description = %v", got)
+			}
+			sampled := xxt.GeoPoint{Latitude: 30.0001, Longitude: 120}
+			if distance := xxt.DistanceMeters(sampled, xxt.GeoPoint{Latitude: 30, Longitude: 120}); distance > 50 {
+				t.Fatalf("sampled point %.2fm outside radius", distance)
+			}
+			if tc.wantCode == "" {
+				if !result.Success {
+					t.Fatalf("result = %+v, want success after retry", result)
+				}
+				return
+			}
+			if result.Success || result.ErrorCode != tc.wantCode || result.DistanceM != tc.wantDist {
+				t.Fatalf("result = %+v, want code=%q distance=%v", result, tc.wantCode, tc.wantDist)
+			}
+		})
+	}
+}
+
+func TestSignExecuteGeneratesLocationWhenPresetMissing(t *testing.T) {
+	for _, signType := range []int{xxt.SignNormal, xxt.SignQRCode, xxt.SignGesture, xxt.SignLocation, xxt.SignCode} {
+		t.Run(fmt.Sprint(signType), func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			var captured map[string]interface{}
+			upstream := &signAuthorizationUpstream{
+				detail: locationMetadata(),
+				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, special map[string]interface{}) (xxt.SignResult, error) {
+					captured = copySpecial(special)
+					return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			svc.sampleLocation = func(center xxt.GeoPoint, _ float64) xxt.GeoPoint {
+				return xxt.GeoPoint{Latitude: center.Latitude + 0.00005, Longitude: center.Longitude - 0.00005}
+			}
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+				ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: signType,
+			})
+			if err != nil || !result.Success {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if captured == nil {
+				t.Fatal("upstream sign was not called")
+			}
+			position := xxt.PositionFromSpecial(captured)
+			if position == nil {
+				t.Fatalf("generated position missing from special params: %v", captured)
+			}
+			center := xxt.GeoPoint{Latitude: 30, Longitude: 120}
+			if distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, center); distance > 50 {
+				t.Fatalf("generated point %.2fm outside radius", distance)
+			}
+		})
+	}
+}
+
+func copySpecial(special map[string]interface{}) map[string]interface{} {
+	copied := make(map[string]interface{}, len(special))
+	for key, value := range special {
+		copied[key] = value
+	}
+	return copied
+}

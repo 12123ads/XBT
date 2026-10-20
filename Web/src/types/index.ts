@@ -42,6 +42,11 @@ export interface SignActivity {
   if_refresh_ewm: boolean;
   if_photo: boolean;
   if_face: boolean;
+  if_need_vcode?: boolean;
+  if_open_address?: boolean;
+  location_latitude?: number;
+  location_longitude?: number;
+  location_range?: number;
   record_source_name: string;
   record_source: number;
   record_sign_time: number;

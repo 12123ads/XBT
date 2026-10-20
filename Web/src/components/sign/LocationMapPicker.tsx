@@ -6,6 +6,8 @@ import { bd09ToGcj02, gcj02ToBd09 } from '../../utils/geolocation';
 import {
   DEFAULT_MAP_CENTER_BD09,
   coordinateFallbackDescription,
+  describeSignDistance,
+  type SignLocationCenter,
   formatCoordinate,
   isCoordinate,
   locateWithBrowserSelection,
@@ -27,6 +29,8 @@ import type { CourseLocationPreset, SelectedLocation } from '../../types';
 interface LocationMapPickerProps {
   current: SelectedLocation | null;
   presets: CourseLocationPreset[];
+  center?: SignLocationCenter | null;
+  radius?: number | null;
   onCancel: () => void;
   onConfirm: (location: SelectedLocation) => void;
 }
@@ -81,7 +85,7 @@ const toMapLocation = (lng: number, lat: number): SelectedLocation => {
   };
 };
 
-export const LocationMapPicker = ({ current, presets, onCancel, onConfirm }: LocationMapPickerProps) => {
+export const LocationMapPicker = ({ current, presets, center, radius, onCancel, onConfirm }: LocationMapPickerProps) => {
   const [initial] = useState(() => {
     const location = resolveInitial(current, presets);
     const lng = Number(location.lng);
@@ -296,7 +300,9 @@ export const LocationMapPicker = ({ current, presets, onCancel, onConfirm }: Loc
     onConfirm(location);
   };
 
-  const canConfirm = mapStatus === 'ready';
+  const selectedDistance = describeSignDistance(selected.lat, selected.lng, center, radius);
+  const selectedOutOfRange = selectedDistance?.outOfRange ?? false;
+  const canConfirm = mapStatus === 'ready' && !selectedOutOfRange;
 
   return (
     <motion.div
@@ -392,7 +398,16 @@ export const LocationMapPicker = ({ current, presets, onCancel, onConfirm }: Loc
               </button>
             </div>
           )}
-          <p className="pl-[23px] text-[10px] font-medium text-slate-400">请选择教师设置的签到范围内位置</p>
+          <p className="pl-[23px] text-[10px] font-medium text-slate-400">
+            {selectedDistance
+              ? selectedDistance.label
+              : '请选择教师设置的签到范围内位置'}
+          </p>
+          {selectedOutOfRange && (
+            <p className="pl-[23px] text-[10px] font-bold text-red-500">
+              超出签到范围，请移动到红圈内或重新选择预设地点
+            </p>
+          )}
         </div>
 
         <div className="px-6 pt-4 flex gap-3 shrink-0">

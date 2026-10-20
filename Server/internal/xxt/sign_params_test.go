@@ -40,12 +40,11 @@ func TestBuildStuSignParamsPerSignType(t *testing.T) {
 		name        string
 		signType    int
 		want        map[string]string
-		noLocation  bool
 		wantAddress bool
 		wantEnc     bool
 		wantCode    bool
 	}{
-		{name: "normal/photo", signType: SignNormal, noLocation: true, want: map[string]string{"latitude": "-1", "longitude": "-1"}},
+		{name: "normal", signType: SignNormal, want: map[string]string{"latitude": "30.123457", "longitude": "120.987654"}},
 		{name: "qrcode", signType: SignQRCode, wantEnc: true, want: map[string]string{"latitude": "-1", "longitude": "-1"}},
 		{name: "gesture", signType: SignGesture, wantCode: true, want: map[string]string{"latitude": "30.123457", "longitude": "120.987654"}},
 		{name: "location", signType: SignLocation, wantAddress: true, want: map[string]string{"latitude": "30.123457", "longitude": "120.987654", "address": "教学楼A", "ifTiJiao": "1"}},
@@ -98,13 +97,6 @@ func TestBuildStuSignParamsPerSignType(t *testing.T) {
 				}
 			}
 
-			if tc.noLocation {
-				if q.Has("location") || q.Has("locationResult") {
-					t.Fatalf("unexpected location params for type %d: %v", tc.signType, q)
-				}
-				return
-			}
-
 			assertLocationParam(t, q.Get("location"), false)
 			assertLocationParam(t, q.Get("locationResult"), true)
 		})
@@ -152,7 +144,7 @@ func TestBuildStuSignParamsLocationToggle(t *testing.T) {
 	client := &Client{aesKey: "1234567890123456"}
 	base := signParamsTestBase(client.deviceCode(7))
 
-	for _, signType := range []int{SignQRCode, SignGesture, SignLocation, SignCode} {
+	for _, signType := range []int{SignNormal, SignQRCode, SignGesture, SignLocation, SignCode} {
 		t.Run(strconv.Itoa(signType), func(t *testing.T) {
 			p := base
 			p.SignType = signType

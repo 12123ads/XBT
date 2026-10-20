@@ -74,7 +74,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - **输出**：按签到类型生成完整参数集。
 - **验收标准**（表驱动测试）：
   - 5 种类型均包含 `activeId/uid/courseId/appType/name/deviceCode`。
-  - `if_open_address=true` 时，类型 2/3/4/5 均包含 `location`、`locationResult`；类型 4 另含 `address`、`ifTiJiao=1`。
+  - `if_open_address=true` 时，5 种类型（0/2/3/4/5）均包含 `location`、`locationResult`；类型 4 另含 `address`、`ifTiJiao=1`。
   - `enc2` 仅在状态机写入后出现；不得凭空生成。
   - 同一账号多次调用 `deviceCode` 稳定；不同账号不同。
   - 二维码请求不再把 `validate` 预置为首发参数（首发由服务端状态机决定）。
@@ -94,7 +94,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - 上游返回“您已签到过了”时写入 `source_uid=-1` 的 `sign_records`，后续 check 不再请求上游签到。
   - 仅 `success/success2` 写签到记录；`already_signed` 写学习通来源记录。
 - **不做**：不做无限重试、不做并发去重以外的调度。
-- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/sign_result.go` 提供 `ParseSignResult` 与 `SignResultKind`（9 类）；`Client.Sign` 返回 `SignResult`，验证码分支保存 `enc2` 并在第二次请求同时携带 `validate`+`enc2`，最多两次请求；`service.ExecuteOne` 对人脸/位置各重试一次，`success/success2` 写签到记录，`already_signed` 写 `source_uid=-1` 记录，`/api/sign/execute` 新增 `error_code`、`retryable`、`distance_m`。位置随机化尚未落地（XBT-S6），当前 `errorLocation_` 重试仍发送用户选定点。测试见 `Server/internal/xxt/sign_result_test.go`、`Server/internal/service/sign_test.go`、`Server/internal/handler/sign_test.go`；接口说明见 `Server/API.md` §5.4。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/sign_result.go` 提供 `ParseSignResult` 与 `SignResultKind`（9 类）；`Client.Sign` 返回 `SignResult`，验证码分支保存 `enc2` 并在第二次请求同时携带 `validate`+`enc2`，最多两次请求；`service.ExecuteOne` 对人脸/位置各重试一次，`success/success2` 写签到记录，`already_signed` 写 `source_uid=-1` 记录，`/api/sign/execute` 新增 `error_code`、`retryable`、`distance_m`。位置随机化见 XBT-S6（`errorLocation_` 重试改为关闭随机化并发送未随机化的基准点）。测试见 `Server/internal/xxt/sign_result_test.go`、`Server/internal/service/sign_test.go`、`Server/internal/handler/sign_test.go`；接口说明见 `Server/API.md` §5.4。
 
 #### XBT-S4 preSign 全类型 + 上游状态 + 会话恢复
 - **输入**：活动 `ext`、固定参数、用户凭据。
@@ -128,6 +128,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 在 `locationRange` 内均匀取点（保留 6 位小数）；服务端校验预设点到圆心距离，超范围直接拒绝并提示。
 - 请求携带 `location`、`locationResult`、`mockData`。
 - 验收：10k 次采样全部落在半径内；`errorLocation_12` 返回 `distance_m=12` 且只重试一次；前端位置选择器展示“距签到点 N 米 / 超出范围”。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/location.go` 提供 haversine 距离、预设点范围校验与面积均匀圆内采样（6 位小数）；`service.ExecuteOne` 在 preSign 之前按活动元数据校验用户预设点，超范围直接返回 `location_out_of_range` + `distance_m`，未选点时以元数据圆心生成采样点；`errorLocation_` 首次重试发送未随机化的基准点（预设点或元数据圆心），第二次失败返回上游距离；`stuSignajax` 构造器对类型 0/2/3/4/5 在 `if_open_address=true` 时统一携带 `location`/`locationResult`（仅后者含 `mockData`）。Web 位置选择器、地图选点和已选位置展示“距签到点 N 米 / 超出范围”，地图选点超范围时禁止确认。测试见 `Server/internal/xxt/location_test.go`、`Server/internal/xxt/sign_params_test.go`、`Server/internal/service/sign_test.go`。
 
 #### XBT-S7 人脸流程加固
 - **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一活动内复用已上传的 `objectId`，不重复上传同一张照片；`check-face-result` 先判 HTTP 状态再解 JSON。
@@ -204,7 +205,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 
 ### 4.3 Web / Android
 - Web 移除 `/sign/execute` 的固定 5 次重试；按 `error_code` 决定“重新扫码 / 重试 / 提示”。
-- 位置选择器对类型 2/3/4/5 在 `if_open_address=true` 时展示；显示范围校验结果。
+- 位置选择器在类型 4 展示，并显示“距签到点 N 米 / 超出范围”；类型 0/2/3/5 在 `if_open_address=true` 时由服务端按活动元数据生成位置，无需手动选点。
 - Android 壳无协议改动，仅随 Web 资源更新。
 
 ## 5. 验收与验证

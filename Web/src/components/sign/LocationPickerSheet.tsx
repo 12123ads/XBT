@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 're
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, ChevronRight, LocateFixed, Loader2, Map, MapPin, X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { presetToSelectedLocation, isSameLocation, locateWithBrowserSelection } from '../../utils/location';
+import { presetToSelectedLocation, isSameLocation, locateWithBrowserSelection, describeSignDistance, type SignLocationCenter } from '../../utils/location';
 import type { CourseLocationPreset, SelectedLocation } from '../../types';
 
 const LocationMapPicker = lazy(() => import('./LocationMapPicker'));
@@ -14,6 +14,8 @@ interface LocationPickerSheetProps {
   initialView?: LocationPickerView;
   value: SelectedLocation | null;
   presets: CourseLocationPreset[];
+  center?: SignLocationCenter | null;
+  radius?: number | null;
   allowEmpty?: boolean;
   onClose: () => void;
   onChange: (location: SelectedLocation | null) => void;
@@ -39,6 +41,8 @@ export const LocationPickerSheet = ({
   initialView = 'list',
   value,
   presets,
+  center,
+  radius,
   allowEmpty = false,
   onClose,
   onChange,
@@ -104,6 +108,8 @@ export const LocationPickerSheet = ({
     }
   };
 
+  const currentDistance = value ? describeSignDistance(value.lat, value.lng, center, radius) : null;
+
   return (
     <AnimatePresence>
       {open && view === 'map' && (
@@ -111,6 +117,8 @@ export const LocationPickerSheet = ({
           <LocationMapPicker
             current={value}
             presets={presets}
+            center={center}
+            radius={radius}
             onCancel={() => setView('list')}
             onConfirm={(location) => {
               onChange(location);
@@ -155,6 +163,12 @@ export const LocationPickerSheet = ({
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1 overscroll-contain">
+              {currentDistance && (
+                <div className={`rounded-2xl px-4 py-3 text-xs font-bold ${currentDistance.outOfRange ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                  {currentDistance.label}
+                  {currentDistance.outOfRange && '，请重新选择签到位置'}
+                </div>
+              )}
               <motion.button
                 type="button"
                 whileTap={{ scale: 0.98 }}
@@ -218,6 +232,7 @@ export const LocationPickerSheet = ({
               {presets.map((preset) => {
                 const presetLocation = presetToSelectedLocation(preset);
                 const isSelected = isSameLocation(value, presetLocation);
+                const presetDistance = describeSignDistance(preset.lat, preset.lng, center, radius);
                 return (
                   <motion.button
                     type="button"
@@ -235,6 +250,11 @@ export const LocationPickerSheet = ({
                         <span className="truncate">{preset.name}</span>
                       </div>
                       <div className="text-[10px] text-slate-400 font-medium truncate">{preset.description}</div>
+                      {presetDistance && (
+                        <div className={`text-[10px] font-bold truncate ${presetDistance.outOfRange ? 'text-red-500' : 'text-emerald-600'}`}>
+                          {presetDistance.label}
+                        </div>
+                      )}
                     </div>
                     {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
                   </motion.button>

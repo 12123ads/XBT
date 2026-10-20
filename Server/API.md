@@ -337,7 +337,11 @@ GET /api/sign/classmates?course_id=222&class_id=111
 兼容说明：
 - 若未传 `target_uid`，但传了 `user_ids`，后端会使用 `user_ids` 的第一个 uid。
 - 若都未传，默认签当前登录用户。
-- `if_open_address` 对应活动元数据里的 `if_open_address`：服务端执行签到时会读取 `getPPTActiveInfo`（30s 缓存）作为权威来源，请求体字段只在读取失败时兜底。为 `true` 且 `special_params` 提供了有效经纬度时，签到类型 `2/3/4/5` 的提交参数都会带 `location`、`locationResult`（含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。未提供经纬度时不下发伪造坐标。
+- `if_open_address` 对应活动元数据里的 `if_open_address`：服务端执行签到时会读取 `getPPTActiveInfo`（30s 缓存）作为权威来源，请求体字段只在读取失败时兜底。为 `true` 且元数据带有圆心/半径时：
+  - 若 `special_params` 提供了经纬度，服务端先按 haversine 距离校验预设点；超出 `location_range` 直接返回 `location_out_of_range` 与 `distance_m`，不会请求 `preSign`/`stuSignajax`。
+  - 服务端随后在元数据圆内面积均匀随机取点（6 位小数）提交；未提供经纬度时同样按元数据圆心生成，因此签到类型 `0/2/3/4/5` 的提交参数都会带 `location`、`locationResult`（仅后者含 `mockData`）；类型 `4` 另带 `address` 与 `ifTiJiao=1`。
+  - 上游返回 `errorLocation_<米>` 时关闭随机化，用未随机化的基准点（用户预设点或元数据圆心）重试一次；第二次仍失败返回上游距离。
+- 无可用圆心/半径时不做校验与随机化：提供了经纬度就按原值提交，未提供则不下发伪造坐标。
 
 响应体 `data`:
 
@@ -361,7 +365,7 @@ GET /api/sign/classmates?course_id=222&class_id=111
 | `""` | 签到成功（含 `success2` 迟到/已结束、本地已有记录） | `false` | `success=true` |
 | `captcha_required` | 验证码校验未通过 | `true` | 服务端已带 `validate`+`enc2` 自动重试一次 |
 | `face_required` | 人脸验证未通过或未设置人脸照片 | `false` | 服务端已自动做人脸恢复重试一次 |
-| `location_out_of_range` | 位置超出范围 | `false` | 上游给出距离时返回 `distance_m`（米） |
+| `location_out_of_range` | 位置超出范围 | `false` | 预设点校验或上游返回距离时带 `distance_m`（米）；服务端已关闭随机化重试一次 |
 | `qr_expired` | 二维码已过期 | `false` | 需要重新扫码 |
 | `activity_expired` | 签到已截止 | `false` | 上游 `preSign` 判定已截止，不写记录 |
 | `session_expired` | 学习通会话失效 | `false` | 需要重新登录 |

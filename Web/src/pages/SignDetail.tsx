@@ -24,6 +24,7 @@ import { useAuthStore } from '../store/auth';
 import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse } from '../types';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 import { useSignLocation } from '../utils/useSignLocation';
+import { describeSignDistance, signLocationCenterFromActivity } from '../utils/location';
 import { decideSignFailure } from '../utils/signError';
 
 // Import refactored components
@@ -86,7 +87,6 @@ const SignDetail = () => {
   const course = location.state?.course as CourseActivities;
   const isPhotoSign = activity?.sign_type === 0 && activity.if_photo;
   const isFaceSign = activity?.if_face === true;
-
   const [classmates, setClassmates] = useState<Classmate[]>([]);
   const [selectedUids, setSelectedUids] = useState<number[]>([]);
   const [isLoadingClassmates, setIsLoadingClassmates] = useState(true);
@@ -94,6 +94,10 @@ const SignDetail = () => {
   
   const [signCode, setSignCode] = useState('');
   const { location: signLocation, setLocation: setSignLocation, isLocating, locateWithBrowser } = useSignLocation();
+  const signRange = activity ? signLocationCenterFromActivity(activity) : null;
+  const signDistance = signRange && signLocation
+    ? describeSignDistance(signLocation.lat, signLocation.lng, signRange.center, signRange.radius)
+    : null;
   const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareLink, setShareLink] = useState('');
@@ -325,8 +329,12 @@ const SignDetail = () => {
       return;
     }
 
-    if (activity.sign_type === 4 && (!signLocation?.lat || !signLocation?.lng)) {
+    if (activity.sign_type === 4 && (!signLocation?.lat || !signLocation?.lng) && !signRange) {
       toast.error('请先选择签到地点');
+      return;
+    }
+    if (activity.sign_type === 4 && signDistance?.outOfRange) {
+      toast.error(signDistance.label);
       return;
     }
 
@@ -635,6 +643,8 @@ const SignDetail = () => {
               <LocationInput
                 name={signLocation?.name || ''}
                 description={signLocation?.description || ''}
+                distanceLabel={signDistance?.label}
+                outOfRange={signDistance?.outOfRange}
                 onOpen={() => setLocationPickerView('list')}
                 onOpenMap={() => setLocationPickerView('map')}
                 onLocate={handleUseBrowserLocation}
@@ -764,6 +774,8 @@ const SignDetail = () => {
         initialView={locationPickerView ?? 'list'}
         value={signLocation}
         presets={locationPresets}
+        center={signRange?.center}
+        radius={signRange?.radius}
         onClose={() => setLocationPickerView(null)}
         onChange={setSignLocation}
       />

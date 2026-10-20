@@ -5,6 +5,8 @@ import { Loader2, LocateFixed, Map, MapPin } from 'lucide-react';
 interface LocationInputProps {
   name: string;
   description: string;
+  distanceLabel?: string;
+  outOfRange?: boolean;
   onOpen: () => void;
   onOpenMap?: () => void;
   onLocate?: () => void;
@@ -14,6 +16,8 @@ interface LocationInputProps {
 export const LocationInput: React.FC<LocationInputProps> = ({
   name,
   description,
+  distanceLabel,
+  outOfRange = false,
   onOpen,
   onOpenMap,
   onLocate,
@@ -31,6 +35,11 @@ export const LocationInput: React.FC<LocationInputProps> = ({
       <div className="min-w-0 px-1">
         <p className="font-bold text-slate-800 truncate text-sm">{name || '点击选择地点'}</p>
         <p className="text-[10px] text-slate-400 font-medium truncate">{description}</p>
+        {distanceLabel && (
+          <p className={`text-[10px] font-bold truncate ${outOfRange ? 'text-red-500' : 'text-emerald-600'}`}>
+            {distanceLabel}
+          </p>
+        )}
       </div>
       <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center shadow-sm shrink-0">
         <MapPin size={16} className="text-blue-500" />
