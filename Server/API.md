@@ -686,6 +686,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
       "use_count": 4,
       "is_failure_before": false,
       "source": "official",
+      "base_version": 2,
       "created_at": "2026-10-20T10:00:00Z",
       "image": "data:image/jpeg;base64,..."
     }
@@ -693,7 +694,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 }
 ```
 
-`source` 为 `upload`（手动上传）或 `official`（从学习通导入）。`is_failure_before=true` 表示该照片曾在人脸校验中被拒绝；存在失败历史时优先选择「未失败且用过」的照片。
+`source` 为 `upload`（手动上传）或 `official`（从学习通导入）。`base_version` 为 `1` 表示旧基图（可能是 S21 之前导入时已变换过的存量图），为 `2` 表示未变换的官方原图。`is_failure_before=true` 表示该照片曾在人脸校验中被拒绝；存在失败历史时优先选择「未失败且用过」的照片。
 
 #### 5.8.2 上传照片
 - Method: `POST`
@@ -715,7 +716,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 - Path: `/api/user/faces/import`
 - Auth: 是
 
-使用目标账号自己的会话调用 `collectionfilephotoEnc` 获取官方照片，并把下载到的原图**原样保存为基线**（`source=official`，上限 8MB 且需可解码）。签到执行时才在内存中做裁剪 90%–99%、旋转 ±5°、去黑边、JPEG 重压（默认质量 85，超 100KB 依次降到 80/70 并可按比例缩小）并丢弃 EXIF；变换结果不落库。成功响应额外包含 `transform_deferred: true`，不再返回 `transform` 字段（前端可忽略该字段）。
+使用目标账号自己的会话调用 `collectionfilephotoEnc` 获取官方照片，并把下载到的原图**原样保存为基线**（`source=official`，`base_version=2`，上限 8MB 且需可解码）。签到执行时才在内存中做裁剪 90%–99%、旋转 ±5°、去黑边、JPEG 重压（默认质量 85，超 100KB 依次降到 80/70 并可按比例缩小）并丢弃 EXIF；变换结果不落库。成功响应额外包含 `transform_deferred: true`，不再返回 `transform` 字段（前端可忽略该字段）。
 
 | 状态码 | 含义 |
 |---|---|
@@ -729,7 +730,13 @@ curl -X POST http://localhost:3030/api/sign/photo \
 - `POST /api/user/face`：等价于向自己的池新增一张。
 - `DELETE /api/user/face`：清空自己的照片池。
 
-说明：签到时若活动 `if_face=true`，后端会为目标账号选择一张基线照片，在本次执行内变换一次后上传换取 `objectId`，并调用 `check-face-result` 获取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。同一次执行内的重试复用同一份变换结果与 `objectId`；不同执行会重新变换并上传。账号没有任何照片时，后端会用该账号凭据自动拉取一次官方照片作为基线；失败返回 `face_photo_unavailable`，不影响其它签到类型。
+说明：签到时若活动 `if_face=true`，后端会为目标账号选择一张基线照片，在本次执行内变换一次后上传换取 `objectId`，并调用 `check-face-result` 获取 `currentFaceId/faceEnc/faceCode`，再提交签到参数。同一次执行内的重试复用同一份变换结果与 `objectId`；不同执行会重新变换并上传。
+
+`source=official` 且 `base_version=1` 的存量基图会在签发时先用目标账号凭据重新下载一次官方原图并原地升级为 `base_version=2`，再走单次变换；重拉按账号冷却 1 小时（失败也计入冷却），失败时退回原基图继续签到。`source=upload` 的照片不自动重拉。日志行 `face_base_refresh` 记录 `photo_id/base_version/result`，且不包含照片字节或凭据。
+
+若第一次 `check-face-result` 返回 `CFR002`/`CFR004`，且本次执行尚未重试过，后端会用轻度变换（裁剪 99%–100%、0°、JPEG q92）重新上传并再校验一次；成功则继续签到，仍失败才标记该照片失败并返回 `face_required`。同一执行最多一次，不循环；一次成功不触发重试。日志行 `face_check_retry=mild` 记录 `photo_id/base_version/code/result`。
+
+账号没有任何照片时，后端会用该账号凭据自动拉取一次官方照片作为基线；失败返回 `face_photo_unavailable`，不影响其它签到类型。
 
 ### 5.9 功能开关
 - Method: `GET`

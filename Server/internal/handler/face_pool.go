@@ -126,6 +126,7 @@ func facePhotoPayload(photo model.FacePhoto, includeImage bool) gin.H {
 		"use_count":         photo.UseCount,
 		"is_failure_before": photo.IsFailureBefore,
 		"source":            photo.Source,
+		"base_version":      photo.BaseVersion,
 		"created_at":        photo.CreatedAt,
 	}
 	if includeImage {

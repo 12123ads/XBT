@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -47,6 +48,12 @@ type SignService struct {
 	// faceImportGroup coalesces concurrent empty-pool imports for the same
 	// account, so one fetch is shared instead of storing duplicate bases.
 	faceImportGroup singleflight.Group
+	// faceBaseRefreshGroup coalesces legacy official base refreshes per
+	// account. faceBaseRefreshes bounds them to one attempt per cooldown; a
+	// failed attempt also waits out the cooldown so signing never loops on it.
+	faceBaseRefreshGroup singleflight.Group
+	faceBaseRefreshMu    sync.Mutex
+	faceBaseRefreshes    map[int64]time.Time
 	// sampleLocation is replaceable in tests. Production uses the uniform
 	// sampler from xxt with the global random source. It only serves requests
 	// without an explicit selection.
@@ -61,6 +68,12 @@ type SignService struct {
 	// facePhotoRand is replaceable in tests so pool selection and per-execution
 	// transforms are assertable.
 	facePhotoRand facephoto.RandSource
+	// faceTransformMild selects the diagnostic mild transform preset
+	// (OMP-58). It never disables the transform and defaults to false.
+	faceTransformMild bool
+	// faceUploadMode selects the upload shape for diagnostic A/B testing:
+	// face_temp (default) or generic (UploadPanFile). Config-validated.
+	faceUploadMode string
 	// facePhotos is the on-demand official photo importer. A nil importer
 	// leaves accounts without a pool entry unable to sign with a face.
 	facePhotos FacePhotoImporter
@@ -143,6 +156,9 @@ const defaultLocationJitterMeters = 5.0
 // image. *FacePhotoService implements it; tests may inject a narrower stub.
 type FacePhotoImporter interface {
 	ImportOfficial(ctx context.Context, operatorUID, targetUID int64) (model.FacePhoto, error)
+	// RefreshOfficialBase re-downloads one legacy official base and stores it
+	// as an untouched original (OMP-59). It never touches upload sources.
+	RefreshOfficialBase(ctx context.Context, targetUID int64, photoID uint) (model.FacePhoto, error)
 }
 
 // SetFacePhotoService enables the sign-time fallback that imports the official
@@ -155,6 +171,32 @@ func (s *SignService) SetFacePhotoService(importer FacePhotoImporter) {
 // that runs inside every execution. Tests inject a deterministic source;
 // production leaves it nil (time-seeded).
 func (s *SignService) SetRand(rnd facephoto.RandSource) { s.facePhotoRand = rnd }
+
+const (
+	faceUploadModeFaceTemp = "face_temp"
+	faceUploadModeGeneric  = "generic"
+)
+
+// SetFaceDiagnostics installs the OMP-58 A/B switches. Both are diagnostics:
+// mild keeps a transform (99-100% crop, 0 degrees, q92) and generic keeps the
+// mandatory transform while changing only the upload endpoint shape. Unknown
+// upload modes fall back to face_temp so a hand-edited config cannot silently
+// change production behavior; config.Load rejects them before startup.
+func (s *SignService) SetFaceDiagnostics(mild bool, uploadMode string) {
+	s.faceTransformMild = mild
+	if uploadMode == faceUploadModeGeneric {
+		s.faceUploadMode = faceUploadModeGeneric
+		return
+	}
+	s.faceUploadMode = faceUploadModeFaceTemp
+}
+
+type faceTransformInfo struct {
+	CropWidthRatio  float64
+	CropHeightRatio float64
+	AngleDegrees    float64
+	Quality         int
+}
 
 // SetLocationJitterMeters overrides the jitter bound used for explicitly
 // selected points. Non-positive values keep the default so a misconfigured
@@ -215,10 +257,16 @@ type ExecuteSignRequest struct {
 	// image in the database is never modified; the cached bytes keep the
 	// upload key stable across retries of the same execution.
 	faceTransform []byte
+	// faceTransformInfo keeps the transform geometry for the failure log. It
+	// is written together with faceTransform and reused on retries.
+	faceTransformInfo *faceTransformInfo
 	// facePhotoImportDone makes the on-demand official import happen at most
 	// once per execution, including the failure case.
 	facePhotoImportDone bool
 	facePhotoImportErr  error
+	// faceMildRetried records that this execution already spent its one mild
+	// retry after an upstream face rejection (OMP-59). It never retries twice.
+	faceMildRetried bool
 }
 
 type ExecutePhotoSignRequest struct {
@@ -1199,6 +1247,17 @@ const faceUploadTTL = 6 * time.Hour
 // slow upstream cannot stall the sign window.
 const facePhotoImportTimeout = 5 * time.Second
 
+const (
+	// faceBaseRefreshTimeout bounds the legacy official base re-download used
+	// by OMP-59. It mirrors the import budget so a slow upstream cannot stall
+	// the sign window, and it is not the sign request timeout.
+	faceBaseRefreshTimeout = 5 * time.Second
+	// faceBaseRefreshCooldown is the per-account bound on legacy base
+	// refreshes, including failed attempts, so a rejection cannot trigger an
+	// official download on every execution.
+	faceBaseRefreshCooldown = time.Hour
+)
+
 type faceUploadKey struct {
 	UserUID    int64
 	ActivityID int64
@@ -1228,37 +1287,25 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	if source == "" {
 		source = "pool"
 	}
-	if req.faceTransform == nil {
-		transformed, err := facephoto.Transform(photo.Data, facephoto.Options{Rand: s.facePhotoRand})
-		if err != nil {
-			log.Printf("face photo transform failed: uid=%d photo_id=%d face_photo_source=%s err=%v", req.TargetUID, photo.ID, source, err)
-			return facePhotoUnavailableError{message: "人脸照片处理失败，请更新人脸照片后重试"}
-		}
-		req.faceTransform = transformed.JPEG
-		log.Printf("face photo transform: uid=%d photo_id=%d face_photo_source=%s bytes=%d", req.TargetUID, photo.ID, source, len(req.faceTransform))
-	}
-	key := faceUploadKey{
-		UserUID:    req.TargetUID,
-		ActivityID: req.ActivityID,
-		PhotoHash:  sha256.Sum256(req.faceTransform),
-	}
-	objectID, err := s.faceObjectID(key, func() (string, error) {
-		return s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", req.faceTransform)
-	})
+	faceResult, objectID, uploadMode, err := s.checkFaceWithPhoto(target, password, req, photo, source, false)
 	if err != nil {
-		s.recordFaceUse(req, "", false)
-		log.Printf("face photo upload failed: uid=%d photo_id=%d face_photo_source=%s err=%v", req.TargetUID, photo.ID, source, err)
-		return fmt.Errorf("人脸照片上传失败：%v", err)
+		// One rejection-only retry with the mild preset (OMP-59). It is spent
+		// at most once per execution and never applied before the first
+		// transform, so a successful path keeps its original request count.
+		if code, retryable := faceCheckRetryCode(err); retryable && !req.faceMildRetried {
+			req.faceMildRetried = true
+			faceResult, objectID, uploadMode, err = s.checkFaceWithPhoto(target, password, req, photo, source, true)
+			log.Printf("face_check_retry=mild activity_id=%d uid=%d photo_id=%d base_version=%d code=%s result=%s",
+				req.ActivityID, req.TargetUID, photo.ID, photo.BaseVersion, code, faceCheckRetryResult(err))
+		}
 	}
-	clientID := s.faceClientID(req.Context, target, password)
-	if clientID != "" {
-		req.faceUsedClientID = true
-	}
-	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID, clientID)
 	if err != nil {
 		// Only an explicit upstream rejection poisons the photo; transport and
-		// session errors must not blacklist an otherwise valid image.
-		s.recordFaceUse(req, objectID, errors.Is(err, xxt.ErrFaceRejected))
+		// session errors must not blacklist an otherwise valid image. The use
+		// counter is written once per execution, after the retry outcome.
+		rejected := errors.Is(err, xxt.ErrFaceRejected)
+		s.recordFaceUse(req, objectID, rejected)
+		s.logFaceCheckFailed(req, photo, objectID, req.faceUsedClientID, uploadMode, err)
 		return fmt.Errorf("人脸验证失败：%v", err)
 	}
 	s.recordFaceUse(req, objectID, false)
@@ -1266,6 +1313,134 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 	req.Special["face_enc"] = faceResult.FaceEnc
 	// faceCode is fixed to an empty value by the protocol builder (XBT-S7a).
 	return nil
+}
+
+// checkFaceWithPhoto transforms (unless this execution already has bytes),
+// uploads and checks one base image. A forced retry recomputes the transform
+// with the mild preset; it never reuses the rejected bytes.
+func (s *SignService) checkFaceWithPhoto(target *model.User, password string, req *ExecuteSignRequest, photo model.FacePhoto, source string, retryMild bool) (xxt.FaceCheckResult, string, string, error) {
+	mild := retryMild || s.faceTransformMild
+	if req.faceTransform == nil || retryMild {
+		transformed, err := facephoto.Transform(photo.Data, facephoto.Options{Rand: s.facePhotoRand, Mild: mild})
+		if err != nil {
+			log.Printf("face photo transform failed: uid=%d photo_id=%d face_photo_source=%s mild=%t err=%v", req.TargetUID, photo.ID, source, mild, err)
+			return xxt.FaceCheckResult{}, "", "", facePhotoUnavailableError{message: "人脸照片处理失败，请更新人脸照片后重试"}
+		}
+		req.faceTransform = transformed.JPEG
+		req.faceTransformInfo = &faceTransformInfo{
+			CropWidthRatio:  transformed.CropWidthRatio,
+			CropHeightRatio: transformed.CropHeightRatio,
+			AngleDegrees:    transformed.AngleDegrees,
+			Quality:         transformed.Quality,
+		}
+		log.Printf("face photo transform: uid=%d photo_id=%d face_photo_source=%s mild=%t crop_w=%.4f crop_h=%.4f angle=%.2f quality=%d bytes=%d",
+			req.TargetUID, photo.ID, source, mild,
+			transformed.CropWidthRatio, transformed.CropHeightRatio, transformed.AngleDegrees, transformed.Quality, len(req.faceTransform))
+	}
+	key := faceUploadKey{
+		UserUID:    req.TargetUID,
+		ActivityID: req.ActivityID,
+		PhotoHash:  sha256.Sum256(req.faceTransform),
+	}
+	upload := s.xxt.UploadFaceTemp
+	uploadMode := faceUploadModeFaceTemp
+	if s.faceUploadMode == faceUploadModeGeneric {
+		upload = s.xxt.UploadPanFile
+		uploadMode = faceUploadModeGeneric
+	}
+	objectID, err := s.faceObjectID(key, func() (string, error) {
+		return upload(target.Mobile, password, "face.jpg", "image/jpeg", req.faceTransform)
+	})
+	if err != nil {
+		log.Printf("face photo upload failed: uid=%d photo_id=%d face_photo_source=%s upload_mode=%s err=%v", req.TargetUID, photo.ID, source, uploadMode, err)
+		return xxt.FaceCheckResult{}, "", uploadMode, fmt.Errorf("人脸照片上传失败：%v", err)
+	}
+	clientID := s.faceClientID(req.Context, target, password)
+	if clientID != "" {
+		req.faceUsedClientID = true
+	}
+	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID, clientID)
+	return faceResult, objectID, uploadMode, err
+}
+
+// faceCheckRetryCode names the upstream rejection codes a single mild retry
+// may recover from. Other rejections are terminal for this execution.
+func faceCheckRetryCode(err error) (string, bool) {
+	code, ok := faceRejectionCode(err)
+	if !ok {
+		return "", false
+	}
+	switch code {
+	case "CFR002", "CFR004":
+		return code, true
+	}
+	return code, false
+}
+
+func faceCheckRetryResult(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if code, ok := faceRejectionCode(err); ok && code != "" {
+		return code
+	}
+	return "error"
+}
+
+func faceRejectionCode(err error) (string, bool) {
+	var rejection *xxt.FaceRejectedError
+	if !errors.As(err, &rejection) {
+		return "", false
+	}
+	return strings.ToUpper(strings.TrimSpace(rejection.Code)), true
+}
+
+// logFaceCheckFailed emits one attribution line for a rejected (or failed)
+// face check. It never logs photo bytes, passwords, sc, clientId or the full
+// upstream body: the response tail is rune-truncated to 200 characters and the
+// base image is represented only by its SHA-256 prefix.
+func (s *SignService) logFaceCheckFailed(req *ExecuteSignRequest, photo model.FacePhoto, objectID string, hasCxcid bool, uploadMode string, err error) {
+	code := "-"
+	response := ""
+	var rejection *xxt.FaceRejectedError
+	if errors.As(err, &rejection) {
+		if trimmed := strings.TrimSpace(rejection.Code); trimmed != "" {
+			code = trimmed
+		}
+		response = truncateLogRunes(strings.TrimSpace(rejection.Response), 200)
+	}
+	transform := "unknown"
+	if info := req.faceTransformInfo; info != nil {
+		transform = fmt.Sprintf("{crop_w:%.4f,crop_h:%.4f,angle:%.2f,quality:%d}",
+			info.CropWidthRatio, info.CropHeightRatio, info.AngleDegrees, info.Quality)
+	}
+	baseHash := sha256.Sum256(photo.Data)
+	log.Printf("face_check_failed activity_id=%d uid=%d photo_id=%d photo_source=%s base_sha256=%s transform=%s object_id=%s has_cxcid=%t code=%s upload_mode=%s response=%q",
+		req.ActivityID, req.TargetUID, photo.ID, facePhotoSourceLabel(photo),
+		hex.EncodeToString(baseHash[:])[:12], transform, objectID, hasCxcid, code, uploadMode, response)
+}
+
+func facePhotoSourceLabel(photo model.FacePhoto) string {
+	if photo.Source == "official" {
+		return "official"
+	}
+	return "upload"
+}
+
+// truncateLogRunes bounds a log field to n characters without splitting UTF-8.
+// The ellipsis is included in n so the field never exceeds the requested size.
+func truncateLogRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	if n <= 3 {
+		return string(runes[:n])
+	}
+	return string(runes[:n-3]) + "..."
 }
 
 // facePhotoForSign keeps one pool entry for the whole execution. A retry
@@ -1277,7 +1452,7 @@ func (s *SignService) facePhotoForSign(req *ExecuteSignRequest) (model.FacePhoto
 		var photo model.FacePhoto
 		err := s.db.Where("id = ? AND user_uid = ?", req.facePhotoID, req.TargetUID).Take(&photo).Error
 		if err == nil {
-			return photo, nil
+			return s.refreshLegacyOfficialBase(req, photo), nil
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return model.FacePhoto{}, fmt.Errorf("读取人脸照片失败：%v", err)
@@ -1297,9 +1472,58 @@ func (s *SignService) facePhotoForSign(req *ExecuteSignRequest) (model.FacePhoto
 	if err != nil {
 		return model.FacePhoto{}, fmt.Errorf("读取人脸照片失败：%v", err)
 	}
+	photo = s.refreshLegacyOfficialBase(req, photo)
 	req.facePhotoID = photo.ID
 	req.facePhotoSource = "pool"
 	return photo, nil
+}
+
+// refreshLegacyOfficialBase upgrades one pre-S21 official base to an untouched
+// original (OMP-59). Only source=official rows at base_version 1 are eligible;
+// uploads are never replaced. The account-wide cooldown bounds attempts, and a
+// failed attempt falls back to the existing base without failing the sign.
+func (s *SignService) refreshLegacyOfficialBase(req *ExecuteSignRequest, photo model.FacePhoto) model.FacePhoto {
+	if photo.ID == 0 || photo.Source != "official" || photo.BaseVersion >= facephoto.BaseVersionOriginal {
+		return photo
+	}
+	if s.facePhotos == nil || !s.beginFaceBaseRefresh(req.TargetUID) {
+		return photo
+	}
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, faceBaseRefreshTimeout)
+	defer cancel()
+	value, err, _ := s.faceBaseRefreshGroup.Do(strconv.FormatInt(req.TargetUID, 10), func() (interface{}, error) {
+		return s.facePhotos.RefreshOfficialBase(ctx, req.TargetUID, photo.ID)
+	})
+	if err != nil {
+		log.Printf("face_base_refresh activity_id=%d uid=%d photo_id=%d base_version=%d result=failed err=%v",
+			req.ActivityID, req.TargetUID, photo.ID, photo.BaseVersion, err)
+		return photo
+	}
+	refreshed := value.(model.FacePhoto)
+	log.Printf("face_base_refresh activity_id=%d uid=%d photo_id=%d base_version=%d->%d result=ok",
+		req.ActivityID, req.TargetUID, refreshed.ID, photo.BaseVersion, refreshed.BaseVersion)
+	return refreshed
+}
+
+// beginFaceBaseRefresh claims the one attempt allowed per account cooldown.
+// It records the attempt even when it later fails so signing cannot loop on a
+// broken upstream download.
+func (s *SignService) beginFaceBaseRefresh(uid int64) bool {
+	s.faceBaseRefreshMu.Lock()
+	defer s.faceBaseRefreshMu.Unlock()
+	if s.faceBaseRefreshes == nil {
+		s.faceBaseRefreshes = make(map[int64]time.Time)
+	}
+	now := time.Now()
+	if last, ok := s.faceBaseRefreshes[uid]; ok && now.Sub(last) < faceBaseRefreshCooldown {
+		return false
+	}
+	s.faceBaseRefreshes[uid] = now
+	return true
 }
 
 // importOfficialForSign performs the one on-demand import allowed for this

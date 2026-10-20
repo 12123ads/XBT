@@ -61,10 +61,10 @@ func (s *FacePhotoService) Get(operatorUID int64, photoID uint) (model.FacePhoto
 }
 
 func (s *FacePhotoService) Add(operatorUID, targetUID int64, data []byte, source string) (model.FacePhoto, error) {
-	return s.add(operatorUID, targetUID, data, source, facephoto.MaxUploadBytes)
+	return s.add(operatorUID, targetUID, data, source, facephoto.BaseVersionLegacy, facephoto.MaxUploadBytes)
 }
 
-func (s *FacePhotoService) add(operatorUID, targetUID int64, data []byte, source string, maxBytes int) (model.FacePhoto, error) {
+func (s *FacePhotoService) add(operatorUID, targetUID int64, data []byte, source string, baseVersion, maxBytes int) (model.FacePhoto, error) {
 	if len(data) == 0 {
 		return model.FacePhoto{}, errors.New("face photo is empty")
 	}
@@ -77,7 +77,7 @@ func (s *FacePhotoService) add(operatorUID, targetUID int64, data []byte, source
 	if source == "" {
 		source = "upload"
 	}
-	photo := model.FacePhoto{UserUID: targetUID, Data: data, Source: source}
+	photo := model.FacePhoto{UserUID: targetUID, Data: data, Source: source, BaseVersion: baseVersion}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var locked struct{ ID uint }
 		if err := tx.Model(&model.User{}).
@@ -146,7 +146,68 @@ func (s *FacePhotoService) ImportOfficial(ctx context.Context, operatorUID, targ
 		return model.FacePhoto{}, fmt.Errorf("%w: %v", ErrFacePhotoInvalid, err)
 	}
 
-	return s.add(operatorUID, targetUID, original, "official", facephoto.MaxBaseBytes)
+	return s.add(operatorUID, targetUID, original, "official", facephoto.BaseVersionOriginal, facephoto.MaxBaseBytes)
+}
+
+// RefreshOfficialBase replaces one legacy official base with a freshly
+// downloaded original and marks it version 2. It is called during a sign
+// execution, scoped to the target account itself, and only applies to rows
+// that are still version 1 official bases. Older transformed bytes are never
+// re-transformed by this path.
+func (s *FacePhotoService) RefreshOfficialBase(ctx context.Context, targetUID int64, photoID uint) (model.FacePhoto, error) {
+	if targetUID <= 0 || photoID == 0 {
+		return model.FacePhoto{}, ErrFacePhotoNotFound
+	}
+	target, err := LoadActiveUser(s.db, targetUID)
+	if err != nil {
+		return model.FacePhoto{}, ErrFacePhotoForbidden
+	}
+	var photo model.FacePhoto
+	if err := s.db.Where("id = ? AND user_uid = ?", photoID, targetUID).Take(&photo).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.FacePhoto{}, ErrFacePhotoNotFound
+		}
+		return model.FacePhoto{}, err
+	}
+	if photo.Source != "official" || photo.BaseVersion >= facephoto.BaseVersionOriginal {
+		return photo, nil
+	}
+	password, err := s.cc.Decrypt(target.CredentialCipher)
+	if err != nil {
+		return model.FacePhoto{}, fmt.Errorf("account credential unavailable")
+	}
+	original, err := s.xxt.FetchProfileFaceContext(ctx, target.Mobile, password)
+	if err != nil {
+		return model.FacePhoto{}, err
+	}
+	if err := facephoto.ValidateSource(original); err != nil {
+		if len(original) > facephoto.MaxBaseBytes {
+			return model.FacePhoto{}, ErrFacePhotoTooLarge
+		}
+		return model.FacePhoto{}, fmt.Errorf("%w: %v", ErrFacePhotoInvalid, err)
+	}
+	updates := map[string]any{
+		"data":         original,
+		"base_version": facephoto.BaseVersionOriginal,
+		"object_id":    "",
+	}
+	result := s.db.Model(&model.FacePhoto{}).
+		Where("id = ? AND user_uid = ? AND source = ? AND base_version < ?", photo.ID, targetUID, "official", facephoto.BaseVersionOriginal).
+		Updates(updates)
+	if result.Error != nil {
+		return model.FacePhoto{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		// A concurrent refresh already replaced the base.
+		if err := s.db.Where("id = ? AND user_uid = ?", photo.ID, targetUID).Take(&photo).Error; err != nil {
+			return model.FacePhoto{}, err
+		}
+		return photo, nil
+	}
+	photo.Data = original
+	photo.BaseVersion = facephoto.BaseVersionOriginal
+	photo.ObjectID = ""
+	return photo, nil
 }
 
 // Authorize allows the operator to act on their own pool, or on another

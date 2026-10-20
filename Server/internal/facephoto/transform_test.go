@@ -56,6 +56,37 @@ func TestTransformAppliesMandatoryGeometry(t *testing.T) {
 	}
 }
 
+func TestTransformMildPresetKeepsGeometryAndQuality(t *testing.T) {
+	src := encodeJPEG(t, gradientImage(320, 240), 95)
+	before := append([]byte(nil), src...)
+
+	res, err := facephoto.Transform(src, facephoto.Options{
+		Rand: rand.New(rand.NewPCG(17, 29)),
+		Mild: true,
+	})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if res.CropWidthRatio < 0.99 || res.CropWidthRatio > 1.0 {
+		t.Fatalf("mild crop width ratio %v outside [0.99,1.0]", res.CropWidthRatio)
+	}
+	if res.CropHeightRatio < 0.99 || res.CropHeightRatio > 1.0 {
+		t.Fatalf("mild crop height ratio %v outside [0.99,1.0]", res.CropHeightRatio)
+	}
+	if res.AngleDegrees != 0 {
+		t.Fatalf("mild angle = %v, want 0", res.AngleDegrees)
+	}
+	if res.Quality != 92 {
+		t.Fatalf("mild quality = %d, want 92", res.Quality)
+	}
+	if bytes.Equal(res.JPEG, before) {
+		t.Fatal("mild preset returned the source unchanged; transform must still run")
+	}
+	if hasEXIF(res.JPEG) {
+		t.Fatal("mild preset kept EXIF metadata")
+	}
+}
+
 func TestTransformIsDeterministicForSameSeed(t *testing.T) {
 	src := encodeJPEG(t, gradientImage(400, 400), 90)
 

@@ -104,6 +104,29 @@ func TestSignLimiterDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestFaceDiagnosticsDefaultsAndValidation(t *testing.T) {
+	cfg := Config{}
+	if err := cfg.applyFaceDefaults(); err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if cfg.FaceUploadMode != "face_temp" || cfg.FaceTransformMild {
+		t.Fatalf("defaults = mild:%v mode:%q, want false/face_temp", cfg.FaceTransformMild, cfg.FaceUploadMode)
+	}
+
+	cfg = Config{FaceTransformMild: true, FaceUploadMode: " generic "}
+	if err := cfg.applyFaceDefaults(); err != nil {
+		t.Fatalf("generic: %v", err)
+	}
+	if !cfg.FaceTransformMild || cfg.FaceUploadMode != "generic" {
+		t.Fatalf("overrides not kept: mild:%v mode:%q", cfg.FaceTransformMild, cfg.FaceUploadMode)
+	}
+
+	cfg = Config{FaceUploadMode: "face-temp"}
+	if err := cfg.applyFaceDefaults(); err == nil {
+		t.Fatal("unknown face_upload_mode must be rejected")
+	}
+}
+
 func TestCaptchaModelDefaultsAndOverrides(t *testing.T) {
 	cfg := Config{}
 	cfg.applyCaptchaDefaults()

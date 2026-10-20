@@ -420,13 +420,15 @@ grep -n "current_face_id\|faceEnc\|face_code\|UploadFaceTemp" Server/internal/xx
 
 #### 8.3.3 XBT-S7b 照片池与官方照片导入（2026-10-20 落地）
 
-- **数据模型**：新增 `face_photos`（`user_uid/data/object_id/use_count/is_failure_before/source/created_at`），`user_uid` 建索引。迁移保留旧 `users.face_photo` 列，并在首次启动时幂等回填为池中一条 `source=upload` 记录；此后代码只读写池。
+- **数据模型**：新增 `face_photos`（`user_uid/data/object_id/use_count/is_failure_before/source/base_version/created_at`），`user_uid` 建索引。`base_version` 默认为 1（存量行）；OMP-59 起官方导入写入 2，表示未变换的官方原图。迁移保留旧 `users.face_photo` 列，并在首次启动时幂等回填为池中一条 `source=upload` 记录；此后代码只读写池。
 - **上限与并发**：`FacePhotoService.Add` 在事务内对目标 `users` 行 `SELECT ... FOR UPDATE` 后计数，第 6 张返回 `ErrFacePhotoLimit`（HTTP 409）；删除后计数立即下降。
 - **选图**：`facephoto.Select` 接受可注入随机源。账号存在失败历史时优先「未失败且用过」，其次「未失败」，最后全体；同一次 execute 内复用已选照片，重试不换图、不重复计数。
 - **失败标记**：`check-face-result` 无 `enc` 包装为 `xxt.ErrFaceRejected`，只在该错误或提交阶段再次返回 `[face]` 时置 `is_failure_before=true`；传输/HTTP/解码错误不会误伤照片。上传+校验成功即 `use_count+1`，并持久化最新 `objectId`。
 - **官方导入（OMP-52 方案 A）**：`collectionfilephotoEnc`（账号自身会话）取 `oldObjectId` → `https://p.cldisk.com/star4/<objectId>/origin.jpg` → **原样写入池**（`source=official`，≤8MB 且可解码，最大 1600 万像素）。响应返回 `transform_deferred=true`，不再返回 `transform`；未设置官方照片/无法解码/超限均返回 HTTP 422 可读提示。原始字节不写日志。
 - **签发时变换**：`SignService.applyFaceCredentials` 每次执行取到基线后调用 `facephoto.Transform`，上传字节只放内存；同一次 `ExecuteSignRequest` 内缓存变换结果，`face_temp` 缓存键为变换结果的 SHA-256，因此同一执行内重试只上传一次，不同执行会重新变换并上传。
 - **无人像自动导入**：`facePhotoForSign` 遇到 `facephoto.ErrNoPhotos` 时调用 `FacePhotoService.ImportOfficial`（目标账号凭据，请求 ctx + 5s 超时，单次执行最多一次）；成功后当次即用，失败返回 `face_photo_unavailable` 且不阻断非人脸签到。日志字段 `face_photo_source=pool|official_auto`。
+- **存量基图刷新（OMP-59）**：选中 `source=official && base_version=1` 的照片时，`SignService.refreshLegacyOfficialBase` 先用目标账号凭据重新下载官方原图，`FacePhotoService.RefreshOfficialBase` 原地更新 `data/base_version=2/object_id=''`，再走单次变换；`source=upload` 永不重拉。刷新按账号冷却 1 小时（进程内 `faceBaseRefreshes`，失败也计入），失败仅记录 `face_base_refresh ... result=failed` 并继续使用旧基图；成功记录 `base_version=1->2 result=ok`。
+- **失败轻度重试（OMP-59）**：`check-face-result` 返回 `CFR002`/`CFR004` 且本次执行未重试过时，`applyFaceCredentials` 用 `facephoto.Options{Mild:true}`（裁剪 99%–100%、0°、q92）重新变换/上传/校验一次；成功继续签到，仍失败才记一次 `is_failure_before=true` 并返回 `face_required`。`ExecuteSignRequest.faceMildRetried` 保证同一执行最多一次；成功路径请求次数不变。日志行 `face_check_retry=mild` 含 `photo_id/base_version/code/result`。
 - **权限**：本人始终可管理；管理他人时要求双方存在「同为已选」的课程（与 `AuthorizeTargets` 的代签集合一致），否则 403。不提供按手机号查询或批量枚举。
 - **API**：`GET/POST /api/user/faces`、`DELETE /api/user/faces/:id`、`POST /api/user/faces/import`，均支持 `target_uid`；旧 `GET/POST/DELETE /api/user/face` 保留为兼容入口（GET 返回最新一张，DELETE 清空池）。
 - **UI**：`FacePhotoManager` 复用于主页与签到详情；支持列表、拍照/相册上传、逐张删除、失败/官方标记、使用次数与「拉取官方照片」。签到错误新增 `face_photo_unavailable` 映射。

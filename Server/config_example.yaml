@@ -36,6 +36,15 @@ sign_max_concurrent: 2
 # 选点距圆心不足该值时会回退为直接提交选点，避免越出活动圆。
 location_jitter_meters: 5
 
+# 人脸签到诊断开关（OMP-58）。仅用于定位 CFR004/CFR002，排障后必须关闭并恢复默认。
+# face_transform_mild=true 时改用轻度变换：裁剪 99%–100%、旋转 0°、JPEG q92；
+# 默认 false 保持现有随机变换（裁剪 90%–99%、±5°、q85）。两种模式都会变换，
+# 不存在跳过变换的开关。
+face_transform_mild: false
+# 人脸照片上传形态：face_temp（默认，带 uploadtype=face_temp）或 generic
+# （与拍照上传相同端点，不带 uploadtype，仅用于验证 CSF 形态）。
+face_upload_mode: "face_temp"
+
 # 滑块验证码 ONNX 模型（captcha.ort）。启用后模型结果作为唯一首候选，
 # 模型缺失/加载失败/推理失败自动回退到内置启发式，不阻断签到。
 # 共享库路径由环境变量 CAPTCHA_ORT_LIB_PATH 指定；未设置时使用

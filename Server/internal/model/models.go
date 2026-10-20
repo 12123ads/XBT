@@ -145,15 +145,19 @@ type SignRecord struct {
 // mandatory transform of an imported official photo; downloaded originals are
 // never stored. ObjectID is the most recent face_temp upload for these bytes.
 type FacePhoto struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	UserUID         int64     `gorm:"not null;index:idx_face_photos_user" json:"user_uid"`
-	Data            []byte    `gorm:"type:bytea;not null" json:"-"`
-	ObjectID        string    `gorm:"size:128;not null;default:''" json:"object_id"`
-	UseCount        int       `gorm:"not null;default:0" json:"use_count"`
-	IsFailureBefore bool      `gorm:"not null;default:false" json:"is_failure_before"`
-	Source          string    `gorm:"size:16;not null;default:upload" json:"source"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"-"`
+	ID              uint   `gorm:"primaryKey" json:"id"`
+	UserUID         int64  `gorm:"not null;index:idx_face_photos_user" json:"user_uid"`
+	Data            []byte `gorm:"type:bytea;not null" json:"-"`
+	ObjectID        string `gorm:"size:128;not null;default:''" json:"object_id"`
+	UseCount        int    `gorm:"not null;default:0" json:"use_count"`
+	IsFailureBefore bool   `gorm:"not null;default:false" json:"is_failure_before"`
+	Source          string `gorm:"size:16;not null;default:upload" json:"source"`
+	// BaseVersion records whether Data is an untouched official original (2)
+	// or a legacy base that may already have been transformed before storage
+	// (1). Signing refreshes version 1 official rows once per account cooldown.
+	BaseVersion int       `gorm:"not null;default:1" json:"base_version"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"-"`
 }
 
 // SignOutRecord is the independent sign-out ledger. ActivityID is the primary

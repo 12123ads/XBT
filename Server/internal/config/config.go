@@ -53,6 +53,15 @@ type Config struct {
 	QMXLocationPresets    []QMXLocationPreset    `yaml:"qmx_location_presets"`
 	CourseLocationPresets []CourseLocationPreset `yaml:"course_location_presets"`
 
+	// Face sign diagnostics (OMP-58). Both keep the default production behavior
+	// unless explicitly enabled and are meant for short attribution runs only.
+	// FaceTransformMild selects crop 99-100%, 0 degrees and q92 instead of the
+	// default 90-99%, +/-5 degrees and q85.
+	FaceTransformMild bool `yaml:"face_transform_mild"`
+	// FaceUploadMode is face_temp (default) or generic. generic posts to the
+	// same endpoint as UploadPanFile without uploadtype=face_temp.
+	FaceUploadMode string `yaml:"face_upload_mode"`
+
 	// Group-chat sign discovery (Easemob IM, fetched on demand while serving
 	// /sign/activities). Endpoints are reverse-engineered and not a public
 	// contract, so they stay configurable. A min interval of 0 disables fetch.
@@ -101,10 +110,29 @@ func Load() Config {
 	cfg.applySignDefaults()
 	cfg.applyCaptchaDefaults()
 	cfg.applyAppReleaseDefaults()
+	if err := cfg.applyFaceDefaults(); err != nil {
+		panic(err)
+	}
 	if cfg.PublicBaseURL, err = NormalizePublicBaseURL(cfg.PublicBaseURL); err != nil {
 		panic(err)
 	}
 	return cfg
+}
+
+// applyFaceDefaults validates the OMP-58 diagnostic switches. An unknown
+// upload mode is rejected instead of silently falling back so a typo cannot be
+// mistaken for a completed A/B run.
+func (c *Config) applyFaceDefaults() error {
+	mode := strings.TrimSpace(c.FaceUploadMode)
+	switch mode {
+	case "":
+		mode = "face_temp"
+	case "face_temp", "generic":
+	default:
+		return fmt.Errorf("face_upload_mode must be face_temp or generic, got %q", c.FaceUploadMode)
+	}
+	c.FaceUploadMode = mode
+	return nil
 }
 
 // applySignDefaults keeps production safe when the new keys are absent from

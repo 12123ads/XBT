@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 1b) 人脸照片池（S7b）：每账号最多 5 张，只保存上传管线或强制变换后的字节
+-- 1b) 人脸照片池（S7b）：每账号最多 5 张；base_version=2 为未变换的官方原图
 CREATE TABLE IF NOT EXISTS face_photos (
   id BIGSERIAL PRIMARY KEY,
   user_uid BIGINT NOT NULL,
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS face_photos (
   use_count INTEGER NOT NULL DEFAULT 0,
   is_failure_before BOOLEAN NOT NULL DEFAULT FALSE,
   source VARCHAR(16) NOT NULL DEFAULT 'upload',
+  base_version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

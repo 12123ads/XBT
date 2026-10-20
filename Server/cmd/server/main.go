@@ -69,6 +69,10 @@ func main() {
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signSvc.SetFacePhotoService(facePhotoSvc)
 	signSvc.SetLocationJitterMeters(cfg.LocationJitterMeters)
+	signSvc.SetFaceDiagnostics(cfg.FaceTransformMild, cfg.FaceUploadMode)
+	if cfg.FaceTransformMild || cfg.FaceUploadMode != "face_temp" {
+		log.Printf("face_diagnostics enabled transform_mild=%t upload_mode=%s (temporary troubleshooting only)", cfg.FaceTransformMild, cfg.FaceUploadMode)
+	}
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
 	signHandler.SetSignLimiter(ratelimit.New(cfg.SignRateLimitPerMinute, cfg.SignRateLimitBurst, cfg.SignMaxConcurrent))
 	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)

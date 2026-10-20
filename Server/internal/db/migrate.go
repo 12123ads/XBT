@@ -133,8 +133,8 @@ func backfillLegacyFacePhotos(tx *gorm.DB) error {
 	if !tx.Migrator().HasTable(&model.User{}) || !tx.Migrator().HasColumn(&model.User{}, "face_photo") {
 		return nil
 	}
-	return tx.Exec(`INSERT INTO face_photos (user_uid, data, object_id, use_count, is_failure_before, source, created_at, updated_at)
-		SELECT u.uid, u.face_photo, '', 0, false, 'upload', NOW(), NOW()
+	return tx.Exec(`INSERT INTO face_photos (user_uid, data, object_id, use_count, is_failure_before, source, base_version, created_at, updated_at)
+		SELECT u.uid, u.face_photo, '', 0, false, 'upload', 1, NOW(), NOW()
 		FROM users u
 		WHERE length(u.face_photo) > 0
 		  AND NOT EXISTS (SELECT 1 FROM face_photos p WHERE p.user_uid = u.uid)`).Error

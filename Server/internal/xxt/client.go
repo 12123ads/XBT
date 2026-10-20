@@ -961,6 +961,31 @@ type FaceCheckResult struct {
 // decoding failures are deliberately not wrapped in it.
 var ErrFaceRejected = errors.New("face verification rejected")
 
+// FaceRejectedError carries the upstream rejection facts without exposing the
+// whole response in the error string. Code is the upstream `code` field
+// (e.g. CFR004), Message is the readable upstream message, and Response is the
+// raw body for bounded diagnostic logging.
+type FaceRejectedError struct {
+	Code     string
+	Message  string
+	Response string
+}
+
+func (e *FaceRejectedError) Error() string {
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = truncateForLog(strings.TrimSpace(e.Response), 200)
+	}
+	if msg == "" {
+		msg = "no readable upstream message"
+	}
+	return fmt.Sprintf("%s: 人脸识别失败: %s", ErrFaceRejected.Error(), msg)
+}
+
+// Unwrap makes errors.Is(err, ErrFaceRejected) work for callers that only need
+// to know the photo was rejected.
+func (e *FaceRejectedError) Unwrap() error { return ErrFaceRejected }
+
 func (c *Client) UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", fmt.Errorf("face photo is empty")
@@ -1075,12 +1100,15 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 
 	faceEnc := strings.TrimSpace(strVal(deepFindFirst(payload, "enc", "faceEnc", "face_enc")))
 	if faceEnc == "" {
-		log.Printf("check-face-result no enc activeID=%d faceObjectID=%s response=%s", activeID, faceObjectID, truncateForLog(string(respBody), 500))
 		msg := strVal(firstNonNil(payload["errorMsg"], payload["msg"], payload["message"], payload["code"]))
 		if msg == "" {
 			msg = truncateForLog(string(respBody), 200)
 		}
-		return FaceCheckResult{}, fmt.Errorf("%w: 人脸识别失败: %s", ErrFaceRejected, msg)
+		return FaceCheckResult{}, &FaceRejectedError{
+			Code:     strings.TrimSpace(strVal(payload["code"])),
+			Message:  msg,
+			Response: string(respBody),
+		}
 	}
 
 	faceCode := strings.TrimSpace(strVal(payload["code"]))

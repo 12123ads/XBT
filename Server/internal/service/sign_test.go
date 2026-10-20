@@ -19,6 +19,7 @@ type signAuthorizationUpstream struct {
 	lookup     func(string, string, int64, int64, int64) (bool, error)
 	sign       func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error)
 	uploadFace func(string, string, string, string, []byte) (string, error)
+	uploadPan  func(string, string, string, string, []byte) (string, error)
 	checkFace  func(string, string, int64, string, string) (xxt.FaceCheckResult, error)
 	detail     xxt.SignDetail
 	detailErr  error
@@ -66,8 +67,11 @@ func (u *signAuthorizationUpstream) Sign(mobile, password string, fixed xxt.Fixe
 	return u.sign(mobile, password, fixed, signType, special)
 }
 
-func (u *signAuthorizationUpstream) UploadPanFile(string, string, string, string, []byte) (string, error) {
-	panic("unexpected pan upload")
+func (u *signAuthorizationUpstream) UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error) {
+	if u.uploadPan == nil {
+		panic("unexpected pan upload")
+	}
+	return u.uploadPan(mobile, password, filename, contentType, data)
 }
 
 func (u *signAuthorizationUpstream) UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error) {

@@ -20,8 +20,9 @@ const (
 	// DefaultQuality is the JPEG quality used before any size-driven degradation.
 	DefaultQuality = 85
 	// MinQuality and MaxQuality bound the configurable re-encode quality.
+	// MaxQuality is 92 because the diagnostic mild preset re-encodes at 92.
 	MinQuality = 80
-	MaxQuality = 90
+	MaxQuality = 92
 	// MaxUploadBytes is the byte ceiling enforced on uploaded/transformed
 	// photos.
 	MaxUploadBytes = 100 * 1024
@@ -40,6 +41,13 @@ const (
 	minCropRatio = 0.90
 	maxCropRatio = 0.99
 	maxAngleDeg  = 5.0
+
+	// mildMinCropRatio/mildMaxCropRatio and mildQuality define the diagnostic
+	// mild preset (OMP-58): almost no crop, no rotation, higher quality. It is
+	// still a transform (re-encode) and is only selected explicitly.
+	mildMinCropRatio = 0.99
+	mildMaxCropRatio = 1.0
+	mildQuality      = 92
 
 	// safeMargin removes boundary pixels from the rotated safe rectangle so
 	// interpolation can never pull in samples from outside the source.
@@ -62,6 +70,10 @@ type Options struct {
 	Quality int
 	// MaxBytes is the output byte ceiling. Zero selects MaxUploadBytes.
 	MaxBytes int
+	// Mild selects the diagnostic mild preset: crop 99-100%, no rotation and
+	// JPEG quality 92. It still re-encodes and never returns src unchanged.
+	// Callers must opt in; the default keeps the mandatory stronger transform.
+	Mild bool
 }
 
 // ValidateSource checks that src is a decodable JPEG or PNG no larger than
@@ -110,6 +122,9 @@ func Transform(src []byte, opts Options) (Result, error) {
 	quality := opts.Quality
 	if quality == 0 {
 		quality = DefaultQuality
+		if opts.Mild {
+			quality = mildQuality
+		}
 	}
 	if quality < MinQuality || quality > MaxQuality {
 		return Result{}, fmt.Errorf("face photo quality %d out of range [%d,%d]", quality, MinQuality, MaxQuality)
@@ -131,18 +146,27 @@ func Transform(src []byte, opts Options) (Result, error) {
 		base = fitWithin(base, MaxWidth, MaxHeight)
 	}
 
+	cropMin, cropMax, maxAngle := minCropRatio, maxCropRatio, maxAngleDeg
+	if opts.Mild {
+		cropMin, cropMax, maxAngle = mildMinCropRatio, mildMaxCropRatio, 0
+	}
+
 	w, h := base.Bounds().Dx(), base.Bounds().Dy()
-	cropWidthRatio := minCropRatio + rnd.Float64()*(maxCropRatio-minCropRatio)
-	cropHeightRatio := minCropRatio + rnd.Float64()*(maxCropRatio-minCropRatio)
-	cropW := clampInt(int(math.Round(cropWidthRatio*float64(w))), 1, w)
-	cropH := clampInt(int(math.Round(cropHeightRatio*float64(h))), 1, h)
+	cropWidthRatio := cropMin + rnd.Float64()*(cropMax-cropMin)
+	cropHeightRatio := cropMin + rnd.Float64()*(cropMax-cropMin)
+	cropW := clampInt(int(math.Round(cropWidthRatio*float64(w))), int(math.Ceil(cropMin*float64(w))), w)
+	cropH := clampInt(int(math.Round(cropHeightRatio*float64(h))), int(math.Ceil(cropMin*float64(h))), h)
 	offsetX := rnd.IntN(w - cropW + 1)
 	offsetY := rnd.IntN(h - cropH + 1)
 	cropped := image.NewNRGBA(image.Rect(0, 0, cropW, cropH))
 	draw.Draw(cropped, cropped.Bounds(), base, image.Pt(offsetX, offsetY), draw.Src)
 
-	// Uniform in [-maxAngleDeg, +maxAngleDeg).
-	angleDegrees := (rnd.Float64()*2 - 1) * maxAngleDeg
+	// Uniform in [-maxAngle, +maxAngle). The mild preset has no rotation and
+	// reports a positive zero so logs never show "-0.000".
+	angleDegrees := 0.0
+	if maxAngle > 0 {
+		angleDegrees = (rnd.Float64()*2 - 1) * maxAngle
+	}
 	rotated := rotateSafeRect(cropped, angleDegrees*math.Pi/180)
 
 	jpegBytes, usedQuality, final, err := encodeUnderCap(rotated, quality, maxBytes)

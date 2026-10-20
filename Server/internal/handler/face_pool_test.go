@@ -141,11 +141,12 @@ type facePhotoResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		ID      uint   `json:"id"`
-		UserUID int64  `json:"user_uid"`
-		Source  string `json:"source"`
-		Max     int    `json:"max"`
-		Photos  []struct {
+		ID          uint   `json:"id"`
+		UserUID     int64  `json:"user_uid"`
+		Source      string `json:"source"`
+		BaseVersion int    `json:"base_version"`
+		Max         int    `json:"max"`
+		Photos      []struct {
 			ID              uint   `json:"id"`
 			Source          string `json:"source"`
 			IsFailureBefore bool   `json:"is_failure_before"`
@@ -224,6 +225,9 @@ func TestFacePoolImportStoresBaseImage(t *testing.T) {
 	response := decodeFaceResponse(t, recorder)
 	if response.Data.Source != "official" || response.Data.UserUID != 2 {
 		t.Fatalf("response = %+v", response.Data)
+	}
+	if response.Data.BaseVersion != 2 {
+		t.Fatalf("imported base_version = %d, want 2", response.Data.BaseVersion)
 	}
 	if !response.Data.TransformDeferred {
 		t.Fatal("import did not report a deferred transform")
