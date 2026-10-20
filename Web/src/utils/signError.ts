@@ -35,7 +35,7 @@ export const decideSignFailure = (result: SignFailureResult): SignFailureDecisio
     case 'face_photo_unavailable':
       return { action: 'update_face', message: textOr(result.message, '未设置人脸照片且无法获取官方照片，请先上传') };
     case 'location_point_required':
-      return { action: 'relocate', message: textOr(result.message, '请先在地图选点') };
+      return { action: 'relocate', message: textOr(result.message, '该签到要求定位，请先在地图选点或允许定位') };
     case 'location_out_of_range': {
       const distanceM = typeof result.distance_m === 'number' && Number.isFinite(result.distance_m) && result.distance_m > 0
         ? Math.round(result.distance_m)

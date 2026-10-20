@@ -135,6 +135,12 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 处理：解析层把 `(0,0)` 视为缺失，并在标量字段无效时依次读取 `location`（对象或 JSON 字符串）、`address`/`locationInfo` 对象与顶层 `latitude`/`longitude`；执行层对 `sign_type=4` 在未提供 `special_params.latitude/longitude` 且无可用圆心/半径（含元数据读取失败）时返回 `location_point_required`，不发起 `preSign`/`stuSignajax`。已选点行为不变。
 - 实现状态（2026-10-20）：`Server/internal/xxt/client.go` 的 `parseActivityCenter`、`Server/internal/xxt/location.go` 的 `ValidGeoPoint`、`Server/internal/service/sign.go` 的 `prepareSignLocation`；Web 错误码映射为 `relocate` 并提示「请先在地图选点」。测试见 `client_sign_metadata_test.go`、`sign_test.go`。
 
+#### XBT-S24 二维码签到缺坐标的错误区分
+- 现象：二维码签到（`sign_type=2`）在活动开启定位但没有可用圆心（`0,0` 或元数据读取失败）且未选点时，构造器只发送 `latitude=-1/longitude=-1`，上游 `errorLocation_<千万米>` 被映射为 `location_out_of_range`。
+- 处理：`ExecuteSignRequest.locationProvided` 记录本次执行是否携带可用坐标（采样成功或用户显式选点）；`signFailure` 仅在该值存在时返回 `location_out_of_range` + 距离，否则 `errorLocation_` 一律升级为 `location_point_required`，文案「该签到要求定位，请先在地图选点或允许定位」。没有基准点时 `submitSign` 不再发起无意义的 `errorLocation_` 重试。`sign_params.go` 字段形状不变。
+- 前端：`FullScanner`/`SignDetail` 收到 `location_point_required` 时打开 `LocationPickerSheet`（含地图选点与浏览器定位），用户选中后带 `special_params.latitude/longitude/description` 重试一次；取消则停在错误提示。
+- 测试：`TestSignExecuteQRWithoutCoordinatesReportsMissingPoint`、`TestSignExecuteQRWithCoordinatesKeepsOutOfRangeDistance`、`TestSignExecuteQRWithCoordinatesInsideCircleSigns`、`TestSignExecuteQRWithoutLocationRequirementStillSigns`。
+
 #### XBT-S7 人脸流程加固
 - **S7a 协议补齐（P1）**：补 `faceEncAid=""`；`faceCode` 固定空串与服务端返回二选一以 staging 为准；解析 `[face]`/`checkFace_` 并映射为 `face_required`/`face_rejected` 错误码；同一执行内复用已上传的 `objectId`，不重复上传同一份变换结果；`check-face-result` 先判 HTTP 状态再解 JSON。
 - **S7b 多照片池（P2，延后；产品决策 2026-10-20 更新）**：每账号最多 5 张、随机选择、记录使用次数/失败标记；**允许直接抓取该账号在学习通的官方人脸照片**；池内保存**基线图**（官方照为下载原图），**每次签到执行前在内存中裁剪 + 旋转 + 重压一次**，变换结果只用于本次上传、不落库（用户评论 `396fa4c1`，方案 A）。

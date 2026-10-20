@@ -22,7 +22,7 @@ import toast from 'react-hot-toast';
 import axios from 'axios';
 import client, { withAccount, type RequestAccount } from '../api/client';
 import { useAuthStore } from '../store/auth';
-import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse } from '../types';
+import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignExecuteResult, SignSpecialParams, SignShareCreateResponse, SelectedLocation } from '../types';
 import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
 import { useSignLocation } from '../utils/useSignLocation';
 import { describeSignDistance, signLocationCenterFromActivity } from '../utils/location';
@@ -280,6 +280,34 @@ const SignDetail = () => {
     await locateWithBrowser();
   };
 
+  // A location_point_required failure opens the picker and waits for exactly
+  // one choice; the shared request keeps a multi-target batch to one sheet.
+  const locationRequestRef = useRef<{ promise: Promise<SelectedLocation | null>; resolve: (value: SelectedLocation | null) => void } | null>(null);
+  const requestLocationSelection = useCallback((): Promise<SelectedLocation | null> => {
+    if (locationRequestRef.current) return locationRequestRef.current.promise;
+    let resolve!: (value: SelectedLocation | null) => void;
+    const promise = new Promise<SelectedLocation | null>((done) => { resolve = done; });
+    locationRequestRef.current = { promise, resolve };
+    setLocationPickerView('list');
+    return promise;
+  }, []);
+  const settleLocationSelection = useCallback((picked: SelectedLocation | null) => {
+    if (picked) setSignLocation(picked);
+    setLocationPickerView(null);
+    const request = locationRequestRef.current;
+    if (request) {
+      locationRequestRef.current = null;
+      request.resolve(picked);
+    }
+  }, [setSignLocation]);
+  useEffect(() => () => {
+    const request = locationRequestRef.current;
+    if (request) {
+      locationRequestRef.current = null;
+      request.resolve(null);
+    }
+  }, []);
+
   const buildShareUrl = (token: string) => `${window.location.origin}${window.location.pathname}#/share/sign/${token}`;
 
   const copyText = async (text: string) => {
@@ -413,6 +441,7 @@ const SignDetail = () => {
       await Promise.all(toSignUids.map(async (uid) => {
         const MAX_CAPTCHA_RETRIES = 1;
         let captchaRetries = 0;
+        let locationRetried = false;
 
         for (;;) {
           if (!isCurrent()) return;
@@ -499,6 +528,25 @@ const SignDetail = () => {
               [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: failure.message }
             }));
             continue;
+          }
+
+          // The server carried no usable coordinates. A photo sign cannot use
+          // a picked point, so only the normal execute path retries, and only
+          // once after the user actually chooses a location.
+          if (failure.action === 'relocate' && !locationRetried && !isPhotoSign) {
+            locationRetried = true;
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: '请选择签到位置' }
+            }));
+            const picked = await requestLocationSelection();
+            if (!isCurrent()) return;
+            if (picked) {
+              special_params.latitude = picked.lat;
+              special_params.longitude = picked.lng;
+              special_params.description = picked.description || '';
+              continue;
+            }
           }
 
           if (isCurrent()) {
@@ -827,8 +875,8 @@ const SignDetail = () => {
         presets={locationPresets}
         center={signRange?.center}
         radius={signRange?.radius}
-        onClose={() => setLocationPickerView(null)}
-        onChange={setSignLocation}
+        onClose={() => settleLocationSelection(null)}
+        onChange={settleLocationSelection}
       />
       <style>{`.custom-scrollbar::-webkit-scrollbar { width: 0px; }`}</style>
     </div>

@@ -383,6 +383,7 @@ func TestShareReportsTargetRevocationWithoutUsingItsCredentials(t *testing.T) {
 func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
 	cases := []struct {
 		name        string
+		detail      xxt.SignDetail
 		results     []xxt.SignResult
 		wantCalls   int
 		wantSuccess bool
@@ -411,6 +412,9 @@ func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
 		},
 		{
 			name: "location exhausted",
+			detail: xxt.SignDetail{
+				IfOpenAddress: true, LocationLatitude: 30, LocationLongitude: 120, LocationRange: 50,
+			},
 			results: []xxt.SignResult{
 				{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12},
 				{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12},
@@ -423,6 +427,7 @@ func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, router, upstream := handlerSignFixture(t)
+			upstream.detail = tc.detail
 			upstream.signResults = tc.results
 			response := accessRequest(t, router, http.MethodPost, "/execute", gin.H{
 				"activity_id": 100, "course_id": 10, "class_id": 20, "target_uid": 2, "sign_type": xxt.SignNormal,

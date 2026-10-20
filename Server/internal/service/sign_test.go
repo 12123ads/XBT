@@ -7,6 +7,7 @@ import (
 	"fmt"
 	mathrand "math/rand/v2"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gorm.io/gorm"
@@ -584,6 +585,7 @@ func TestSignExecuteLocationErrorRetriesExactlyOnce(t *testing.T) {
 			database, cc := newSignStateMachineFixture(t)
 			var calls int
 			upstream := &signAuthorizationUpstream{
+				detail: locationMetadata(),
 				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
 					calls++
 					if calls == 1 {
@@ -684,6 +686,7 @@ func TestSignExecuteTerminalErrorsDoNotRetry(t *testing.T) {
 			database, cc := newSignStateMachineFixture(t)
 			calls := 0
 			upstream := &signAuthorizationUpstream{
+				detail: locationMetadata(),
 				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
 					calls++
 					return tc.result, nil
@@ -1019,7 +1022,7 @@ func TestSignExecuteRequiresLocationPointWithoutUsableCenter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ExecuteOne error = %v", err)
 			}
-			if result.Success || result.ErrorCode != SignErrorLocationPointRequired || result.Message != "请先在地图选点" {
+			if result.Success || result.ErrorCode != SignErrorLocationPointRequired || result.Message != locationPointRequiredMessage {
 				t.Fatalf("result = %+v, want location_point_required", result)
 			}
 			if preSignCalls != 0 || signCalls != 0 {
@@ -1082,6 +1085,119 @@ func TestSignExecuteRejectsZeroSelectedLocationWithoutCenter(t *testing.T) {
 	}
 	if preSignCalls != 0 || signCalls != 0 {
 		t.Fatalf("zero point reached upstream: preSign=%d sign=%d", preSignCalls, signCalls)
+	}
+}
+
+func TestSignExecuteQRWithoutCoordinatesReportsMissingPoint(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	signCalls := 0
+	upstream := &signAuthorizationUpstream{
+		detailErr: errors.New("getPPTActiveInfo unavailable"),
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			signCalls++
+			return xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12000000}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignQRCode,
+		Special: map[string]interface{}{"enc": "qr-enc"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteOne error = %v", err)
+	}
+	if result.Success || result.ErrorCode != SignErrorLocationPointRequired || result.DistanceM != 0 {
+		t.Fatalf("result = %+v, want location_point_required without a distance", result)
+	}
+	if strings.Contains(result.Message, "米") || strings.Contains(result.Message, "12000000") {
+		t.Fatalf("message = %q, want no fabricated distance", result.Message)
+	}
+	// No carried point means there is nothing to retry: one upstream call only.
+	if signCalls != 1 {
+		t.Fatalf("upstream sign calls = %d, want exactly 1", signCalls)
+	}
+}
+
+func TestSignExecuteQRWithoutLocationRequirementStillSigns(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	upstream := &signAuthorizationUpstream{
+		detailErr: errors.New("getPPTActiveInfo unavailable"),
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignQRCode,
+		Special: map[string]interface{}{"enc": "qr-enc"},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("result=%+v err=%v, want unchanged QR success", result, err)
+	}
+}
+
+func TestSignExecuteQRWithCoordinatesKeepsOutOfRangeDistance(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	signCalls := 0
+	upstream := &signAuthorizationUpstream{
+		// No usable circle: the caller-selected point is what upstream judges.
+		detail: xxt.SignDetail{SignType: xxt.SignQRCode, IfOpenAddress: true, LocationRange: 300},
+		sign: func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error) {
+			signCalls++
+			return xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12.5}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignQRCode,
+		Special: map[string]interface{}{
+			"enc": "qr-enc", "latitude": "35.475740", "longitude": "119.535984",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteOne error = %v", err)
+	}
+	if result.Success || result.ErrorCode != SignErrorLocationOutRange || result.DistanceM != 12.5 {
+		t.Fatalf("result = %+v, want location_out_of_range with 12.5m", result)
+	}
+	if !strings.Contains(result.Message, "13米") {
+		t.Fatalf("message = %q, want the rounded distance", result.Message)
+	}
+	// A carried point keeps the bounded base-point retry.
+	if signCalls != 2 {
+		t.Fatalf("upstream sign calls = %d, want exactly 2", signCalls)
+	}
+}
+
+func TestSignExecuteQRWithCoordinatesInsideCircleSigns(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	var captured map[string]interface{}
+	upstream := &signAuthorizationUpstream{
+		detail: locationMetadata(),
+		sign: func(_ string, _ string, _ xxt.FixedParams, _ int, special map[string]interface{}) (xxt.SignResult, error) {
+			captured = copySpecial(special)
+			return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	svc.sampleLocation = func(center xxt.GeoPoint, _ float64) xxt.GeoPoint {
+		return xxt.GeoPoint{Latitude: center.Latitude + 0.00005, Longitude: center.Longitude}
+	}
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{
+		ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignQRCode,
+		Special: map[string]interface{}{
+			"enc": "qr-enc", "latitude": "30.0001", "longitude": "120", "description": "教学楼",
+		},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("result=%+v err=%v, want QR sign success", result, err)
+	}
+	position := xxt.PositionFromSpecial(captured)
+	if position == nil {
+		t.Fatalf("submitted QR params carried no location: %v", captured)
+	}
+	if distance := xxt.DistanceMeters(xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}, xxt.GeoPoint{Latitude: 30, Longitude: 120}); distance > 50 {
+		t.Fatalf("submitted point %.2fm outside radius", distance)
 	}
 }
 

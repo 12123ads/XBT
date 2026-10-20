@@ -97,6 +97,36 @@ const FullScanner = () => {
   const { location: signLocation, setLocation: setSignLocation } = useSignLocation();
   const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
   const locationRef = useRef<SelectedLocation | null>(null);
+  // A location_point_required failure opens the picker and waits for exactly
+  // one choice. The request is shared so a multi-target batch opens one sheet.
+  const locationRequestRef = useRef<{ promise: Promise<SelectedLocation | null>; resolve: (value: SelectedLocation | null) => void } | null>(null);
+  const requestLocationSelection = useCallback((): Promise<SelectedLocation | null> => {
+    if (locationRequestRef.current) return locationRequestRef.current.promise;
+    let resolve!: (value: SelectedLocation | null) => void;
+    const promise = new Promise<SelectedLocation | null>((done) => { resolve = done; });
+    locationRequestRef.current = { promise, resolve };
+    setLocationPickerView('list');
+    return promise;
+  }, []);
+  const settleLocationSelection = useCallback((picked: SelectedLocation | null) => {
+    if (picked) {
+      locationRef.current = picked;
+      setSignLocation(picked);
+    }
+    setLocationPickerView(null);
+    const request = locationRequestRef.current;
+    if (request) {
+      locationRequestRef.current = null;
+      request.resolve(picked);
+    }
+  }, [setSignLocation]);
+  useEffect(() => () => {
+    const request = locationRequestRef.current;
+    if (request) {
+      locationRequestRef.current = null;
+      request.resolve(null);
+    }
+  }, []);
   const lastScanTimeRef = useRef<number>(0);
   // enc of the last code the server reported as expired; repeated decodes of
   // it are ignored until a different code is scanned.
@@ -587,6 +617,7 @@ const FullScanner = () => {
       await Promise.all(toSignUids.map(async (uid) => {
         const MAX_CAPTCHA_RETRIES = 1;
         let captchaRetries = 0;
+        let locationRetried = false;
 
         for (;;) {
           if (!isCurrent()) return;
@@ -650,6 +681,19 @@ const FullScanner = () => {
             continue;
           }
 
+          // Server says the submission carried no usable coordinates. Ask for
+          // one point and retry exactly once; a cancelled picker stops here.
+          if (failure.action === 'relocate' && !locationRetried) {
+            locationRetried = true;
+            setSignStatuses(prev => ({
+              ...prev,
+              [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: '请选择签到位置' }
+            }));
+            const picked = await requestLocationSelection();
+            if (!isCurrent()) return;
+            if (picked) continue;
+          }
+
           if (isCurrent()) {
             setSignStatuses(prev => ({
               ...prev,
@@ -690,7 +734,7 @@ const FullScanner = () => {
     } finally {
       if (ownsBatch()) abortControllerRef.current = null;
     }
-  }, [activity, orderedTargetUids, owner, navigate]);
+  }, [activity, orderedTargetUids, owner, navigate, requestLocationSelection]);
 
   const onScanSuccess = useCallback((decodedText: string) => {
     const now = Date.now();
@@ -1048,8 +1092,8 @@ const FullScanner = () => {
         value={signLocation}
         presets={locationPresets}
         allowEmpty
-        onClose={() => setLocationPickerView(null)}
-        onChange={setSignLocation}
+        onClose={() => settleLocationSelection(null)}
+        onChange={settleLocationSelection}
       />
 
       <AnimatePresence initial={false}>

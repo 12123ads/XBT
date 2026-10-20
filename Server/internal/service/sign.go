@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -169,6 +170,11 @@ type ExecuteSignRequest struct {
 	// locationBase is the unrandomized point used for the single
 	// errorLocation_ retry. It is set by ExecuteOne, never by handlers.
 	locationBase *xxt.SignPosition
+	// locationProvided records whether this execution carried usable
+	// coordinates: a point sampled from activity metadata or a caller-selected
+	// point. signFailure uses it to tell a missing point (location_point_required)
+	// from a genuinely out-of-range one (XBT-S24).
+	locationProvided bool
 	// faceUsedClientID records whether the S13 device signature was attached
 	// to the face request. The value itself never leaves applyFaceCredentials.
 	faceUsedClientID bool
@@ -606,7 +612,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (res
 	case xxt.SignResultAlreadySigned:
 		return s.recordAlreadySigned(req)
 	}
-	code, retryable, distance, message := s.signFailure(result)
+	code, retryable, distance, message := s.signFailure(result, req.locationProvided)
 	return SignExecuteResult{
 		UserID:    req.TargetUID,
 		Success:   false,
@@ -688,13 +694,13 @@ func (s *SignService) submitSign(target *model.User, password string, req *Execu
 				req.Special["enc2"] = result.Enc2
 			}
 			continue
-		case result.Kind == xxt.SignResultLocationOutOfRange && !locationRetried:
+		case result.Kind == xxt.SignResultLocationOutOfRange && !locationRetried && req.locationBase != nil:
 			// The first errorLocation_ retry must not randomize again: send the
 			// unrandomized base point (validated preset or metadata center).
+			// Without a base the request carried no point, so a retry would
+			// repeat the same -1/-1 submission (XBT-S24).
 			locationRetried = true
-			if req.locationBase != nil {
-				applySignPosition(req.Special, req.locationBase)
-			}
+			applySignPosition(req.Special, req.locationBase)
 			continue
 		}
 		return result, nil, nil
@@ -702,12 +708,18 @@ func (s *SignService) submitSign(target *model.User, password string, req *Execu
 }
 
 // signFailure maps a typed upstream outcome to the public error contract. Both
-// sign-in and sign-out share it so the codes stay identical.
-func (s *SignService) signFailure(result xxt.SignResult) (code string, retryable bool, distanceM float64, message string) {
+// sign-in and sign-out share it so the codes stay identical. locationProvided
+// tells whether the submitted request carried usable coordinates: upstream
+// reports errorLocation_ for -1/-1 too, and that is a missing point, not a
+// ~12,000 km miss (XBT-S24).
+func (s *SignService) signFailure(result xxt.SignResult, locationProvided bool) (code string, retryable bool, distanceM float64, message string) {
 	switch result.Kind {
 	case xxt.SignResultCaptchaRequired:
 		return SignErrorCaptchaRequired, true, 0, "验证码校验未通过，请重试"
 	case xxt.SignResultLocationOutOfRange:
+		if !locationProvided {
+			return SignErrorLocationPointRequired, false, 0, locationPointRequiredMessage
+		}
 		message := "签到位置超出范围，请重新选择位置"
 		if result.DistanceM > 0 {
 			message = locationOutOfRangeMessage(result.DistanceM)
@@ -891,7 +903,7 @@ func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOut
 	case xxt.SignResultAlreadySigned:
 		return s.recordSignedOut(req, signOutID, outDetail.SignType, -1, true)
 	}
-	code, retryable, message := s.signOutFailure(upstream)
+	code, retryable, message := s.signOutFailure(upstream, signReq.locationProvided)
 	result.ErrorCode = code
 	result.Retryable = retryable
 	result.Message = message
@@ -1004,10 +1016,10 @@ func (s *SignService) signOutUpstreamFailure(result SignOutResult, err error) Si
 	return result
 }
 
-func (s *SignService) signOutFailure(result xxt.SignResult) (code string, retryable bool, message string) {
-	code, retryable, distance, message := s.signFailure(result)
+func (s *SignService) signOutFailure(result xxt.SignResult, locationProvided bool) (code string, retryable bool, message string) {
+	code, retryable, distance, message := s.signFailure(result, locationProvided)
 	if code == SignErrorLocationOutRange && distance > 0 {
-		message = fmt.Sprintf("签退位置超出范围，距签退点%.0f米，请重新选择位置", distance)
+		message = fmt.Sprintf("签退位置超出范围，距签退点%.0f米，请重新选择位置", math.Round(distance))
 	}
 	return code, retryable, message
 }
@@ -1050,10 +1062,15 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 		}
 		if selected != nil {
 			req.locationBase = selected
+			req.locationProvided = true
 		}
 		return SignExecuteResult{}, true
 	}
 	if !detail.IfOpenAddress {
+		// The caller still supplied a point; the builder only forwards it when
+		// the activity opens address, but an upstream errorLocation_ then
+		// describes that point, not a missing one.
+		req.locationProvided = selected != nil
 		return SignExecuteResult{}, true
 	}
 	center := xxt.GeoPoint{Latitude: detail.LocationLatitude, Longitude: detail.LocationLongitude}
@@ -1066,6 +1083,7 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 			// A caller-selected point stays authoritative when metadata has no
 			// usable circle; this preserves the pre-S19 behavior.
 			req.locationBase = selected
+			req.locationProvided = true
 		}
 		return SignExecuteResult{}, true
 	}
@@ -1089,15 +1107,21 @@ func (s *SignService) prepareSignLocation(req *ExecuteSignRequest, detail xxt.Si
 	position := xxt.SignPosition{Latitude: sampled.Latitude, Longitude: sampled.Longitude, Address: base.Address}
 	applySignPosition(req.Special, &position)
 	req.locationBase = &base
+	req.locationProvided = true
 	return SignExecuteResult{}, true
 }
+
+// locationPointRequiredMessage explains a missing point without pretending the
+// submission was out of range. The distance in that case is meaningless
+// (upstream computes it from -1/-1, about 12,000 km).
+const locationPointRequiredMessage = "该签到要求定位，请先在地图选点或允许定位"
 
 func locationPointRequired(userID int64) SignExecuteResult {
 	return SignExecuteResult{
 		UserID:    userID,
 		Success:   false,
 		ErrorCode: SignErrorLocationPointRequired,
-		Message:   "请先在地图选点",
+		Message:   locationPointRequiredMessage,
 	}
 }
 
@@ -1113,7 +1137,7 @@ func applySignPosition(special map[string]interface{}, position *xxt.SignPositio
 }
 
 func locationOutOfRangeMessage(distance float64) string {
-	return fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", distance)
+	return fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", math.Round(distance))
 }
 
 // faceUploadTTL bounds the in-memory objectId cache. Signing windows are far
