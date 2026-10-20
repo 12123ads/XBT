@@ -261,8 +261,8 @@ func TestSignTransmitsBuiltParams(t *testing.T) {
 		"longitude":   "120.654321",
 		"description": "教学楼A",
 	}
-	if result, err := client.Sign(mobile, password, fixed, SignQRCode, special); err != nil || result != "success" {
-		t.Fatalf("sign failed: result=%q err=%v", result, err)
+	if result, err := client.Sign(mobile, password, fixed, SignQRCode, special); err != nil || result.Kind != SignResultSuccess {
+		t.Fatalf("sign failed: result=%+v err=%v", result, err)
 	}
 	if len(requests) != 1 {
 		t.Fatalf("qrcode first send must be a single request, got %d: %v", len(requests), requests)

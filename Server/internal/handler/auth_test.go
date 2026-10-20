@@ -29,7 +29,7 @@ func (f authLoginFunc) PreLogin(mobile, password string) (*xxt.LoginResult, erro
 func newHandlerAccessDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	database, _ := testutil.NewPostgres(t)
-	if err := database.AutoMigrate(&model.User{}, &model.Whitelist{}, &model.UserCourse{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignShare{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.Whitelist{}, &model.Course{}, &model.UserCourse{}, &model.SignActivityScope{}, &model.SignRecord{}, &model.SignShare{}, &model.ClassGroup{}, &model.ClassGroupMember{}); err != nil {
 		t.Fatal(err)
 	}
 	return database

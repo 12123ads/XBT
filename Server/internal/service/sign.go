@@ -17,7 +17,7 @@ import (
 
 type signClient interface {
 	PreSign(mobile, password string, fixed xxt.FixedParams, code, enc string) error
-	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error)
+	Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (xxt.SignResult, error)
 	GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (xxt.SignDetail, error)
 	HasActivityInCourse(mobile, password string, courseID, classID, activityID int64) (bool, error)
 	UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error)
@@ -98,13 +98,28 @@ type SignCheckItem struct {
 }
 
 type SignExecuteResult struct {
-	UserID           int64  `json:"user_id"`
-	Success          bool   `json:"success"`
-	AlreadySigned    bool   `json:"already_signed"`
-	RecordSource     int64  `json:"record_source"`
-	RecordSourceName string `json:"record_source_name"`
-	Message          string `json:"message"`
+	UserID           int64   `json:"user_id"`
+	Success          bool    `json:"success"`
+	AlreadySigned    bool    `json:"already_signed"`
+	RecordSource     int64   `json:"record_source"`
+	RecordSourceName string  `json:"record_source_name"`
+	Message          string  `json:"message"`
+	ErrorCode        string  `json:"error_code"`
+	Retryable        bool    `json:"retryable"`
+	DistanceM        float64 `json:"distance_m,omitempty"`
 }
+
+// Error codes exposed by /api/sign/execute. They mirror xxt.SignResultKind so
+// the web client never parses raw upstream strings.
+const (
+	SignErrorNone             = ""
+	SignErrorCaptchaRequired  = "captcha_required"
+	SignErrorFaceRequired     = "face_required"
+	SignErrorLocationOutRange = "location_out_of_range"
+	SignErrorQRExpired        = "qr_expired"
+	SignErrorSessionExpired   = "session_expired"
+	SignErrorUpstream         = "upstream_error"
+)
 
 func (s *SignService) CheckSignStates(operatorUID, activityID, courseID, classID int64, userIDs []int64) ([]SignCheckItem, error) {
 	targets := make([]int64, 0, len(userIDs)+1)
@@ -221,7 +236,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}
 	password, err := s.cc.Decrypt(target.CredentialCipher)
 	if err != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录"}, nil
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录", ErrorCode: SignErrorSessionExpired}, nil
 	}
 
 	fixed := xxt.FixedParams{
@@ -246,52 +261,103 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		enc, _ := req.Special["enc"].(string)
 		code, _ := req.Special["c"].(string)
 		if err := s.xxt.PreSign(target.Mobile, password, fixed, code, enc); err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试"}, nil
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试", ErrorCode: SignErrorUpstream, Retryable: true}, nil
 		}
 	}
 
 	if ifFace, _ := req.Special["if_face"].(bool); ifFace {
-		if len(target.FacePhoto) == 0 {
-			var fresh model.User
-			if err := s.db.Select("face_photo").Where("uid = ?", req.TargetUID).First(&fresh).Error; err == nil {
-				target.FacePhoto = fresh.FacePhoto
+		if err := s.applyFaceCredentials(&target, password, &req); err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
+		}
+	}
+
+	// Bounded state machine: captcha is resolved inside xxt.Sign (at most one
+	// extra request), face and location recoveries happen here and each may
+	// retry once. Every other outcome ends the attempt.
+	faceRetried := false
+	locationRetried := false
+	var result xxt.SignResult
+	for {
+		result, err = s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error()), ErrorCode: SignErrorUpstream, Retryable: true}, nil
+		}
+		switch {
+		case result.Kind == xxt.SignResultFaceRequired && !faceRetried:
+			faceRetried = true
+			if err := s.applyFaceCredentials(&target, password, &req); err != nil {
+				return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: err.Error()}, nil
 			}
+			if result.Enc2 != "" {
+				req.Special["enc2"] = result.Enc2
+			}
+			continue
+		case result.Kind == xxt.SignResultLocationOutOfRange && !locationRetried:
+			// XBT-S6 introduces point sampling; until then the retry follows
+			// the protocol (one retry with randomization disabled) but sends
+			// the same selected point.
+			locationRetried = true
+			continue
 		}
-		if len(target.FacePhoto) == 0 {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未设置人脸照片，请先在主页上传"}, nil
-		}
-		objectID, err := s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
-		if err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "人脸照片上传失败：" + err.Error()}, nil
-		}
-		faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID)
-		if err != nil {
-			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: err.Error()}, nil
-		}
-		req.Special["current_face_id"] = faceResult.CurrentFaceID
-		req.Special["face_enc"] = faceResult.FaceEnc
-		req.Special["face_code"] = faceResult.FaceCode
+		break
 	}
 
-	result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
+	switch result.Kind {
+	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
+		return s.recordSigned(req, operatorUID)
+	case xxt.SignResultAlreadySigned:
+		return s.recordAlreadySigned(req)
+	case xxt.SignResultCaptchaRequired:
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorCaptchaRequired, Retryable: true, Message: "验证码校验未通过，请重试"}, nil
+	case xxt.SignResultLocationOutOfRange:
+		message := "签到位置超出范围，请重新选择位置"
+		if result.DistanceM > 0 {
+			message = fmt.Sprintf("签到位置超出范围，距签到点%.0f米，请重新选择位置", result.DistanceM)
+		}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorLocationOutRange, DistanceM: result.DistanceM, Message: message}, nil
+	case xxt.SignResultQRExpired:
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorQRExpired, Message: "二维码已过期，请重新扫码"}, nil
+	case xxt.SignResultSessionExpired:
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorSessionExpired, Message: "学习通登录已过期，请重新登录"}, nil
+	case xxt.SignResultFaceRequired:
+		message := "人脸验证未通过，请更新人脸照片后重试"
+		if strings.TrimSpace(result.Message) != "" {
+			message = "人脸验证未通过：" + strings.TrimSpace(result.Message)
+		}
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorFaceRequired, Message: message}, nil
+	default:
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorUpstream, Retryable: true, Message: s.toUserSignMessage(result.Message)}, nil
+	}
+}
+
+// applyFaceCredentials uploads the stored face photo and obtains the face
+// challenge fields required by stuSignajax. It is used both before the first
+// attempt and for the single face recovery after [face]/checkFace_.
+func (s *SignService) applyFaceCredentials(target *model.User, password string, req *ExecuteSignRequest) error {
+	if len(target.FacePhoto) == 0 {
+		var fresh model.User
+		if err := s.db.Select("face_photo").Where("uid = ?", req.TargetUID).First(&fresh).Error; err == nil {
+			target.FacePhoto = fresh.FacePhoto
+		}
+	}
+	if len(target.FacePhoto) == 0 {
+		return errors.New("该同学未设置人脸照片，请先在主页上传")
+	}
+	objectID, err := s.xxt.UploadFaceTemp(target.Mobile, password, "face.jpg", "image/jpeg", target.FacePhoto)
 	if err != nil {
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error())}, nil
+		return fmt.Errorf("人脸照片上传失败：%v", err)
 	}
-	result = strings.TrimSpace(result)
-	if result != "success" {
-		if strings.Contains(result, "您已签到过了") {
-			return SignExecuteResult{
-				UserID:           req.TargetUID,
-				Success:          true,
-				AlreadySigned:    true,
-				RecordSource:     -1,
-				RecordSourceName: "学习通",
-				Message:          "该同学已在学习通签到",
-			}, nil
-		}
-		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(result)}, nil
+	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID)
+	if err != nil {
+		return fmt.Errorf("人脸验证失败：%v", err)
 	}
+	req.Special["current_face_id"] = faceResult.CurrentFaceID
+	req.Special["face_enc"] = faceResult.FaceEnc
+	req.Special["face_code"] = faceResult.FaceCode
+	return nil
+}
 
+func (s *SignService) recordSigned(req ExecuteSignRequest, operatorUID int64) (SignExecuteResult, error) {
 	rec := s.signRecordFromRequest(req, operatorUID)
 	dbResult := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec)
 	if dbResult.Error != nil {
@@ -312,6 +378,24 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		RecordSource:     operatorUID,
 		RecordSourceName: sourceName,
 		Message:          "签到成功",
+	}, nil
+}
+
+// recordAlreadySigned stores 学习通's own sign as source_uid=-1 so later checks
+// stay local and never ask upstream again.
+func (s *SignService) recordAlreadySigned(req ExecuteSignRequest) (SignExecuteResult, error) {
+	rec := s.signRecordFromRequest(req, -1)
+	dbResult := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "activity_id"}}, DoNothing: true}).Create(&rec)
+	if dbResult.Error != nil {
+		return SignExecuteResult{}, dbResult.Error
+	}
+	return SignExecuteResult{
+		UserID:           req.TargetUID,
+		Success:          true,
+		AlreadySigned:    true,
+		RecordSource:     -1,
+		RecordSourceName: "学习通",
+		Message:          "该同学已在学习通签到",
 	}, nil
 }
 

@@ -27,6 +27,7 @@ type handlerSignUpstream struct {
 	detailCalls int
 	signed      []int64
 	onSign      func(xxt.FixedParams) error
+	signResults []xxt.SignResult
 }
 
 func (u *handlerSignUpstream) GetActives(string, string, int64, int64) ([]xxt.Active, error) {
@@ -50,14 +51,21 @@ func (u *handlerSignUpstream) PreSign(string, string, xxt.FixedParams, string, s
 	return nil
 }
 
-func (u *handlerSignUpstream) Sign(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (string, error) {
+func (u *handlerSignUpstream) Sign(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
 	u.signed = append(u.signed, fixed.UID)
 	if u.onSign != nil {
 		if err := u.onSign(fixed); err != nil {
-			return "", err
+			return xxt.SignResult{}, err
 		}
 	}
-	return "success", nil
+	if len(u.signResults) > 0 {
+		result := u.signResults[0]
+		if len(u.signResults) > 1 {
+			u.signResults = u.signResults[1:]
+		}
+		return result, nil
+	}
+	return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
 }
 
 func (u *handlerSignUpstream) UploadPanFile(string, string, string, string, []byte) (string, error) {
@@ -95,6 +103,9 @@ func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstre
 		if err := database.Create(&model.UserCourse{UserUID: uid, CourseID: 10, ClassID: classID, IsSelected: true}).Error; err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := database.Create(&model.Course{CourseID: 10, ClassID: 20, Name: "测试课程"}).Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := database.Create(&model.SignActivityScope{ActivityID: 100, CourseID: 10, ClassID: 20}).Error; err != nil {
 		t.Fatal(err)
@@ -358,5 +369,71 @@ func TestShareReportsTargetRevocationWithoutUsingItsCredentials(t *testing.T) {
 	}
 	if got.Code != http.StatusOK || summary.Data.SuccessCount != 1 || summary.Data.FailedCount != 1 || summary.Data.Used || !reflect.DeepEqual(upstream.signed, []int64{1}) {
 		t.Fatalf("mid-batch target revocation was not a safe partial failure: status=%d body=%s signed=%v", got.Code, got.Body.String(), upstream.signed)
+	}
+}
+
+func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
+	cases := []struct {
+		name        string
+		results     []xxt.SignResult
+		wantCalls   int
+		wantSuccess bool
+		wantCode    string
+		wantRetry   bool
+		wantDist    float64
+	}{
+		{
+			name:        "success2",
+			results:     []xxt.SignResult{{Kind: xxt.SignResultSuccess2}},
+			wantCalls:   1,
+			wantSuccess: true,
+		},
+		{
+			name:      "captcha",
+			results:   []xxt.SignResult{{Kind: xxt.SignResultCaptchaRequired, Enc2: "abc"}},
+			wantCalls: 1,
+			wantCode:  service.SignErrorCaptchaRequired,
+			wantRetry: true,
+		},
+		{
+			name:      "qr expired",
+			results:   []xxt.SignResult{{Kind: xxt.SignResultQRExpired}},
+			wantCalls: 1,
+			wantCode:  service.SignErrorQRExpired,
+		},
+		{
+			name: "location exhausted",
+			results: []xxt.SignResult{
+				{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12},
+				{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12},
+			},
+			wantCalls: 2,
+			wantCode:  service.SignErrorLocationOutRange,
+			wantDist:  12,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, router, upstream := handlerSignFixture(t)
+			upstream.signResults = tc.results
+			response := accessRequest(t, router, http.MethodPost, "/execute", gin.H{
+				"activity_id": 100, "course_id": 10, "class_id": 20, "target_uid": 2, "sign_type": xxt.SignNormal,
+			})
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var payload struct {
+				Data service.SignExecuteResult `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(upstream.signed) != tc.wantCalls {
+				t.Fatalf("upstream calls = %d, want %d", len(upstream.signed), tc.wantCalls)
+			}
+			if payload.Data.Success != tc.wantSuccess || payload.Data.ErrorCode != tc.wantCode || payload.Data.Retryable != tc.wantRetry || payload.Data.DistanceM != tc.wantDist {
+				t.Fatalf("response = %+v, want success=%v code=%q retryable=%v distance=%v", payload.Data, tc.wantSuccess, tc.wantCode, tc.wantRetry, tc.wantDist)
+			}
+		})
 	}
 }

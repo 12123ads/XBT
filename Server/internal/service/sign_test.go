@@ -11,10 +11,12 @@ import (
 )
 
 type signAuthorizationUpstream struct {
-	lookup    func(string, string, int64, int64, int64) (bool, error)
-	sign      func(string, string, xxt.FixedParams, int, map[string]interface{}) (string, error)
-	detail    xxt.SignDetail
-	detailErr error
+	lookup     func(string, string, int64, int64, int64) (bool, error)
+	sign       func(string, string, xxt.FixedParams, int, map[string]interface{}) (xxt.SignResult, error)
+	uploadFace func(string, string, string, string, []byte) (string, error)
+	checkFace  func(string, string, int64, string) (xxt.FaceCheckResult, error)
+	detail     xxt.SignDetail
+	detailErr  error
 }
 
 func (u *signAuthorizationUpstream) GetSignDetail(string, string, int64, int64, int64, int64) (xxt.SignDetail, error) {
@@ -32,7 +34,7 @@ func (u *signAuthorizationUpstream) PreSign(string, string, xxt.FixedParams, str
 	panic("unexpected QR pre-sign")
 }
 
-func (u *signAuthorizationUpstream) Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (string, error) {
+func (u *signAuthorizationUpstream) Sign(mobile, password string, fixed xxt.FixedParams, signType int, special map[string]interface{}) (xxt.SignResult, error) {
 	if u.sign == nil {
 		panic("unauthorized upstream sign")
 	}
@@ -43,12 +45,18 @@ func (u *signAuthorizationUpstream) UploadPanFile(string, string, string, string
 	panic("unexpected pan upload")
 }
 
-func (u *signAuthorizationUpstream) UploadFaceTemp(string, string, string, string, []byte) (string, error) {
-	panic("unexpected face upload")
+func (u *signAuthorizationUpstream) UploadFaceTemp(mobile, password, filename, contentType string, data []byte) (string, error) {
+	if u.uploadFace == nil {
+		panic("unexpected face upload")
+	}
+	return u.uploadFace(mobile, password, filename, contentType, data)
 }
 
-func (u *signAuthorizationUpstream) CheckFaceResult(string, string, int64, string) (xxt.FaceCheckResult, error) {
-	panic("unexpected face check")
+func (u *signAuthorizationUpstream) CheckFaceResult(mobile, password string, activityID int64, objectID string) (xxt.FaceCheckResult, error) {
+	if u.checkFace == nil {
+		panic("unexpected face check")
+	}
+	return u.checkFace(mobile, password, activityID, objectID)
 }
 
 func selectAuthorizationCourse(t *testing.T, database *gorm.DB, uid, courseID, classID int64) {
@@ -114,12 +122,12 @@ func TestSignAuthorizesEveryTargetBeforeExposingRecords(t *testing.T) {
 		}
 	}
 	var signed []int64
-	upstream.sign = func(mobile, password string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (string, error) {
+	upstream.sign = func(mobile, password string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
 		if password != "password" || fixed.CourseID != 10 || fixed.ClassID != 20 || (mobile != "13800000002" && mobile != "13800000006") {
 			t.Fatalf("incorrect authorized sign credentials or pair: mobile=%s fixed=%+v", mobile, fixed)
 		}
 		signed = append(signed, fixed.UID)
-		return "success", nil
+		return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
 	}
 	for _, uid := range []int64{2, 6} {
 		result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: uid, CourseID: 10, ClassID: 20})
@@ -335,9 +343,9 @@ func TestSignExecuteResolvesIfOpenAddressFromMetadata(t *testing.T) {
 			upstream := &signAuthorizationUpstream{
 				detail:    tc.detail,
 				detailErr: tc.detailErr,
-				sign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (string, error) {
+				sign: func(_ string, _ string, fixed xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
 					got = fixed
-					return "success", nil
+					return xxt.SignResult{Kind: xxt.SignResultSuccess}, nil
 				},
 			}
 			svc := NewSignService(database, upstream, cc, nil)
@@ -354,6 +362,229 @@ func TestSignExecuteResolvesIfOpenAddressFromMetadata(t *testing.T) {
 			}
 			if got.IfOpenAddress != tc.want {
 				t.Fatalf("IfOpenAddress=%v, want %v", got.IfOpenAddress, tc.want)
+			}
+		})
+	}
+}
+
+func newSignStateMachineFixture(t *testing.T) (*gorm.DB, *CredentialCrypto) {
+	t.Helper()
+	database := newAuthorizationTestDB(t)
+	cc := NewCredentialCrypto("sign-state-machine-test")
+	for _, uid := range []int64{1, 2} {
+		seedAuthorizationUser(t, database, cc, uid)
+		selectAuthorizationCourse(t, database, uid, 10, 20)
+	}
+	if err := database.Create(&model.SignActivityScope{ActivityID: 100, CourseID: 10, ClassID: 20}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return database, cc
+}
+
+func TestSignExecuteFaceChallengeRetriesExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		second      xxt.SignResult
+		wantSuccess bool
+		wantCode    string
+	}{
+		{name: "recovery succeeds", second: xxt.SignResult{Kind: xxt.SignResultSuccess}, wantSuccess: true},
+		{name: "second face challenge stops", second: xxt.SignResult{Kind: xxt.SignResultFaceRequired, Message: "人脸不匹配"}, wantCode: SignErrorFaceRequired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			if err := database.Model(&model.User{}).Where("uid = ?", 2).Update("face_photo", []byte("face-bytes")).Error; err != nil {
+				t.Fatal(err)
+			}
+			var calls int
+			var retrySpecial map[string]interface{}
+			uploads, checks := 0, 0
+			upstream := &signAuthorizationUpstream{
+				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, special map[string]interface{}) (xxt.SignResult, error) {
+					calls++
+					if calls == 1 {
+						if special["current_face_id"] != nil {
+							t.Fatalf("first attempt carried face state: %v", special)
+						}
+						return xxt.SignResult{Kind: xxt.SignResultFaceRequired, Enc2: "face-enc"}, nil
+					}
+					retrySpecial = special
+					return tc.second, nil
+				},
+				uploadFace: func(_ string, _ string, _ string, _ string, data []byte) (string, error) {
+					uploads++
+					if string(data) != "face-bytes" {
+						t.Fatalf("uploaded photo = %q", data)
+					}
+					return "face-object", nil
+				},
+				checkFace: func(_ string, _ string, _ int64, objectID string) (xxt.FaceCheckResult, error) {
+					checks++
+					if objectID != "face-object" {
+						t.Fatalf("face check object = %q", objectID)
+					}
+					return xxt.FaceCheckResult{CurrentFaceID: "face-object", FaceEnc: "face-enc-result", FaceCode: ""}, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want exactly 2", calls)
+			}
+			if uploads != 1 || checks != 1 {
+				t.Fatalf("face recovery uploads=%d checks=%d, want one each", uploads, checks)
+			}
+			if retrySpecial["current_face_id"] != "face-object" || retrySpecial["enc2"] != "face-enc" {
+				t.Fatalf("retry lost face state or enc2: %v", retrySpecial)
+			}
+			if result.Success != tc.wantSuccess || result.ErrorCode != tc.wantCode {
+				t.Fatalf("result=%+v, want success=%v code=%q", result, tc.wantSuccess, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSignExecuteLocationErrorRetriesExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		second   xxt.SignResult
+		wantCode string
+	}{
+		{name: "randomization retry succeeds", second: xxt.SignResult{Kind: xxt.SignResultSuccess}},
+		{name: "second location error stops", second: xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12}, wantCode: SignErrorLocationOutRange},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			var calls int
+			upstream := &signAuthorizationUpstream{
+				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
+					calls++
+					if calls == 1 {
+						return xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 12}, nil
+					}
+					return tc.second, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want exactly 2", calls)
+			}
+			if tc.wantCode == "" {
+				if !result.Success || result.ErrorCode != SignErrorNone || result.RecordSource != 1 {
+					t.Fatalf("result=%+v, want successful proxied sign", result)
+				}
+				return
+			}
+			if result.Success || result.ErrorCode != tc.wantCode || result.DistanceM != 12 {
+				t.Fatalf("result=%+v, want code=%q distance=12", result, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSignExecuteAlreadySignedIsRecordedAsUpstreamSource(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	var calls int
+	upstream := &signAuthorizationUpstream{
+		sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
+			calls++
+			return xxt.SignResult{Kind: xxt.SignResultAlreadySigned, Message: "您已签到过了"}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
+	if err != nil || !result.Success || !result.AlreadySigned || result.RecordSource != -1 || result.RecordSourceName != "学习通" {
+		t.Fatalf("already-signed result=%+v err=%v", result, err)
+	}
+	var rec model.SignRecord
+	if err := database.Where("user_uid = ? AND activity_id = ?", 2, 100).Take(&rec).Error; err != nil {
+		t.Fatalf("learning-pass record missing: %v", err)
+	}
+	if rec.SourceUID != -1 {
+		t.Fatalf("recorded source_uid = %d, want -1", rec.SourceUID)
+	}
+
+	// The local record must satisfy later checks without another upstream call.
+	items, err := svc.CheckSignStates(1, 100, 10, 20, []int64{2})
+	if err != nil || len(items) != 2 || !items[1].Signed || items[1].RecordSource != -1 {
+		t.Fatalf("check after already_signed = %+v err=%v", items, err)
+	}
+	again, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
+	if err != nil || !again.AlreadySigned {
+		t.Fatalf("second execute = %+v err=%v", again, err)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream sign calls = %d, want 1 (no repeat after local record)", calls)
+	}
+}
+
+func TestSignExecuteSuccess2WritesRecord(t *testing.T) {
+	database, cc := newSignStateMachineFixture(t)
+	upstream := &signAuthorizationUpstream{
+		sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
+			return xxt.SignResult{Kind: xxt.SignResultSuccess2}, nil
+		},
+	}
+	svc := NewSignService(database, upstream, cc, nil)
+	result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
+	if err != nil || !result.Success || result.AlreadySigned || result.RecordSource != 1 {
+		t.Fatalf("success2 result=%+v err=%v", result, err)
+	}
+	var count int64
+	if err := database.Model(&model.SignRecord{}).Where("user_uid = ? AND activity_id = ? AND source_uid = ?", 2, 100, 1).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("success2 record count=%d err=%v", count, err)
+	}
+}
+
+func TestSignExecuteTerminalErrorsDoNotRetry(t *testing.T) {
+	cases := []struct {
+		result   xxt.SignResult
+		wantCode string
+		wantDist float64
+	}{
+		{xxt.SignResult{Kind: xxt.SignResultCaptchaRequired, Enc2: "abc"}, SignErrorCaptchaRequired, 0},
+		{xxt.SignResult{Kind: xxt.SignResultQRExpired}, SignErrorQRExpired, 0},
+		{xxt.SignResult{Kind: xxt.SignResultSessionExpired}, SignErrorSessionExpired, 0},
+		{xxt.SignResult{Kind: xxt.SignResultUpstreamError, Message: "服务器错误"}, SignErrorUpstream, 0},
+		{xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 7}, SignErrorLocationOutRange, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.wantCode, func(t *testing.T) {
+			database, cc := newSignStateMachineFixture(t)
+			calls := 0
+			upstream := &signAuthorizationUpstream{
+				sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
+					calls++
+					return tc.result, nil
+				},
+			}
+			svc := NewSignService(database, upstream, cc, nil)
+			result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignLocation})
+			if err != nil {
+				t.Fatalf("ExecuteOne error = %v", err)
+			}
+			// Location errors get their single protocol retry; the rest must
+			// stop after the first upstream response.
+			wantCalls := 1
+			if tc.wantCode == SignErrorLocationOutRange {
+				wantCalls = 2
+			}
+			if calls != wantCalls {
+				t.Fatalf("upstream calls = %d, want %d", calls, wantCalls)
+			}
+			if result.Success || result.ErrorCode != tc.wantCode || result.DistanceM != tc.wantDist {
+				t.Fatalf("result=%+v, want code=%q distance=%v", result, tc.wantCode, tc.wantDist)
+			}
+			var count int64
+			if err := database.Model(&model.SignRecord{}).Where("activity_id = ?", 100).Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("failed attempt wrote %d records: %v", count, err)
 			}
 		})
 	}

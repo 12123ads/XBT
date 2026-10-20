@@ -94,6 +94,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
   - 上游返回“您已签到过了”时写入 `source_uid=-1` 的 `sign_records`，后续 check 不再请求上游签到。
   - 仅 `success/success2` 写签到记录；`already_signed` 写学习通来源记录。
 - **不做**：不做无限重试、不做并发去重以外的调度。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`Server/internal/xxt/sign_result.go` 提供 `ParseSignResult` 与 `SignResultKind`（9 类）；`Client.Sign` 返回 `SignResult`，验证码分支保存 `enc2` 并在第二次请求同时携带 `validate`+`enc2`，最多两次请求；`service.ExecuteOne` 对人脸/位置各重试一次，`success/success2` 写签到记录，`already_signed` 写 `source_uid=-1` 记录，`/api/sign/execute` 新增 `error_code`、`retryable`、`distance_m`。位置随机化尚未落地（XBT-S6），当前 `errorLocation_` 重试仍发送用户选定点。测试见 `Server/internal/xxt/sign_result_test.go`、`Server/internal/service/sign_test.go`、`Server/internal/handler/sign_test.go`；接口说明见 `Server/API.md` §5.4。
 
 #### XBT-S4 preSign 全类型 + 上游状态 + 会话恢复
 - **输入**：活动 `ext`、固定参数、用户凭据。

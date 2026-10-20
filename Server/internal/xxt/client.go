@@ -929,31 +929,31 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 	}, nil
 }
 
-func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID string) (string, error) {
+func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID string) (SignResult, error) {
 	objectID = strings.TrimSpace(objectID)
 	if objectID == "" {
-		return "", fmt.Errorf("missing photo object_id")
+		return SignResult{}, fmt.Errorf("missing photo object_id")
 	}
 	return c.Sign(mobile, password, fixed, SignNormal, map[string]interface{}{"object_id": objectID})
 }
 
-func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, special map[string]interface{}) (string, error) {
+func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, special map[string]interface{}) (SignResult, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
-		return "", err
+		return SignResult{}, err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
 
 	if signType == SignQRCode && strVal(special["enc"]) == "" {
-		return "", fmt.Errorf("缺少二维码 enc 参数")
+		return SignResult{}, fmt.Errorf("缺少二维码 enc 参数")
 	}
 	if (signType == SignGesture || signType == SignCode) && strVal(special["sign_code"]) == "" {
-		return "", fmt.Errorf("缺少 sign_code 参数")
+		return SignResult{}, fmt.Errorf("缺少 sign_code 参数")
 	}
 	if signType == SignGesture {
 		if err := c.checkGestureCode(&cli, fixed.ActiveID, strVal(special["sign_code"])); err != nil {
-			return "", err
+			return SignResult{}, err
 		}
 	}
 
@@ -981,33 +981,46 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 
 	result, err := c.doStuSignRequest(&cli, params)
 	if err != nil {
-		return "", err
+		return SignResult{}, err
 	}
-	if result != "validate" {
+	if result.Kind != SignResultCaptchaRequired {
 		return result, nil
 	}
 
-	// 仅对需要验证码的活动执行一次验证码识别，不在后端重试。
+	// Captcha challenge: save enc2, solve the captcha once, and retry the
+	// same submission exactly once with both validate and enc2.
 	validate, err := c.fetchCaptchaValidate(&cli, fixed)
 	if err != nil {
 		log.Printf("captcha fetch failed: activity=%d uid=%d err=%v", fixed.ActiveID, fixed.UID, err)
-		return "validate", nil
+		return result, nil
+	}
+	if result.Enc2 != "" {
+		params.Set("enc2", result.Enc2)
 	}
 	params.Set("validate", validate)
 	return c.doStuSignRequest(&cli, params)
 }
 
-func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (string, error) {
+func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (SignResult, error) {
 	u := "https://mobilelearn.chaoxing.com/pptSign/stuSignajax?" + params.Encode()
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	req.Header.Set("User-Agent", c.mobileUA)
 	resp, err := cli.Do(req)
 	if err != nil {
-		return "", err
+		return SignResult{}, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body)), nil
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return SignResult{}, err
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return SignResult{Kind: SignResultSessionExpired, Message: "上游返回 HTTP 403"}, nil
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return SignResult{Kind: SignResultUpstreamError, Message: fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode)}, nil
+	}
+	return ParseSignResult(string(body)), nil
 }
 
 // checkGestureCode verifies a gesture/order code before submitting the sign.

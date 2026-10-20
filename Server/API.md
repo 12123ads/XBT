@@ -333,9 +333,25 @@ GET /api/sign/classmates?course_id=222&class_id=111
   "already_signed": false,
   "record_source": 343479151,
   "record_source_name": "张三",
-  "message": "签到成功"
+  "message": "签到成功",
+  "error_code": "",
+  "retryable": false
 }
 ```
+
+`error_code` 是上游响应的类型化结果，前端不再解析 `message`/原始响应：
+
+| error_code | 含义 | `retryable` | 备注 |
+|---|---|---|---|
+| `""` | 签到成功（含 `success2` 迟到/已结束、本地已有记录） | `false` | `success=true` |
+| `captcha_required` | 验证码校验未通过 | `true` | 服务端已带 `validate`+`enc2` 自动重试一次 |
+| `face_required` | 人脸验证未通过或未设置人脸照片 | `false` | 服务端已自动做人脸恢复重试一次 |
+| `location_out_of_range` | 位置超出范围 | `false` | 上游给出距离时返回 `distance_m`（米） |
+| `qr_expired` | 二维码已过期 | `false` | 需要重新扫码 |
+| `session_expired` | 学习通会话失效 | `false` | 需要重新登录 |
+| `upstream_error` | 其他上游错误 | `true` | `message` 为可读提示 |
+
+上游返回“您已签到过了”时会写入 `source_uid=-1` 的学习通来源记录，之后的 `/api/sign/check` 与重复执行都只读本地记录，不再请求上游签到。
 
 `special_params` 按签到类型：
 - 普通签到(`0`): 可空
