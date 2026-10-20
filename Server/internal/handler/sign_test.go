@@ -18,10 +18,28 @@ import (
 )
 
 type handlerSignUpstream struct {
-	scope    bool
-	scopeErr error
-	signed   []int64
-	onSign   func(xxt.FixedParams) error
+	scope       bool
+	scopeErr    error
+	activities  []xxt.Active
+	detail      xxt.SignDetail
+	detailErr   error
+	faceFlag    bool
+	detailCalls int
+	signed      []int64
+	onSign      func(xxt.FixedParams) error
+}
+
+func (u *handlerSignUpstream) GetActives(string, string, int64, int64) ([]xxt.Active, error) {
+	return u.activities, nil
+}
+
+func (u *handlerSignUpstream) GetSignDetail(string, string, int64, int64, int64, int64) (xxt.SignDetail, error) {
+	u.detailCalls++
+	return u.detail, u.detailErr
+}
+
+func (u *handlerSignUpstream) GetFaceFlag(string, string, int64, int64, int64, int64) bool {
+	return u.faceFlag
 }
 
 func (u *handlerSignUpstream) HasActivityInCourse(string, string, int64, int64, int64) (bool, error) {
@@ -82,9 +100,10 @@ func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstre
 		t.Fatal(err)
 	}
 	upstream := &handlerSignUpstream{}
-	h := NewSignHandler(database, nil, cc, service.NewSignService(database, upstream, cc, nil), 5, nil)
+	h := NewSignHandler(database, upstream, cc, service.NewSignService(database, upstream, cc, nil), 5, nil)
 	router := gin.New()
 	authed := router.Group("", func(c *gin.Context) { c.Set(common.CtxUserUID, int64(1)); c.Next() })
+	authed.GET("/activities", h.Activities)
 	authed.GET("/classmates", h.Classmates)
 	authed.POST("/check", h.Check)
 	authed.POST("/execute", h.Execute)
@@ -94,6 +113,73 @@ func handlerSignFixture(t *testing.T) (*gorm.DB, *gin.Engine, *handlerSignUpstre
 	router.GET("/public/:token", h.GetShare)
 	router.POST("/public/:token", h.ExecuteShare)
 	return database, router, upstream
+}
+
+func TestActivitiesReturnsSignMetadataAndKeepsLegacyFields(t *testing.T) {
+	_, router, upstream := handlerSignFixture(t)
+	upstream.activities = []xxt.Active{{ActiveID: 100, Name: "签到"}}
+	upstream.detail = xxt.SignDetail{
+		StartTime:          1700000000000,
+		EndTime:            1700000600000,
+		SignType:           xxt.SignLocation,
+		IfRefreshEWM:       true,
+		IfPhoto:            true,
+		IfFace:             true,
+		IfNeedVCode:        true,
+		IfOpenAddress:      true,
+		LocationLatitude:   31.2304,
+		LocationLongitude:  121.4737,
+		LocationRange:      200,
+		SignInID:           101,
+		SignOutID:          102,
+		SignOutPublishTime: 1700000700000,
+	}
+
+	response := accessRequest(t, router, http.MethodGet, "/activities", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("activities status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Code int `json:"code"`
+		Data []struct {
+			Activities []struct {
+				ActiveID          int64   `json:"active_id"`
+				StartTime         int64   `json:"start_time"`
+				EndTime           int64   `json:"end_time"`
+				SignType          int     `json:"sign_type"`
+				IfRefreshEWM      bool    `json:"if_refresh_ewm"`
+				IfPhoto           bool    `json:"if_photo"`
+				IfFace            bool    `json:"if_face"`
+				IfNeedVCode       bool    `json:"if_need_vcode"`
+				IfOpenAddress     bool    `json:"if_open_address"`
+				LocationLatitude  float64 `json:"location_latitude"`
+				LocationLongitude float64 `json:"location_longitude"`
+				LocationRange     int     `json:"location_range"`
+			} `json:"activities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != 0 || len(payload.Data) != 1 || len(payload.Data[0].Activities) != 1 {
+		t.Fatalf("unexpected activities payload: %s", response.Body.String())
+	}
+	item := payload.Data[0].Activities[0]
+	if item.ActiveID != 100 || item.StartTime != 1700000000000 || item.EndTime != 1700000600000 || item.SignType != xxt.SignLocation {
+		t.Fatalf("legacy identity fields changed: %+v", item)
+	}
+	if !item.IfRefreshEWM || !item.IfPhoto || !item.IfFace {
+		t.Fatalf("legacy flags changed: %+v", item)
+	}
+	if !item.IfNeedVCode || !item.IfOpenAddress {
+		t.Fatalf("metadata flags missing: %+v", item)
+	}
+	if item.LocationLatitude != 31.2304 || item.LocationLongitude != 121.4737 || item.LocationRange != 200 {
+		t.Fatalf("location metadata missing: %+v", item)
+	}
+	if upstream.detailCalls != 1 {
+		t.Fatalf("detail calls=%d, want 1", upstream.detailCalls)
+	}
 }
 
 func createHandlerSignShare(t *testing.T, router http.Handler) string {

@@ -29,7 +29,16 @@ const (
 	SignCode     = 5
 	captchaID    = "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1"
 	captchaType  = "slide"
+
+	signMetadataTTL          = 30 * time.Second
+	signEndTimeSentinel      = int64(64060559999000)
+	noSignOutPublishSentinel = int64(4999)
 )
+
+type signMetadataCacheEntry struct {
+	detail    SignDetail
+	expiresAt time.Time
+}
 
 type Client struct {
 	aesKey         string
@@ -38,6 +47,8 @@ type Client struct {
 	http           *http.Client
 	sessionMu      sync.Mutex
 	sessions       map[string]*Session
+	metadataMu     sync.Mutex
+	metadata       map[string]signMetadataCacheEntry
 }
 
 type Session struct {
@@ -76,6 +87,16 @@ type SignDetail struct {
 	IfRefreshEWM bool
 	IfPhoto      bool
 	IfFace       bool
+
+	IfNeedVCode        bool
+	IfOpenAddress      bool
+	LocationLatitude   float64
+	LocationLongitude  float64
+	LocationRange      int
+	SignInID           int64
+	SignOutID          int64
+	SignOutPublishTime int64
+	Ext                string
 }
 
 type FixedParams struct {
@@ -401,12 +422,28 @@ func (c *Client) getActives(mobile, password string, courseID, classID int64, li
 }
 
 func (c *Client) GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (SignDetail, error) {
+	cacheKey := signMetadataCacheKey(mobile, activityID)
+	if detail, ok := c.loadSignMetadata(cacheKey); ok {
+		return detail, nil
+	}
+
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return SignDetail{}, err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
+
+	detail, err := c.fetchPPTActiveInfo(cli, activityID)
+	if err == nil {
+		if detail.EndTime == 0 {
+			detail.EndTime = signEndTimeSentinel
+		}
+		c.storeSignMetadata(cacheKey, detail)
+		return detail, nil
+	}
+	log.Printf("getPPTActiveInfo failed, falling back to signDetail: activity=%d err=%v", activityID, err)
+
 	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/newsign/signDetail?activePrimaryId=%d&type=1", activityID)
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	req.Header.Set("User-Agent", c.mobileUA)
@@ -425,7 +462,7 @@ func (c *Client) GetSignDetail(mobile, password string, activityID, courseID, cl
 	}
 	end := parseTimeMillis(payload["endTime"])
 	if end == 0 {
-		end = 64060559999000
+		end = signEndTimeSentinel
 	}
 
 	ifFace := boolFromAny(deepFindFirst(payload, "ifFaceCheck", "needFace", "ifFace", "faceCheck", "openCheckFaceFlag"))
@@ -433,14 +470,133 @@ func (c *Client) GetSignDetail(mobile, password string, activityID, courseID, cl
 		ifFace = c.GetFaceFlag(mobile, password, activityID, courseID, classID, uid)
 	}
 
-	return SignDetail{
+	detail = SignDetail{
 		StartTime:    parseTimeMillis(payload["startTime"]),
 		EndTime:      end,
 		SignType:     int(int64FromAny(payload["otherId"])),
 		IfRefreshEWM: boolFromAny(payload["ifRefreshEwm"]),
 		IfPhoto:      boolFromAny(deepFindFirst(payload, "ifphoto", "ifPhoto")),
 		IfFace:       ifFace,
-	}, nil
+	}
+	c.storeSignMetadata(cacheKey, detail)
+	return detail, nil
+}
+
+// GetPPTActiveInfo reads the activity metadata endpoint that returns all sign
+// flags in one response. An error means the caller should use GetSignDetail,
+// which keeps the legacy signDetail + preSign path as a fallback.
+func (c *Client) GetPPTActiveInfo(mobile, password string, activityID int64) (SignDetail, error) {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return SignDetail{}, err
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+	return c.fetchPPTActiveInfo(cli, activityID)
+}
+
+func (c *Client) fetchPPTActiveInfo(cli http.Client, activityID int64) (SignDetail, error) {
+	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo?activeId=%d", activityID)
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return SignDetail{}, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return SignDetail{}, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return SignDetail{}, fmt.Errorf("getPPTActiveInfo: upstream status %d: %s", resp.StatusCode, truncateForLog(string(raw), 200))
+	}
+	detail, ok := parsePPTActiveInfo(raw)
+	if !ok {
+		return SignDetail{}, fmt.Errorf("getPPTActiveInfo: no usable data for activity %d", activityID)
+	}
+	return detail, nil
+}
+
+func parsePPTActiveInfo(raw []byte) (SignDetail, bool) {
+	var payload map[string]interface{}
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return SignDetail{}, false
+	}
+	data, ok := payload["data"].(map[string]interface{})
+	if !ok || len(data) == 0 {
+		return SignDetail{}, false
+	}
+
+	signOutPublishTime := int64FromAny(firstNonNil(data["signOutPublishTimeStamp"], data["signOutPublishTime"]))
+	if signOutPublishTime == noSignOutPublishSentinel {
+		signOutPublishTime = 0
+	}
+	return SignDetail{
+		StartTime:          parseTimeMillis(firstNonNil(data["starttime"], data["startTime"])),
+		EndTime:            parseTimeMillis(firstNonNil(data["endtime"], data["endTime"])),
+		SignType:           int(int64FromAny(firstNonNil(data["otherId"], data["otherid"]))),
+		IfRefreshEWM:       boolFromAny(firstNonNil(data["ifrefreshewm"], data["ifRefreshEwm"])),
+		IfPhoto:            boolFromAny(firstNonNil(data["ifphoto"], data["ifPhoto"])),
+		IfFace:             boolFromAny(firstNonNil(data["openCheckFaceFlag"], data["ifFaceCheck"])),
+		IfNeedVCode:        boolFromAny(firstNonNil(data["ifNeedVCode"], data["ifneedvcode"])),
+		IfOpenAddress:      boolFromAny(firstNonNil(data["ifopenAddress"], data["ifOpenAddress"])),
+		LocationLatitude:   float64FromAny(firstNonNil(data["locationLatitude"], data["locationlatitude"])),
+		LocationLongitude:  float64FromAny(firstNonNil(data["locationLongitude"], data["locationlongitude"])),
+		LocationRange:      int(int64FromAny(firstNonNil(data["locationRange"], data["locationrange"]))),
+		SignInID:           int64FromAny(firstNonNil(data["signInId"], data["signinid"])),
+		SignOutID:          int64FromAny(firstNonNil(data["signOutId"], data["signoutid"])),
+		SignOutPublishTime: signOutPublishTime,
+		Ext:                signExtString(data["ext"]),
+	}, true
+}
+
+func signExtString(v interface{}) string {
+	switch ext := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return ext
+	default:
+		raw, err := json.Marshal(ext)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+func signMetadataCacheKey(mobile string, activityID int64) string {
+	return mobile + ":" + strconv.FormatInt(activityID, 10)
+}
+
+func (c *Client) loadSignMetadata(key string) (SignDetail, bool) {
+	c.metadataMu.Lock()
+	defer c.metadataMu.Unlock()
+	entry, ok := c.metadata[key]
+	if !ok {
+		return SignDetail{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.metadata, key)
+		return SignDetail{}, false
+	}
+	return entry.detail, true
+}
+
+func (c *Client) storeSignMetadata(key string, detail SignDetail) {
+	now := time.Now()
+	c.metadataMu.Lock()
+	defer c.metadataMu.Unlock()
+	if c.metadata == nil {
+		c.metadata = make(map[string]signMetadataCacheEntry)
+	}
+	for k, entry := range c.metadata {
+		if now.After(entry.expiresAt) {
+			delete(c.metadata, k)
+		}
+	}
+	c.metadata[key] = signMetadataCacheEntry{detail: detail, expiresAt: now.Add(signMetadataTTL)}
 }
 
 func (c *Client) GetFaceFlag(mobile, password string, activityID, courseID, classID, uid int64) bool {
@@ -764,7 +920,6 @@ func (c *Client) CheckFaceResult(mobile, password string, activeID int64, faceOb
 		FaceCode:      faceCode,
 	}, nil
 }
-
 
 func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID string) (string, error) {
 	objectID = strings.TrimSpace(objectID)

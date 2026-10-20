@@ -21,7 +21,6 @@ import (
 	"xbt2/server/internal/xxt"
 )
 
-const manualEndTimeSentinel int64 = 64060559999000
 const maxPhotoUploadBytes int64 = 20 << 20
 
 type selectedCourseInfo struct {
@@ -32,16 +31,22 @@ type selectedCourseInfo struct {
 	Icon     string
 }
 
+type signActivityClient interface {
+	GetActives(mobile, password string, courseID, classID int64) ([]xxt.Active, error)
+	GetSignDetail(mobile, password string, activityID, courseID, classID, uid int64) (xxt.SignDetail, error)
+	GetFaceFlag(mobile, password string, activityID, courseID, classID, uid int64) bool
+}
+
 type SignHandler struct {
 	db          *gorm.DB
-	xxt         *xxt.Client
+	xxt         signActivityClient
 	cc          *service.CredentialCrypto
 	signService *service.SignService
 	listLimit   int
 	settings    *service.RuntimeSettingsService
 }
 
-func NewSignHandler(db *gorm.DB, xxtClient *xxt.Client, cc *service.CredentialCrypto, signService *service.SignService, listLimit int, settings *service.RuntimeSettingsService) *SignHandler {
+func NewSignHandler(db *gorm.DB, xxtClient signActivityClient, cc *service.CredentialCrypto, signService *service.SignService, listLimit int, settings *service.RuntimeSettingsService) *SignHandler {
 	if listLimit <= 0 {
 		listLimit = 5
 	}
@@ -159,73 +164,45 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 	}
 	items := make([]gin.H, 0)
 	for _, a := range actives {
-		var detail xxt.SignDetail
 		var cache model.SignActivity
 		cacheErr := h.db.Where("activity_id = ?", a.ActiveID).First(&cache).Error
 		cacheFound := cacheErr == nil
+		if cacheErr != nil && !errors.Is(cacheErr, gorm.ErrRecordNotFound) {
+			log.Printf("query sign activity cache failed: uid=%d activity=%d err=%v", uid, a.ActiveID, cacheErr)
+		}
 
-		if cacheFound && cache.EndTime != manualEndTimeSentinel {
-			detail = xxt.SignDetail{
-				StartTime:    cache.StartTime,
-				EndTime:      cache.EndTime,
-				SignType:     cache.SignType,
-				IfRefreshEWM: cache.IfRefreshEWM,
-				IfPhoto:      cache.IfPhoto,
-				IfFace:       cache.IfFace,
+		detail, err := h.xxt.GetSignDetail(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid)
+		if err == nil {
+			cacheRow := model.SignActivity{
+				ActivityID:   a.ActiveID,
+				StartTime:    detail.StartTime,
+				EndTime:      detail.EndTime,
+				SignType:     detail.SignType,
+				IfRefreshEWM: detail.IfRefreshEWM,
+				IfPhoto:      detail.IfPhoto,
+				IfFace:       detail.IfFace,
 			}
-			if !cache.IfFace {
-				if h.xxt.GetFaceFlag(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid) {
-					detail.IfFace = true
-					h.db.Model(&model.SignActivity{}).Where("activity_id = ?", a.ActiveID).Update("if_face", true)
-				}
-			}
+			_ = h.db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "activity_id"}},
+				DoNothing: true,
+			}).Create(&cacheRow).Error
 		} else {
-			remoteDetail, err := h.xxt.GetSignDetail(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid)
-			if err == nil {
-				detail = remoteDetail
-				cacheRow := model.SignActivity{
-					ActivityID:   a.ActiveID,
-					StartTime:    detail.StartTime,
-					EndTime:      detail.EndTime,
-					SignType:     detail.SignType,
-					IfRefreshEWM: detail.IfRefreshEWM,
-					IfPhoto:      detail.IfPhoto,
-					IfFace:       detail.IfFace,
-				}
-				_ = h.db.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "activity_id"}},
-					DoNothing: true,
-				}).Create(&cacheRow).Error
-			} else {
-				log.Printf("get sign detail failed: uid=%d activity=%d err=%v", uid, a.ActiveID, err)
-				if cacheFound {
-					detail = xxt.SignDetail{
-						StartTime:    cache.StartTime,
-						EndTime:      cache.EndTime,
-						SignType:     cache.SignType,
-						IfRefreshEWM: cache.IfRefreshEWM,
-						IfPhoto:      cache.IfPhoto,
-						IfFace:       cache.IfFace,
-					}
-				} else {
-					continue
-				}
+			log.Printf("get sign detail failed: uid=%d activity=%d err=%v", uid, a.ActiveID, err)
+			if !cacheFound {
+				continue
+			}
+			detail = signDetailFromCache(cache)
+			if !detail.IfFace && h.xxt.GetFaceFlag(user.Mobile, password, a.ActiveID, sc.CourseID, sc.ClassID, uid) {
+				detail.IfFace = true
+				h.db.Model(&model.SignActivity{}).Where("activity_id = ?", a.ActiveID).Update("if_face", true)
 			}
 		}
 
 		if detail.StartTime == 0 && detail.EndTime == 0 {
-			if cacheFound {
-				detail = xxt.SignDetail{
-					StartTime:    cache.StartTime,
-					EndTime:      cache.EndTime,
-					SignType:     cache.SignType,
-					IfRefreshEWM: cache.IfRefreshEWM,
-					IfPhoto:      cache.IfPhoto,
-					IfFace:       cache.IfFace,
-				}
-			} else {
+			if !cacheFound {
 				continue
 			}
+			detail = signDetailFromCache(cache)
 		}
 
 		recordSourceName := ""
@@ -266,6 +243,11 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 			"if_refresh_ewm":     detail.IfRefreshEWM,
 			"if_photo":           detail.IfPhoto,
 			"if_face":            detail.IfFace,
+			"if_need_vcode":      detail.IfNeedVCode,
+			"if_open_address":    detail.IfOpenAddress,
+			"location_latitude":  detail.LocationLatitude,
+			"location_longitude": detail.LocationLongitude,
+			"location_range":     detail.LocationRange,
 			"record_source":      recordSource,
 			"record_source_name": recordSourceName,
 			"record_sign_time":   recordSignTime,
@@ -293,6 +275,17 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 		"activities":     items,
 		"has_more":       hasMore,
 	}, nil
+}
+
+func signDetailFromCache(cache model.SignActivity) xxt.SignDetail {
+	return xxt.SignDetail{
+		StartTime:    cache.StartTime,
+		EndTime:      cache.EndTime,
+		SignType:     cache.SignType,
+		IfRefreshEWM: cache.IfRefreshEWM,
+		IfPhoto:      cache.IfPhoto,
+		IfFace:       cache.IfFace,
+	}
 }
 
 func (h *SignHandler) Classmates(c *gin.Context) {
