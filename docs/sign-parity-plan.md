@@ -141,6 +141,12 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 - 前端：`FullScanner`/`SignDetail` 收到 `location_point_required` 时打开 `LocationPickerSheet`（含地图选点与浏览器定位），用户选中后带 `special_params.latitude/longitude/description` 重试一次；取消则停在错误提示。
 - 测试：`TestSignExecuteQRWithoutCoordinatesReportsMissingPoint`、`TestSignExecuteQRWithCoordinatesKeepsOutOfRangeDistance`、`TestSignExecuteQRWithCoordinatesInsideCircleSigns`、`TestSignExecuteQRWithoutLocationRequirementStillSigns`。
 
+#### XBT-S25 二维码扫码页手动选点
+- 入口：仅当活动 `if_open_address=true` 时，`FullScanner` 显示「定位」区域；默认「自动」不增加步骤、不发送 `special_params` 坐标。切换到「手动选点」后复用 `LocationPickerSheet`（地图选点、预设地点、浏览器定位），选中点以 `special_params.latitude/longitude/description` 提交。
+- 错误分支：`location_point_required` 直接打开选点面板并保留服务端文案，用户确认后重试一次；取消不重试。`location_out_of_range` 展示 `distance_m`（距签到点 N 米），同样打开面板供改点，重试最多一次。
+- 状态：选点只保存在 `FullScanner` 组件状态，切换活动即清空；不落库。选点仅用于范围校验与地址，提交坐标由服务端按 S26 在选点附近抖动（自动模式仍按活动圆采样）。
+- 验证：`cd Web && npx tsc -b && npx eslint src/pages/FullScanner.tsx && npm run build` 通过；用临时 CDP harness 覆盖无定位活动、自动、手动、手动取消、`location_point_required`（确认/取消）、`location_out_of_range` 七种路径。
+
 #### XBT-S26 手动选点的坐标抖动限制
 - 决策（用户 2026-10-20 评论 `847a3b37`）：手动选点后，波动范围控制在 5 米以内。
 - 处理：`prepareSignLocation` 在用户显式选点时不再按活动圆整圆采样，而是以选点为圆心、在 `location_jitter_meters`（`config.yaml`，默认 5，非正值回退 5）内做一次面积均匀抖动，且偏移恒大于 0；抖动结果若越出活动圆（选点贴近边界），回退为直接提交选点本身。`errorLocation_` 重试仍提交未抖动的选点；元数据无圆心分支保持 S19 行为，直接提交选点。
