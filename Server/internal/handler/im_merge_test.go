@@ -167,7 +167,7 @@ func TestActivitiesKeepsTaskListWhenIMFetchFailed(t *testing.T) {
 
 type handlerIMProvider struct{}
 
-func (handlerIMProvider) GetIMAccount(string, string) (xxt.IMAccount, error) {
+func (handlerIMProvider) GetIMAccountContext(context.Context, string, string) (xxt.IMAccount, error) {
 	return xxt.IMAccount{Password: "0bd654e244170185155ddeefe47a8007"}, nil
 }
 
@@ -217,6 +217,58 @@ func TestActivitiesFetchesIMAtMostOncePerInterval(t *testing.T) {
 	}
 	if client.discoverCalls != 1 {
 		t.Fatalf("discover calls=%d, want 1 within the interval", client.discoverCalls)
+	}
+}
+
+type handlerBlockingIMClient struct{}
+
+func (handlerBlockingIMClient) Token(context.Context, int64, string) (im.Token, error) {
+	return im.Token{AccessToken: "token-1", Username: "im-user", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (handlerBlockingIMClient) Discover(ctx context.Context, _ im.Token) ([]im.Group, []im.SignActivity, error) {
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func TestActivitiesTimesOutIMFetchAndKeepsTaskList(t *testing.T) {
+	database, router, upstream, h := handlerSignFixtureParts(t)
+	upstream.activities = []xxt.Active{{ActiveID: 100, Name: "任务列表签到"}}
+	upstream.detail = xxtSignDetail()
+	cc := service.NewCredentialCrypto("handler-sign-test")
+	h.SetIMSignSource(service.NewIMSignService(database, handlerIMProvider{}, handlerBlockingIMClient{}, cc, time.Minute, 50*time.Millisecond, true))
+
+	response := accessRequest(t, router, http.MethodGet, "/activities", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("activities status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload imActivitiesPayload
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	foundTask := false
+	for _, group := range payload.Data {
+		for _, activity := range group.Activities {
+			if activity.ActiveID == 100 {
+				foundTask = true
+			}
+		}
+	}
+	if !foundTask {
+		t.Fatalf("taskactivelist result missing after IM timeout: %s", response.Body.String())
+	}
+
+	status := accessRequest(t, router, http.MethodGet, "/im/status", nil)
+	var statusPayload struct {
+		Data struct {
+			ErrorCode string `json:"error_code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatal(err)
+	}
+	if statusPayload.Data.ErrorCode != im.CodeTimeout {
+		t.Fatalf("error_code=%q, want %q", statusPayload.Data.ErrorCode, im.CodeTimeout)
 	}
 }
 

@@ -1,6 +1,7 @@
 package xxt
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,13 +28,19 @@ type IMAccount struct {
 // GetIMAccount reads msg.accountInfo.imAccount from the userInfo endpoint using
 // the existing 学习通 session. It never logs or returns the upstream body.
 func (c *Client) GetIMAccount(mobile, password string) (IMAccount, error) {
+	return c.GetIMAccountContext(context.Background(), mobile, password)
+}
+
+// GetIMAccountContext is GetIMAccount with cancellation for the request-time
+// fetch timeout. Session establishment still uses the client's login timeout.
+func (c *Client) GetIMAccountContext(ctx context.Context, mobile, password string) (IMAccount, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return IMAccount{}, err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
-	req, err := http.NewRequest(http.MethodGet, imUserInfoURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imUserInfoURL, nil)
 	if err != nil {
 		return IMAccount{}, err
 	}

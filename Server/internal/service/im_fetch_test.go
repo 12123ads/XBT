@@ -26,7 +26,7 @@ type fakeIMAccountProvider struct {
 	calls   int
 }
 
-func (f *fakeIMAccountProvider) GetIMAccount(string, string) (xxt.IMAccount, error) {
+func (f *fakeIMAccountProvider) GetIMAccountContext(context.Context, string, string) (xxt.IMAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

@@ -29,7 +29,7 @@ type IMClient interface {
 // IMAccountProvider reads the account's Easemob credentials from the upstream
 // userInfo endpoint. It is satisfied by *xxt.Client.
 type IMAccountProvider interface {
-	GetIMAccount(mobile, password string) (xxt.IMAccount, error)
+	GetIMAccountContext(ctx context.Context, mobile, password string) (xxt.IMAccount, error)
 }
 
 // IMSnapshot is the last fetch result for one account. Activities contains
@@ -161,7 +161,7 @@ func (s *IMSignService) refreshAccount(ctx context.Context, uid int64, force boo
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
 
-	credentials, err := s.accountCredentials(uid)
+	credentials, err := s.accountCredentials(fetchCtx, uid)
 	if err != nil {
 		return s.finishPoll(uid, snapshot, 0, nil, imErrorCode(err))
 	}
@@ -274,7 +274,7 @@ func (s *IMSignService) accountLock(uid int64) *sync.Mutex {
 	return lock
 }
 
-func (s *IMSignService) accountCredentials(uid int64) (imCredentialCache, error) {
+func (s *IMSignService) accountCredentials(ctx context.Context, uid int64) (imCredentialCache, error) {
 	now := time.Now()
 	s.mu.Lock()
 	cached, ok := s.creds[uid]
@@ -301,7 +301,11 @@ func (s *IMSignService) accountCredentials(uid int64) (imCredentialCache, error)
 	if err != nil {
 		return fail(im.CodeAuthFailed)
 	}
-	account, err := s.accounts.GetIMAccount(user.Mobile, password)
+	account, err := s.getIMAccount(ctx, user.Mobile, password)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// Do not cache a transient timeout as a credential failure.
+		return imCredentialCache{}, &im.Error{Code: imErrorCode(err)}
+	}
 	if errors.Is(err, xxt.ErrIMAccountMissing) {
 		return fail(im.CodeNotConfigured)
 	}
@@ -317,6 +321,28 @@ func (s *IMSignService) accountCredentials(uid int64) (imCredentialCache, error)
 	s.creds[uid] = credentials
 	s.mu.Unlock()
 	return credentials, nil
+}
+
+type imAccountResult struct {
+	account xxt.IMAccount
+	err     error
+}
+
+// getIMAccount bounds the userInfo call even when session establishment cannot
+// observe ctx: the request path returns on timeout, and the detached call ends
+// at the existing HTTP client timeout.
+func (s *IMSignService) getIMAccount(ctx context.Context, mobile, password string) (xxt.IMAccount, error) {
+	resultCh := make(chan imAccountResult, 1)
+	go func() {
+		account, err := s.accounts.GetIMAccountContext(ctx, mobile, password)
+		resultCh <- imAccountResult{account: account, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return xxt.IMAccount{}, ctx.Err()
+	case result := <-resultCh:
+		return result.account, result.err
+	}
 }
 
 func (s *IMSignService) accountToken(ctx context.Context, uid int64, password string) (im.Token, error) {
