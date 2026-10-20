@@ -11,9 +11,9 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"log"
 	"math"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"sort"
 	"strconv"
@@ -21,39 +21,115 @@ import (
 	"time"
 )
 
-func (c *Client) fetchCaptchaValidate(fixed FixedParams) (string, error) {
-	jar, _ := cookiejar.New(nil)
-	captchaHTTP := *c.http
-	captchaHTTP.Jar = jar
+const (
+	captchaVersion       = "1.1.20"
+	captchaTokenTTL      = 300000 // 毫秒；上游 token 的有效期
+	captchaMaxChallenges = 3      // 单次签到最多重取几次验证码，避免放大风控
+)
 
-	captchaKey, token := generateCaptchaKeyAndToken(captchaID, captchaType)
+// captchaChallenge 是一次性滑动验证码状态。
+// 上游对同一个 token 只接受一次 x 提交，失败必须重新取图，不能换 x 重试。
+type captchaChallenge struct {
+	token       string
+	iv          string
+	shadeImage  string
+	cutoutImage string
+}
+
+func (c *Client) fetchCaptchaValidate(cli *http.Client, fixed FixedParams) (string, error) {
 	referer := fmt.Sprintf(
 		"https://mobilelearn.chaoxing.com/page/sign/signIn?courseId=%d&classId=%d&activeId=%d&fid=0&timetable=0",
 		fixed.CourseID, fixed.ClassID, fixed.ActiveID,
 	)
+
+	var lastErr error
+	for attempt := 1; attempt <= captchaMaxChallenges; attempt++ {
+		validate, err := c.solveCaptchaChallenge(cli, referer, fixed, attempt)
+		if err == nil {
+			return validate, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+// solveCaptchaChallenge 取一张新验证码、只提交一次 x，并把结果写入埋点日志。
+func (c *Client) solveCaptchaChallenge(cli *http.Client, referer string, fixed FixedParams, attempt int) (string, error) {
+	challenge, err := c.newCaptchaChallenge(cli, referer)
+	if err != nil {
+		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "challenge_error")
+		return "", err
+	}
+
+	bgBytes, err := c.downloadBytes(cli, challenge.shadeImage, referer)
+	if err != nil {
+		logCaptchaAttempt(fixed, attempt, "-", 0, 0, "shade_download_error")
+		return "", err
+	}
+	challengeID := captchaChallengeID(bgBytes)
+
+	targetBytes, err := c.downloadBytes(cli, challenge.cutoutImage, referer)
+	if err != nil {
+		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, "cutout_download_error")
+		return "", err
+	}
+
+	candidates, err := detectSlideXCandidates(targetBytes, bgBytes)
+	if err != nil {
+		logCaptchaAttempt(fixed, attempt, challengeID, 0, 0, "detect_error")
+		return "", err
+	}
+
+	// 只提交本地评分最高的一个候选；失败就换 challenge，不再拿同一个 token 试探。
+	top1 := candidates[0]
+	validate, err := c.verifyCaptchaAtX(cli, referer, challenge, top1)
+	result := "ok"
+	if err != nil {
+		result = "rejected"
+	}
+	logCaptchaAttempt(fixed, attempt, challengeID, len(candidates), top1, result)
+	return validate, err
+}
+
+// newCaptchaChallenge 按上游客户端流程取一张验证码：
+// get/conf 拿服务端时间 t → 由 t 派生 captchaKey/token → 取 shadeImage/cutoutImage。
+func (c *Client) newCaptchaChallenge(cli *http.Client, referer string) (captchaChallenge, error) {
+	t, err := c.fetchCaptchaConf(cli)
+	if err != nil {
+		return captchaChallenge{}, err
+	}
+
+	tStr := strconv.FormatInt(t, 10)
+	nonce := randomString(32)
+	captchaKey := md5Hex(tStr + nonce)
+	iv := md5Hex(captchaID + captchaType + strconv.FormatInt(time.Now().UnixMilli(), 10) + nonce)
+	token := md5Hex(tStr+captchaID+captchaType+captchaKey) + ":" + strconv.FormatInt(t+captchaTokenTTL, 10)
 
 	imageURL := "https://captcha.chaoxing.com/captcha/get/verification/image"
 	q := url.Values{}
 	q.Set("callback", "cx_captcha_function")
 	q.Set("captchaId", captchaID)
 	q.Set("type", captchaType)
-	q.Set("version", "1.1.20")
+	q.Set("version", captchaVersion)
 	q.Set("captchaKey", captchaKey)
 	q.Set("token", token)
+	q.Set("iv", iv)
 	q.Set("referer", referer)
+	q.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
 
 	req, _ := http.NewRequest(http.MethodGet, imageURL+"?"+q.Encode(), nil)
 	setCaptchaHeaders(req, referer)
-	resp, err := captchaHTTP.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
-		return "", err
+		return captchaChallenge{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	obj, err := extractJSONPObject(body)
 	if err != nil {
-		return "", err
+		return captchaChallenge{}, err
 	}
+
 	var payload struct {
 		Token               string `json:"token"`
 		ImageVerificationVo struct {
@@ -62,50 +138,67 @@ func (c *Client) fetchCaptchaValidate(fixed FixedParams) (string, error) {
 		} `json:"imageVerificationVo"`
 	}
 	if err := json.Unmarshal(obj, &payload); err != nil {
-		return "", err
+		return captchaChallenge{}, err
 	}
 	if payload.Token == "" || payload.ImageVerificationVo.ShadeImage == "" || payload.ImageVerificationVo.CutoutImage == "" {
-		return "", errors.New("captcha payload incomplete")
+		return captchaChallenge{}, errors.New("captcha payload incomplete")
 	}
 
-	bgBytes, err := c.downloadBytes(&captchaHTTP, payload.ImageVerificationVo.ShadeImage, referer)
-	if err != nil {
-		return "", err
-	}
-	targetBytes, err := c.downloadBytes(&captchaHTTP, payload.ImageVerificationVo.CutoutImage, referer)
-	if err != nil {
-		return "", err
-	}
-	candidates, err := detectSlideXCandidates(targetBytes, bgBytes)
-	if err != nil {
-		return "", err
-	}
-
-	var lastErr error
-	for _, x := range candidates {
-		validate, err := c.verifyCaptchaAtX(&captchaHTTP, referer, payload.Token, x)
-		if err == nil && strings.TrimSpace(validate) != "" {
-			return validate, nil
-		}
-		lastErr = err
-	}
-	if lastErr == nil {
-		lastErr = errors.New("captcha verify failed")
-	}
-	return "", lastErr
+	return captchaChallenge{
+		token:       payload.Token,
+		iv:          iv,
+		shadeImage:  payload.ImageVerificationVo.ShadeImage,
+		cutoutImage: payload.ImageVerificationVo.CutoutImage,
+	}, nil
 }
 
-func (c *Client) verifyCaptchaAtX(cli *http.Client, referer, token string, x int) (string, error) {
+// fetchCaptchaConf 取服务端时间 t，token 的摘要和时间戳后缀都必须基于它。
+func (c *Client) fetchCaptchaConf(cli *http.Client) (int64, error) {
+	confURL := "https://captcha.chaoxing.com/captcha/get/conf"
+	q := url.Values{}
+	q.Set("captchaId", captchaID)
+	q.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	req, _ := http.NewRequest(http.MethodGet, confURL+"?"+q.Encode(), nil)
+	setCaptchaHeaders(req, "")
+	resp, err := cli.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	obj, err := extractJSONPObject(body)
+	if err != nil {
+		return 0, err
+	}
+
+	var conf struct {
+		T int64 `json:"t"`
+	}
+	if err := json.Unmarshal(obj, &conf); err != nil {
+		return 0, err
+	}
+	if conf.T <= 0 {
+		return 0, errors.New("captcha conf missing t")
+	}
+	return conf.T, nil
+}
+
+func (c *Client) verifyCaptchaAtX(cli *http.Client, referer string, challenge captchaChallenge, x int) (string, error) {
 	checkURL := "https://captcha.chaoxing.com/captcha/check/verification/result"
 	q2 := url.Values{}
 	q2.Set("callback", "cx_captcha_function")
 	q2.Set("captchaId", captchaID)
 	q2.Set("type", captchaType)
-	q2.Set("token", token)
+	q2.Set("token", challenge.token)
 	q2.Set("textClickArr", fmt.Sprintf("[{\"x\":%d}]", x))
 	q2.Set("coordinate", "[]")
 	q2.Set("runEnv", "10")
-	q2.Set("version", "1.1.20")
+	q2.Set("version", captchaVersion)
+	q2.Set("iv", challenge.iv)
+	q2.Set("t", "a")
+	q2.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
 	req2, _ := http.NewRequest(http.MethodGet, checkURL+"?"+q2.Encode(), nil)
 	setCaptchaHeaders(req2, referer)
 	resp2, err := cli.Do(req2)
@@ -118,16 +211,26 @@ func (c *Client) verifyCaptchaAtX(cli *http.Client, referer, token string, x int
 	if err != nil {
 		return "", err
 	}
+
 	var verify struct {
 		Result    bool   `json:"result"`
+		Error     int    `json:"error"`
+		Msg       string `json:"msg"`
 		ExtraData string `json:"extraData"`
 	}
 	if err := json.Unmarshal(obj2, &verify); err != nil {
 		return "", err
 	}
+	if verify.Error == 1 {
+		if verify.Msg == "" {
+			verify.Msg = "captcha check error"
+		}
+		return "", errors.New(verify.Msg)
+	}
 	if !verify.Result {
 		return "", errors.New("captcha verify failed")
 	}
+
 	var extra struct {
 		Validate string `json:"validate"`
 	}
@@ -138,6 +241,19 @@ func (c *Client) verifyCaptchaAtX(cli *http.Client, referer, token string, x int
 		return "", errors.New("validate empty")
 	}
 	return extra.Validate, nil
+}
+
+// captchaChallengeID 用背景图摘要做埋点标识，避免把 token 或原图写进日志。
+func captchaChallengeID(shade []byte) string {
+	sum := md5.Sum(shade)
+	return hex.EncodeToString(sum[:6])
+}
+
+func logCaptchaAttempt(fixed FixedParams, attempt int, challengeID string, candidates, top1 int, result string) {
+	log.Printf(
+		"captcha attempt activity=%d uid=%d attempt=%d challenge_id=%s candidate_count=%d top1_x=%d upstream_result=%s",
+		fixed.ActiveID, fixed.UID, attempt, challengeID, candidates, top1, result,
+	)
 }
 
 func (c *Client) downloadBytes(cli *http.Client, rawURL string, referer string) ([]byte, error) {
@@ -153,7 +269,9 @@ func (c *Client) downloadBytes(cli *http.Client, rawURL string, referer string) 
 
 func setCaptchaHeaders(req *http.Request, referer string) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", referer)
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
 	req.Header.Set("Accept", "*/*")
 }
 
@@ -165,16 +283,6 @@ func extractJSONPObject(body []byte) ([]byte, error) {
 		return nil, errors.New("invalid jsonp")
 	}
 	return []byte(s[start : end+1]), nil
-}
-
-func generateCaptchaKeyAndToken(captchaIDVal, captchaTypeVal string) (string, string) {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	randomStr := randomString(32) + ts
-	captchaKey := md5Hex(randomStr)
-	token := md5Hex(ts + captchaIDVal + captchaTypeVal + captchaKey)
-	tsNum, _ := strconv.ParseInt(ts, 10, 64)
-	token = token + ":" + strconv.FormatInt(tsNum+0x493e0, 10)
-	return captchaKey, token
 }
 
 func randomString(n int) string {

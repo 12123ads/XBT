@@ -868,7 +868,7 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	// 若先空 validate 试探再重试，会导致第二次请求被判定“签到校验未通过”。
 	// 这里与 1.0 行为对齐：二维码签到首发请求直接携带验证码。
 	if signType == SignQRCode {
-		validate, err := c.fetchCaptchaValidate(fixed)
+		validate, err := c.fetchCaptchaValidate(&cli, fixed)
 		if err != nil {
 			log.Printf("captcha fetch failed before qrcode sign: activity=%d uid=%d err=%v", fixed.ActiveID, fixed.UID, err)
 		} else {
@@ -886,7 +886,7 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	}
 
 	// 仅对需要验证码的活动执行一次验证码识别，不在后端重试。
-	validate, err := c.fetchCaptchaValidate(fixed)
+	validate, err := c.fetchCaptchaValidate(&cli, fixed)
 	if err != nil {
 		log.Printf("captcha fetch failed: activity=%d uid=%d err=%v", fixed.ActiveID, fixed.UID, err)
 		return "validate", nil
