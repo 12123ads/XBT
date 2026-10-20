@@ -1071,7 +1071,7 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		Validate:      strings.TrimSpace(strVal(special["validate"])),
 	})
 
-	result, err := c.doStuSignRequest(&cli, params)
+	result, err := c.doStuSignRequest(&cli, params, 1)
 	if err != nil {
 		return SignResult{}, err
 	}
@@ -1090,10 +1090,19 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		params.Set("enc2", result.Enc2)
 	}
 	params.Set("validate", validate)
-	return c.doStuSignRequest(&cli, params)
+	retried, err := c.doStuSignRequest(&cli, params, result.Attempts+1)
+	if err != nil {
+		return SignResult{}, err
+	}
+	retried.CaptchaAttempted = true
+	switch retried.Kind {
+	case SignResultSuccess, SignResultSuccess2, SignResultAlreadySigned:
+		retried.CaptchaPassed = true
+	}
+	return retried, nil
 }
 
-func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (SignResult, error) {
+func (c *Client) doStuSignRequest(cli *http.Client, params url.Values, attempt int) (SignResult, error) {
 	u := "https://mobilelearn.chaoxing.com/pptSign/stuSignajax?" + params.Encode()
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	req.Header.Set("User-Agent", c.mobileUA)
@@ -1106,13 +1115,17 @@ func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (SignResu
 	if err != nil {
 		return SignResult{}, err
 	}
+	result := ParseSignResult(string(body))
+	result.Attempts = attempt
+	result.HTTPStatus = resp.StatusCode
 	if resp.StatusCode == http.StatusForbidden {
-		return SignResult{Kind: SignResultSessionExpired, Message: "上游返回 HTTP 403"}, nil
+		result.Kind = SignResultSessionExpired
+		result.Message = "上游返回 HTTP 403"
+	} else if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		result.Kind = SignResultUpstreamError
+		result.Message = fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode)
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return SignResult{Kind: SignResultUpstreamError, Message: fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode)}, nil
-	}
-	return ParseSignResult(string(body)), nil
+	return result, nil
 }
 
 // checkGestureCode verifies a gesture/order code before submitting the sign.

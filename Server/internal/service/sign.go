@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"xbt2/server/internal/model"
+	"xbt2/server/internal/observe"
 	"xbt2/server/internal/xxt"
 )
 
@@ -43,6 +44,39 @@ type SignService struct {
 	// sampleLocation is replaceable in tests. Production uses the uniform
 	// sampler from xxt with the global random source.
 	sampleLocation func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint
+	metrics        *observe.SignMetrics
+}
+
+// signExecutionStats collects the fields that must appear in the single
+// result line. It is written only by the request goroutine.
+type signExecutionStats struct {
+	attempts          int
+	upstreamStatus    int
+	validateTriggered bool
+	captchaPassed     bool
+	locationError     bool
+	upstream403       bool
+}
+
+func (s *signExecutionStats) record(result xxt.SignResult) {
+	if result.Attempts > 0 {
+		s.attempts += result.Attempts
+	} else {
+		s.attempts++
+	}
+	s.upstreamStatus = result.HTTPStatus
+	if result.Kind == xxt.SignResultCaptchaRequired || result.CaptchaAttempted {
+		s.validateTriggered = true
+	}
+	if result.CaptchaPassed {
+		s.captchaPassed = true
+	}
+	if result.Kind == xxt.SignResultLocationOutOfRange {
+		s.locationError = true
+	}
+	if result.HTTPStatus == 403 {
+		s.upstream403 = true
+	}
 }
 
 func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, courseWebhook *EnterpriseWechatWebhookNotifier) *SignService {
@@ -53,6 +87,7 @@ func NewSignService(db *gorm.DB, xxtClient signClient, cc *CredentialCrypto, cou
 		courseWebhook:       courseWebhook,
 		courseNotifyBatches: map[courseSignNotificationKey]*courseSignNotificationBatch{},
 		faceUploads:         map[faceUploadKey]faceUploadEntry{},
+		metrics:             observe.NewSignMetrics(),
 		sampleLocation: func(center xxt.GeoPoint, radiusMeters float64) xxt.GeoPoint {
 			position := xxt.SampleLocation(center, radiusMeters, nil)
 			return xxt.GeoPoint{Latitude: position.Latitude, Longitude: position.Longitude}
@@ -90,6 +125,9 @@ type ExecuteSignRequest struct {
 	// locationBase is the unrandomized point used for the single
 	// errorLocation_ retry. It is set by ExecuteOne, never by handlers.
 	locationBase *xxt.SignPosition
+	// faceUsedClientID records whether the S13 device signature was attached
+	// to the face request. The value itself never leaves applyFaceCredentials.
+	faceUsedClientID bool
 }
 
 type ExecutePhotoSignRequest struct {
@@ -349,7 +387,27 @@ func (s *SignService) AuthorizeTargets(operatorUID, activityID, courseID, classI
 	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&scope).Error
 }
 
-func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (SignExecuteResult, error) {
+func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (res SignExecuteResult, err error) {
+	startedAt := time.Now()
+	stats := &signExecutionStats{}
+	defer func() {
+		s.metrics.ObserveSign(observe.SignEvent{
+			ActivityID:        req.ActivityID,
+			UserUID:           req.TargetUID,
+			SignType:          req.SignType,
+			ResultCode:        executeResultCode(res, err),
+			Attempt:           stats.attempts,
+			UpstreamStatus:    stats.upstreamStatus,
+			DurationMS:        time.Since(startedAt).Milliseconds(),
+			Success:           res.Success,
+			AlreadySigned:     res.AlreadySigned,
+			ValidateTriggered: stats.validateTriggered,
+			CaptchaPassed:     stats.captchaPassed,
+			LocationError:     stats.locationError,
+			Upstream403:       stats.upstream403,
+			HasCxcid:          req.faceUsedClientID,
+		})
+	}()
 	if err := s.AuthorizeTargets(operatorUID, req.ActivityID, req.CourseID, req.ClassID, []int64{req.TargetUID}); err != nil {
 		return SignExecuteResult{}, err
 	}
@@ -428,6 +486,9 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	preSign, err := s.xxt.PreSign(target.Mobile, password, fixed, req.SignType, code, enc)
 	if err != nil {
 		if errors.Is(err, xxt.ErrSessionExpired) {
+			// preSign already retried once after a 403; a terminal expiry is
+			// the observable 403 outcome for this execute.
+			stats.upstream403 = true
 			return SignExecuteResult{UserID: req.TargetUID, Success: false, ErrorCode: SignErrorSessionExpired, Message: "学习通登录已过期，请重新登录"}, nil
 		}
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "预签到失败，请重试", ErrorCode: SignErrorUpstream, Retryable: true}, nil
@@ -449,7 +510,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 		}
 	}
 
-	result, terminal, err := s.submitSign(&target, password, &req, fixed)
+	result, terminal, err := s.submitSign(&target, password, &req, fixed, stats)
 	if err != nil {
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: s.toUserSignMessage(err.Error()), ErrorCode: SignErrorUpstream, Retryable: true}, nil
 	}
@@ -474,18 +535,67 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (Sig
 	}, nil
 }
 
+// executeResultCode normalises the public error contract into the single
+// result_code field. Empty results never reach the client as success.
+func executeResultCode(res SignExecuteResult, err error) string {
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrSignForbidden):
+			return "forbidden"
+		case errors.Is(err, ErrAccountInactive):
+			return "account_inactive"
+		case errors.Is(err, ErrActivityScopeUnavailable):
+			return "activity_scope_unavailable"
+		default:
+			return "internal_error"
+		}
+	}
+	if res.ErrorCode != "" {
+		return res.ErrorCode
+	}
+	if res.Success && res.AlreadySigned {
+		return "already_signed"
+	}
+	if res.Success {
+		return "success"
+	}
+	return "failed"
+}
+
+// ObserveSign and the other observer accessors expose the ledger to handlers
+// that reject a request before it reaches ExecuteOne.
+func (s *SignService) ObserveSign(event observe.SignEvent) { s.metrics.ObserveSign(event) }
+
+func (s *SignService) ObserveActivities(duration time.Duration) {
+	s.metrics.ObserveActivities(duration)
+}
+
+func (s *SignService) ObserveIM(uid int64, enabled, fetched bool, errorCode string, latency time.Duration) {
+	s.metrics.ObserveIM(uid, enabled, fetched, errorCode, latency)
+}
+
+func (s *SignService) MetricsSnapshot() observe.SignSnapshot { return s.metrics.Snapshot() }
+
 // submitSign runs the bounded recovery state machine shared by sign-in and
 // sign-out: captcha is resolved inside xxt.Sign (at most one extra request),
 // face and location recoveries happen here and each may retry once. It returns
 // a terminal result only when face credentials cannot be prepared.
-func (s *SignService) submitSign(target *model.User, password string, req *ExecuteSignRequest, fixed xxt.FixedParams) (xxt.SignResult, *SignExecuteResult, error) {
+func (s *SignService) submitSign(target *model.User, password string, req *ExecuteSignRequest, fixed xxt.FixedParams, stats *signExecutionStats) (xxt.SignResult, *SignExecuteResult, error) {
+	if stats == nil {
+		// Sign-out reuses the state machine but has its own result ledger.
+		stats = &signExecutionStats{}
+	}
 	faceRetried := false
 	locationRetried := false
 	for {
 		result, err := s.xxt.Sign(target.Mobile, password, fixed, req.SignType, req.Special)
 		if err != nil {
+			// The transport failed before a response was available; still
+			// count the request so the attempt ledger is not zero.
+			stats.attempts++
 			return xxt.SignResult{}, nil, err
 		}
+		stats.record(result)
 		switch {
 		case result.Kind == xxt.SignResultFaceRequired && !faceRetried:
 			faceRetried = true
@@ -677,7 +787,7 @@ func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOut
 		}
 	}
 
-	upstream, terminal, err := s.submitSign(&target, password, &signReq, outFixed)
+	upstream, terminal, err := s.submitSign(&target, password, &signReq, outFixed, nil)
 	if err != nil {
 		result.ErrorCode = SignErrorUpstream
 		result.Retryable = true
@@ -936,6 +1046,9 @@ func (s *SignService) applyFaceCredentials(target *model.User, password string, 
 		} else {
 			log.Printf("face clientId decrypt failed: uid=%d err=%v", target.UID, err)
 		}
+	}
+	if clientID != "" {
+		req.faceUsedClientID = true
 	}
 	faceResult, err := s.xxt.CheckFaceResult(target.Mobile, password, req.ActivityID, objectID, clientID)
 	if err != nil {

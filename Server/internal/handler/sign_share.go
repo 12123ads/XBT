@@ -141,6 +141,12 @@ func (h *SignHandler) ExecuteShare(c *gin.Context) {
 		return
 	}
 
+	release, ok := h.acquireSign(c, "share:"+c.Param("token"), share.CreatorUID, share.ActivityID, share.SignType)
+	if !ok {
+		return
+	}
+	defer release()
+
 	summary := gin.H{
 		"target_count":         len(targetUIDs),
 		"success_count":        0,

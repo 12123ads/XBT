@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
@@ -19,6 +20,8 @@ import (
 	"xbt2/server/internal/dto"
 	"xbt2/server/internal/im"
 	"xbt2/server/internal/model"
+	"xbt2/server/internal/observe"
+	"xbt2/server/internal/ratelimit"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
 )
@@ -55,6 +58,7 @@ type SignHandler struct {
 	listLimit   int
 	settings    *service.RuntimeSettingsService
 	imSource    imActivitySource
+	signLimiter *ratelimit.Limiter
 }
 
 func NewSignHandler(db *gorm.DB, xxtClient signActivityClient, cc *service.CredentialCrypto, signService *service.SignService, listLimit int, settings *service.RuntimeSettingsService) *SignHandler {
@@ -68,6 +72,46 @@ func (h *SignHandler) SetIMSignSource(source imActivitySource) {
 	h.imSource = source
 }
 
+// SetSignLimiter installs the per-account submission guard. A nil limiter
+// disables limiting, which keeps existing tests and single-account setups
+// working without configuration.
+func (h *SignHandler) SetSignLimiter(limiter *ratelimit.Limiter) {
+	h.signLimiter = limiter
+}
+
+// acquireSign consumes one submission slot for key. On rejection it writes the
+// 429 response and records the result line, so a rate-limited execute still
+// produces exactly one ledger entry.
+func (h *SignHandler) acquireSign(c *gin.Context, key string, uid, activityID int64, signType int) (func(), bool) {
+	if h.signLimiter == nil {
+		return func() {}, true
+	}
+	release, decision := h.signLimiter.Acquire(key)
+	if decision.Allowed {
+		return release, true
+	}
+	seconds := int(decision.RetryAfter / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	h.observeResult(uid, activityID, signType, "rate_limited")
+	common.Fail(c, http.StatusTooManyRequests, "签到请求过于频繁，请稍后再试")
+	return nil, false
+}
+
+func (h *SignHandler) observeResult(uid, activityID int64, signType int, resultCode string) {
+	if h.signService == nil {
+		return
+	}
+	h.signService.ObserveSign(observe.SignEvent{
+		ActivityID: activityID,
+		UserUID:    uid,
+		SignType:   signType,
+		ResultCode: resultCode,
+	})
+}
+
 func (h *SignHandler) LocationPresets(c *gin.Context) {
 	settings, err := h.settings.Settings()
 	if err != nil {
@@ -77,7 +121,14 @@ func (h *SignHandler) LocationPresets(c *gin.Context) {
 	common.Success(c, gin.H{"items": settings.CourseLocationPresets})
 }
 
+// SignMetrics exposes process-lifetime sign counters and p95 latencies.
+func (h *SignHandler) SignMetrics(c *gin.Context) {
+	common.Success(c, h.signService.MetricsSnapshot())
+}
+
 func (h *SignHandler) Activities(c *gin.Context) {
+	startedAt := time.Now()
+	defer func() { h.signService.ObserveActivities(time.Since(startedAt)) }()
 	uid := common.GetUserUID(c)
 	var user model.User
 	if err := h.db.Where("uid = ?", uid).First(&user).Error; err != nil {
@@ -131,7 +182,13 @@ func (h *SignHandler) Activities(c *gin.Context) {
 	}
 
 	if h.imSource != nil && len(selected) > 0 {
+		before := h.imSource.Snapshot(uid)
+		imStartedAt := time.Now()
 		snapshot := h.imSource.RefreshIfStale(c.Request.Context(), uid)
+		latency := time.Since(imStartedAt)
+		// LastPollAt only changes when upstream was actually contacted; the
+		// interval gate and lock contention both return the previous snapshot.
+		h.signService.ObserveIM(uid, snapshot.Enabled, !snapshot.LastPollAt.Equal(before.LastPollAt), snapshot.ErrorCode, latency)
 		h.mergeIMActivities(uid, user, password, selected, resp, snapshot)
 	}
 
@@ -349,16 +406,19 @@ func (h *SignHandler) Execute(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	var req dto.SignExecuteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.observeResult(uid, 0, 0, "invalid_request")
 		common.Fail(c, 400, "invalid request")
 		return
 	}
 	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
+		h.observeResult(uid, req.ActivityID, req.SignType, "invalid_request")
 		common.Fail(c, 400, "invalid request params")
 		return
 	}
 	switch req.SignType {
 	case xxt.SignNormal, xxt.SignQRCode, xxt.SignGesture, xxt.SignLocation, xxt.SignCode:
 	default:
+		h.observeResult(uid, req.ActivityID, req.SignType, "unsupported_sign_type")
 		common.Fail(c, 400, "unsupported sign_type")
 		return
 	}
@@ -369,6 +429,11 @@ func (h *SignHandler) Execute(c *gin.Context) {
 	if targetUID <= 0 {
 		targetUID = uid
 	}
+	release, ok := h.acquireSign(c, "u:"+strconv.FormatInt(targetUID, 10), targetUID, req.ActivityID, req.SignType)
+	if !ok {
+		return
+	}
+	defer release()
 	if req.Special == nil {
 		req.Special = map[string]interface{}{}
 	}
@@ -450,6 +515,11 @@ func (h *SignHandler) Photo(c *gin.Context) {
 	if targetUID <= 0 {
 		targetUID = uid
 	}
+	release, ok := h.acquireSign(c, "u:"+strconv.FormatInt(targetUID, 10), targetUID, activityID, xxt.SignNormal)
+	if !ok {
+		return
+	}
+	defer release()
 
 	objectID := strings.TrimSpace(c.PostForm("object_id"))
 	if objectID == "" {

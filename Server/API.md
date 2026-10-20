@@ -1134,6 +1134,7 @@ DELETE /api/admin/whitelist/users/12
 - `401` 未登录或 token 无效
 - `403` 权限不足
 - `404` 资源不存在
+- `429` 签到提交超过限流阈值
 - `500` 服务端错误
 
 ---
@@ -1146,3 +1147,75 @@ DELETE /api/admin/whitelist/users/12
 4. 调用 `/api/sign/activities` 拿活动。
 5. 调用 `/api/sign/check` 查待签状态。
 6. 前端过滤出未签用户后，并发调用 `/api/sign/execute`。
+
+---
+
+## 9. 签到观测（管理员）
+
+### 9.1 结构化结果日志
+
+每次签到提交（`/api/sign/execute`、分享链接执行、拍照签到最终提交）恰好写一行标准日志：
+
+```text
+sign_execute {"activity_id":987654,"user_uid":10001,"sign_type":2,"result_code":"success","attempt":1,"upstream_status":200,"duration_ms":842,"success":true,"already_signed":false,"validate_triggered":false,"captcha_passed":false,"location_error":false,"upstream_403":false,"has_cxcid":false}
+```
+
+- `attempt`：本次执行向 `stuSignajax` 发起的提交次数（验证码/位置/人脸恢复会累加）。
+- `upstream_status`：最后一次提交的 HTTP 状态码；未到达上游时为 `0`。
+- `has_cxcid`：人脸请求是否携带 S13 设备签名；只记录布尔值，永不记录 `clientId`、`sc`、token、照片或密码。
+- 参数校验失败、限流等未进入上游的提交也会写一行，`result_code` 为 `invalid_request`、`unsupported_sign_type`、`rate_limited`。
+
+### 9.2 指标
+- Method: `GET`
+- Path: `/api/admin/sign-metrics`
+- Auth: 管理员
+
+响应 `data`：
+
+```json
+{
+  "total": 120,
+  "success": 96,
+  "already_signed": 4,
+  "success_rate": 0.8,
+  "result_codes": {"success": 96, "captcha_required": 9, "location_out_of_range": 3, "upstream_error": 12},
+  "validate_triggered": 15,
+  "validate_trigger_rate": 0.125,
+  "captcha_passed": 9,
+  "captcha_pass_rate": 0.6,
+  "location_errors": 3,
+  "error_location_rate": 0.025,
+  "upstream_403": 2,
+  "upstream_403_rate": 0.0167,
+  "p95_duration_ms": 2140,
+  "latency_samples": 120,
+  "im_fetch_requests": 18,
+  "im_fetch_skipped_stale": 102,
+  "im_fetch_timeout": 1,
+  "im_fetch_error_codes": {"im_timeout": 1, "im_not_configured": 2},
+  "im_fetch_latency_p95_ms": 3120,
+  "im_fetch_latency_samples": 18,
+  "im_accounts": {
+    "10001": {
+      "im_fetch_requests": 12,
+      "im_fetch_skipped_stale": 80,
+      "im_fetch_timeout": 1,
+      "im_fetch_error_codes": {"im_timeout": 1},
+      "im_fetch_error_code": "im_timeout",
+      "im_fetch_latency_ms_p95": 3120,
+      "im_fetch_latency_samples": 12
+    }
+  },
+  "im_accounts_truncated": false,
+  "activities_p95_ms": 3450,
+  "activities_samples": 120
+}
+```
+
+指标为进程内累计值，重启清零；p95 取最近 2048 个样本。`im_accounts` 按账号保留同上计数（最多 512 个账号，超出时置 `im_accounts_truncated=true`），用于判断单账号的 5s 超时是否合理。`activities_p95_ms` 覆盖整个 `/api/sign/activities` 处理时间，**包含**同步 IM 抓取。
+
+### 9.3 限流
+- 仅作用于签到提交（`/api/sign/execute`、`/api/sign/photo`、分享链接执行），使用进程内令牌桶 + 并发上限；单账号提交按目标 uid 计数，分享批量执行按分享令牌计数。
+- 超限返回 HTTP `429`，`Retry-After` 为建议等待秒数，响应 `message` 为「签到请求过于频繁，请稍后再试」，并记一条 `result_code=rate_limited` 的结果日志。
+- 配置项：`sign_rate_limit_per_minute`（默认 30）、`sign_rate_limit_burst`（默认 10）、`sign_max_concurrent`（默认 2）。非正值回退默认值。
+- IM 抓取不参与该限流；IM 失败只降级为无群聊活动，不返回 5xx。

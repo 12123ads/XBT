@@ -28,11 +28,19 @@ const (
 //   - DistanceM is the distance upstream reported in errorLocation_<meters>.
 //   - Message keeps the raw upstream text for upstream_error and the hint
 //     carried by [face]<hint>.
+//   - Attempts counts stuSignajax requests made by one Sign call (1, or 2
+//     after a captcha retry); HTTPStatus is the last upstream HTTP status.
+//   - CaptchaAttempted is true when a solved validate was submitted;
+//     CaptchaPassed is true only when that submission succeeded.
 type SignResult struct {
-	Kind      SignResultKind
-	Enc2      string
-	DistanceM float64
-	Message   string
+	Kind             SignResultKind
+	Enc2             string
+	DistanceM        float64
+	Message          string
+	Attempts         int
+	HTTPStatus       int
+	CaptchaAttempted bool
+	CaptchaPassed    bool
 }
 
 const (

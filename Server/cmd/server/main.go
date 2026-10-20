@@ -12,6 +12,7 @@ import (
 	"xbt2/server/internal/im"
 	"xbt2/server/internal/middleware"
 	"xbt2/server/internal/qmx"
+	"xbt2/server/internal/ratelimit"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
 )
@@ -36,6 +37,7 @@ func main() {
 	courseSignWebhook := service.NewEnterpriseWechatWebhookNotifierProvider(runtimeSettingsSvc.CourseSignWebhookURL)
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
+	signHandler.SetSignLimiter(ratelimit.New(cfg.SignRateLimitPerMinute, cfg.SignRateLimitBurst, cfg.SignMaxConcurrent))
 	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)
 	imSignSvc := service.NewIMSignService(database, xxtClient, imClient, credentialCrypto, cfg.IMMinFetchInterval(), cfg.IMFetchTimeout(), cfg.IMEnabled())
 	signHandler.SetIMSignSource(imSignSvc)
@@ -116,6 +118,7 @@ func main() {
 				admin.GET("/sign-records", adminAccountHandler.ListSignRecords)
 				admin.GET("/settings", adminSettingsHandler.Get)
 				admin.PUT("/settings", adminSettingsHandler.Update)
+				admin.GET("/sign-metrics", signHandler.SignMetrics)
 				admin.GET("/accounts/:uid/courses", adminAccountHandler.ListUserCourses)
 				admin.POST("/accounts/:uid/courses", adminAccountHandler.AddUserCourse)
 				admin.POST("/accounts/:uid/courses/sync", adminAccountHandler.SyncUserCourses)

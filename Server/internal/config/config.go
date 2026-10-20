@@ -29,21 +29,26 @@ type CourseLocationPreset struct {
 }
 
 type Config struct {
-	AppEnv                string                 `yaml:"app_env"`
-	HTTPAddr              string                 `yaml:"http_addr"`
-	JWTSecret             string                 `yaml:"jwt_secret"`
-	CredentialSecret      string                 `yaml:"credential_secret"`
-	AllowInsecureTLS      bool                   `yaml:"allow_insecure_tls"`
-	ChaoxingAESKey        string                 `yaml:"chaoxing_aes_key"`
-	ChaoxingFID           string                 `yaml:"chaoxing_fid"`
-	ChaoxingUserAgent     string                 `yaml:"chaoxing_user_agent"`
-	ActivityListLimit     int                    `yaml:"activity_list_limit"`
-	CourseSignWebhookURL  string                 `yaml:"course_sign_webhook_url"`
-	QMXAutoSignWebhookURL string                 `yaml:"qmx_auto_sign_webhook_url"`
-	PostgresDSN           string                 `yaml:"postgres_dsn"`
-	VikunjaBaseURL        string                 `yaml:"vikunja_base_url"`
-	QMXLocationPresets    []QMXLocationPreset    `yaml:"qmx_location_presets"`
-	CourseLocationPresets []CourseLocationPreset `yaml:"course_location_presets"`
+	AppEnv                string `yaml:"app_env"`
+	HTTPAddr              string `yaml:"http_addr"`
+	JWTSecret             string `yaml:"jwt_secret"`
+	CredentialSecret      string `yaml:"credential_secret"`
+	AllowInsecureTLS      bool   `yaml:"allow_insecure_tls"`
+	ChaoxingAESKey        string `yaml:"chaoxing_aes_key"`
+	ChaoxingFID           string `yaml:"chaoxing_fid"`
+	ChaoxingUserAgent     string `yaml:"chaoxing_user_agent"`
+	ActivityListLimit     int    `yaml:"activity_list_limit"`
+	CourseSignWebhookURL  string `yaml:"course_sign_webhook_url"`
+	QMXAutoSignWebhookURL string `yaml:"qmx_auto_sign_webhook_url"`
+	// Sign submission guard. Non-positive values fall back to the defaults in
+	// applySignDefaults; the limiter is per account, in-process.
+	SignRateLimitPerMinute int                    `yaml:"sign_rate_limit_per_minute"`
+	SignRateLimitBurst     int                    `yaml:"sign_rate_limit_burst"`
+	SignMaxConcurrent      int                    `yaml:"sign_max_concurrent"`
+	PostgresDSN            string                 `yaml:"postgres_dsn"`
+	VikunjaBaseURL         string                 `yaml:"vikunja_base_url"`
+	QMXLocationPresets     []QMXLocationPreset    `yaml:"qmx_location_presets"`
+	CourseLocationPresets  []CourseLocationPreset `yaml:"course_location_presets"`
 
 	// Group-chat sign discovery (Easemob IM, fetched on demand while serving
 	// /sign/activities). Endpoints are reverse-engineered and not a public
@@ -77,7 +82,23 @@ func Load() Config {
 		cfg.CourseLocationPresets = defaultCourseLocationPresets()
 	}
 	cfg.applyIMDefaults()
+	cfg.applySignDefaults()
 	return cfg
+}
+
+// applySignDefaults keeps production safe when the new keys are absent from
+// an existing config.yaml: 30 submissions/min, burst 10, at most 2 in flight
+// per account.
+func (c *Config) applySignDefaults() {
+	if c.SignRateLimitPerMinute <= 0 {
+		c.SignRateLimitPerMinute = 30
+	}
+	if c.SignRateLimitBurst <= 0 {
+		c.SignRateLimitBurst = 10
+	}
+	if c.SignMaxConcurrent <= 0 {
+		c.SignMaxConcurrent = 2
+	}
 }
 
 func (c *Config) applyIMDefaults() {

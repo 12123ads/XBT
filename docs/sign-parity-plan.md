@@ -180,6 +180,7 @@ xbt 的签到主链路（活动发现 → 选人 → check → execute → 落�
 #### XBT-S10 指标与限流
 - 结构化日志字段：`activity_id/user_uid/sign_type/result_code/attempt/upstream_status`；指标：成功率、验证码通过率、`validate` 触发率、`errorLocation` 率、上游 403 率、p95 时延。
 - 验收：每次 execute 产生一条结果日志；可按结果码聚合；单用户并发超过阈值返回 429。
+- **实现状态（2026-10-20，`feature/captcha-protocol-fix`）**：已落地——`service.ExecuteOne` 在 `defer` 中输出恰好一行 `sign_execute <json>`（含 `duration_ms`、`success/already_signed`、`validate_triggered/captcha_passed`、`location_error`、`upstream_403`、`has_cxcid`），`xxt.SignResult` 增加 `Attempts/HTTPStatus/CaptchaAttempted/CaptchaPassed`；进程内指标注册表 `internal/observe` 聚合成功率、验证码通过率、`validate` 触发率、`errorLocation` 率、403 率与最近 2048 样本 p95，经管理员接口 `GET /api/admin/sign-metrics` 暴露，并记录 `im_fetch_requests/skipped_stale/timeout/error_codes/latency` 与包含 IM 抓取的 `/sign/activities` p95；`internal/ratelimit` 按目标账号提供令牌桶 + 并发上限，`/sign/execute`、`/sign/photo`、分享执行超限返回 429 + `Retry-After`，阈值由 `sign_rate_limit_per_minute/sign_rate_limit_burst/sign_max_concurrent` 配置。验证：`cd Server && go test ./...`（含 `internal/observe`、`internal/ratelimit`、`internal/handler` 的新增断言）；不记录 token、密码、照片、`clientId`/`sc` 原文。
 
 ### 3.5 执行安排（2026-10-20 决策）
 

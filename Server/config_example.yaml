@@ -25,6 +25,12 @@ chaoxing_fid: ""
 # 每门课程返回给前端的活动上限（默认 5）
 activity_list_limit: 5
 
+# 签到提交限流（按目标账号，进程内令牌桶 + 并发上限）。
+# 缺省或 <=0 时使用 30 次/分钟、突发 10、单账号并发 2。
+sign_rate_limit_per_minute: 30
+sign_rate_limit_burst: 10
+sign_max_concurrent: 2
+
 # 课程签到成功企业微信群机器人 webhook（留空则不推送）
 course_sign_webhook_url: ""
 

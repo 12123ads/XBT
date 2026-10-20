@@ -79,3 +79,17 @@ func TestIMConfigDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("token URL overridden: %s", cfg.IMTokenURL)
 	}
 }
+
+func TestSignLimiterDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{}
+	cfg.applySignDefaults()
+	if cfg.SignRateLimitPerMinute != 30 || cfg.SignRateLimitBurst != 10 || cfg.SignMaxConcurrent != 2 {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+
+	cfg = Config{SignRateLimitPerMinute: 120, SignRateLimitBurst: 20, SignMaxConcurrent: 4}
+	cfg.applySignDefaults()
+	if cfg.SignRateLimitPerMinute != 120 || cfg.SignRateLimitBurst != 20 || cfg.SignMaxConcurrent != 4 {
+		t.Fatalf("overrides not kept: %+v", cfg)
+	}
+}
