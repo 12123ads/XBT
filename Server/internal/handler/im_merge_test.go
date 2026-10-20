@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"xbt2/server/internal/im"
 	"xbt2/server/internal/model"
@@ -12,10 +14,16 @@ import (
 )
 
 type fakeIMSource struct {
-	snapshot service.IMSnapshot
+	snapshot     service.IMSnapshot
+	refreshCalls int
 }
 
 func (f *fakeIMSource) Snapshot(int64) service.IMSnapshot { return f.snapshot }
+
+func (f *fakeIMSource) RefreshIfStale(context.Context, int64) service.IMSnapshot {
+	f.refreshCalls++
+	return f.snapshot
+}
 
 type imActivitiesPayload struct {
 	Code int `json:"code"`
@@ -41,7 +49,7 @@ func TestActivitiesMergesIMGroupSourceAndDeduplicates(t *testing.T) {
 	database, router, upstream, h := handlerSignFixtureParts(t)
 	upstream.activities = []xxt.Active{{ActiveID: 100, Name: "任务列表签到"}, {ActiveID: 101, Name: "任务列表另一个"}}
 	upstream.detail = xxtSignDetail()
-	h.SetIMSignSource(&fakeIMSource{snapshot: service.IMSnapshot{
+	source := &fakeIMSource{snapshot: service.IMSnapshot{
 		Enabled:         true,
 		IntervalSeconds: 30,
 		Activities: []im.SignActivity{
@@ -49,11 +57,15 @@ func TestActivitiesMergesIMGroupSourceAndDeduplicates(t *testing.T) {
 			{ActiveID: 200, Title: "群聊新签到", CourseID: 10, ClassID: 20, AType: 74, SubTitle: "10-20 10:10", MessageTimeMS: 1700000300000},
 			{ActiveID: 300, Title: "未选课程", CourseID: 99, ClassID: 98, AType: 2, MessageTimeMS: 1700000400000},
 		},
-	}})
+	}}
+	h.SetIMSignSource(source)
 
 	response := accessRequest(t, router, http.MethodGet, "/activities", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("activities status=%d body=%s", response.Code, response.Body.String())
+	}
+	if source.refreshCalls != 1 {
+		t.Fatalf("activities did not trigger exactly one on-demand fetch: %d", source.refreshCalls)
 	}
 	var payload imActivitiesPayload
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
@@ -111,7 +123,7 @@ func TestActivitiesMergesIMGroupSourceAndDeduplicates(t *testing.T) {
 	}
 }
 
-func TestActivitiesKeepsTaskListWhenIMPollFailed(t *testing.T) {
+func TestActivitiesKeepsTaskListWhenIMFetchFailed(t *testing.T) {
 	_, router, upstream, h := handlerSignFixtureParts(t)
 	upstream.activities = []xxt.Active{{ActiveID: 100, Name: "任务列表签到"}}
 	upstream.detail = xxtSignDetail()
@@ -150,6 +162,61 @@ func TestActivitiesKeepsTaskListWhenIMPollFailed(t *testing.T) {
 	}
 	if statusPayload.Code != 0 || !statusPayload.Data.Enabled || statusPayload.Data.IntervalSeconds != 30 || statusPayload.Data.ErrorCode != im.CodeAuthFailed {
 		t.Fatalf("unexpected status payload: %s", status.Body.String())
+	}
+}
+
+type handlerIMProvider struct{}
+
+func (handlerIMProvider) GetIMAccount(string, string) (xxt.IMAccount, error) {
+	return xxt.IMAccount{Password: "0bd654e244170185155ddeefe47a8007"}, nil
+}
+
+type handlerIMClient struct {
+	discoverCalls int
+}
+
+func (c *handlerIMClient) Token(context.Context, int64, string) (im.Token, error) {
+	return im.Token{AccessToken: "token-1", Username: "im-user", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (c *handlerIMClient) Discover(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
+	c.discoverCalls++
+	return []im.Group{{ID: "g1"}}, []im.SignActivity{{
+		ActiveID: 200, Title: "群聊签到", CourseID: 10, ClassID: 20, AType: 2, MessageTimeMS: 1700000300000,
+	}}, nil
+}
+
+func TestActivitiesFetchesIMAtMostOncePerInterval(t *testing.T) {
+	database, router, upstream, h := handlerSignFixtureParts(t)
+	upstream.activities = []xxt.Active{{ActiveID: 100, Name: "任务列表签到"}}
+	upstream.detail = xxtSignDetail()
+	client := &handlerIMClient{}
+	cc := service.NewCredentialCrypto("handler-sign-test")
+	h.SetIMSignSource(service.NewIMSignService(database, handlerIMProvider{}, client, cc, time.Minute, time.Second, true))
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := accessRequest(t, router, http.MethodGet, "/activities", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", attempt, response.Code, response.Body.String())
+		}
+		var payload imActivitiesPayload
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, group := range payload.Data {
+			for _, activity := range group.Activities {
+				if activity.ActiveID == 200 && activity.Source == im.SourceIMGroup {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("attempt %d missing IM activity: %s", attempt, response.Body.String())
+		}
+	}
+	if client.discoverCalls != 1 {
+		t.Fatalf("discover calls=%d, want 1 within the interval", client.discoverCalls)
 	}
 }
 

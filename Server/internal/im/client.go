@@ -35,6 +35,7 @@ const (
 	CodeMessagesFailed = "im_messages_failed"
 	CodeParseFailed    = "im_parse_failed"
 	CodeNetwork        = "im_network"
+	CodeTimeout        = "im_timeout"
 	CodeDisabled       = "im_disabled"
 
 	userAgent          = "Easemob-SDK(Android) 4.9.0.1"

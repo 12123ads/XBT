@@ -160,10 +160,12 @@ qmx_location_presets:
     lat: 35.478653540435666
     range: 500
 
-# 群聊签到来源（Easemob IM 轮询）。默认开启；没有 IM 账号的账号会自动跳过。
+# 群聊签到来源（Easemob IM，/sign/activities 刷新时按需抓取）。默认开启。
 # 端点由逆向得到，非公开契约，可按上游变更替换。
+# min_fetch_interval=0 表示禁用按需抓取；进程启动不会发起 IM 请求。
 im_disabled: false
-im_poll_interval_seconds: 30
+im_min_fetch_interval_seconds: 30
+im_fetch_timeout_seconds: 5
 im_token_url: "https://a1-vip6.easemob.com/cx-dev/cxstudy/token"
 im_api_base_url: "https://a1-vip6.easemob.com/cx-dev/cxstudy"
 im_message_base_url: "https://a1-vip6.easecdn.com/cx-dev/cxstudy"

@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	imCredentialTTL      = 10 * time.Minute
-	imCredentialFailTTL  = 5 * time.Minute
-	imAccountPollTimeout = 60 * time.Second
-	imTokenSafetyWindow  = 30 * time.Second
+	imCredentialTTL       = 10 * time.Minute
+	imCredentialFailTTL   = 5 * time.Minute
+	imDefaultFetchTimeout = 5 * time.Second
+	imTokenSafetyWindow   = 30 * time.Second
 )
 
-// IMClient is the Easemob protocol surface used by the poller. It is
-// satisfied by *im.Client and lets tests drive token/retry paths directly.
+// IMClient is the Easemob protocol surface used by the on-demand fetcher. It
+// is satisfied by *im.Client and lets tests drive token/retry paths directly.
 type IMClient interface {
 	Token(ctx context.Context, uid int64, password string) (im.Token, error)
 	Discover(ctx context.Context, token im.Token) ([]im.Group, []im.SignActivity, error)
@@ -32,17 +32,18 @@ type IMAccountProvider interface {
 	GetIMAccount(mobile, password string) (xxt.IMAccount, error)
 }
 
-// IMSnapshot is the last poll result for one account. Activities contains
+// IMSnapshot is the last fetch result for one account. Activities contains
 // only parsed sign-card fields; raw roaming messages are never cached.
 type IMSnapshot struct {
-	Enabled         bool
-	IntervalSeconds int
-	LastPollAt      time.Time
-	LastSuccessAt   time.Time
-	ErrorCode       string
-	GroupCount      int
-	ActivityCount   int
-	Activities      []im.SignActivity
+	Enabled             bool
+	IntervalSeconds     int
+	FetchTimeoutSeconds int
+	LastPollAt          time.Time
+	LastSuccessAt       time.Time
+	ErrorCode           string
+	GroupCount          int
+	ActivityCount       int
+	Activities          []im.SignActivity
 }
 
 type imCredentialCache struct {
@@ -51,17 +52,21 @@ type imCredentialCache struct {
 	expiresAt time.Time
 }
 
-// IMSignService polls Easemob course groups for sign cards. One account is
-// never polled concurrently: RefreshAccount uses a per-uid TryLock and returns
-// the previous snapshot when another poll is already running.
+// IMSignService fetches Easemob course groups on demand while GET
+// /sign/activities is served. There is no background loop and construction
+// sends no upstream requests. One account is never fetched concurrently:
+// RefreshIfStale uses a per-uid TryLock and returns the previous snapshot when
+// another request is already fetching.
 type IMSignService struct {
-	db          *gorm.DB
-	accounts    IMAccountProvider
-	client      IMClient
-	cc          *CredentialCrypto
-	interval    time.Duration
-	enabled     bool
-	intervalSec int
+	db               *gorm.DB
+	accounts         IMAccountProvider
+	client           IMClient
+	cc               *CredentialCrypto
+	minFetchInterval time.Duration
+	fetchTimeout     time.Duration
+	enabled          bool
+	intervalSec      int
+	fetchTimeoutSec  int
 
 	mu        sync.Mutex
 	snapshots map[int64]IMSnapshot
@@ -71,95 +76,69 @@ type IMSignService struct {
 	known     map[int64]map[int64]struct{}
 }
 
-func NewIMSignService(db *gorm.DB, accounts IMAccountProvider, client IMClient, cc *CredentialCrypto, interval time.Duration, enabled bool) *IMSignService {
-	if interval <= 0 {
-		interval = 30 * time.Second
+func NewIMSignService(db *gorm.DB, accounts IMAccountProvider, client IMClient, cc *CredentialCrypto, minFetchInterval, fetchTimeout time.Duration, enabled bool) *IMSignService {
+	if minFetchInterval < 0 {
+		minFetchInterval = 0
 	}
-	intervalSec := int(interval / time.Second)
-	if intervalSec < 1 {
-		intervalSec = 1
+	if fetchTimeout <= 0 {
+		fetchTimeout = imDefaultFetchTimeout
+	}
+	intervalSec := int(minFetchInterval / time.Second)
+	if intervalSec < 0 {
+		intervalSec = 0
 	}
 	return &IMSignService{
-		db:          db,
-		accounts:    accounts,
-		client:      client,
-		cc:          cc,
-		interval:    interval,
-		enabled:     enabled,
-		intervalSec: intervalSec,
-		snapshots:   make(map[int64]IMSnapshot),
-		creds:       make(map[int64]imCredentialCache),
-		tokens:      make(map[int64]im.Token),
-		locks:       make(map[int64]*sync.Mutex),
-		known:       make(map[int64]map[int64]struct{}),
+		db:               db,
+		accounts:         accounts,
+		client:           client,
+		cc:               cc,
+		minFetchInterval: minFetchInterval,
+		fetchTimeout:     fetchTimeout,
+		enabled:          enabled && minFetchInterval > 0,
+		intervalSec:      intervalSec,
+		fetchTimeoutSec:  int(fetchTimeout / time.Second),
+		snapshots:        make(map[int64]IMSnapshot),
+		creds:            make(map[int64]imCredentialCache),
+		tokens:           make(map[int64]im.Token),
+		locks:            make(map[int64]*sync.Mutex),
+		known:            make(map[int64]map[int64]struct{}),
 	}
 }
 
-func (s *IMSignService) Interval() time.Duration { return s.interval }
-
-// Snapshot returns a copy of the last poll result for uid.
+// Snapshot returns a copy of the last fetch result for uid.
 func (s *IMSignService) Snapshot(uid int64) IMSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot, ok := s.snapshots[uid]
 	if !ok {
-		return IMSnapshot{Enabled: s.enabled, IntervalSeconds: s.intervalSec}
+		return IMSnapshot{
+			Enabled:             s.enabled,
+			IntervalSeconds:     s.intervalSec,
+			FetchTimeoutSeconds: s.fetchTimeoutSec,
+		}
 	}
 	snapshot.Enabled = s.enabled
 	snapshot.IntervalSeconds = s.intervalSec
+	snapshot.FetchTimeoutSeconds = s.fetchTimeoutSec
 	snapshot.Activities = append([]im.SignActivity(nil), snapshot.Activities...)
 	return snapshot
 }
 
-// Start launches the polling loop. It polls once immediately, then every
-// configured interval. A slow cycle simply delays the next one; overlapping
-// cycles are never started.
-func (s *IMSignService) Start(ctx context.Context) {
+// RefreshIfStale fetches once when the account's last attempt is older than
+// the configured minimum interval. Concurrent callers never queue: a caller
+// that loses the per-account TryLock immediately gets the previous snapshot.
+func (s *IMSignService) RefreshIfStale(ctx context.Context, uid int64) IMSnapshot {
 	if !s.enabled {
-		log.Printf("im poll disabled")
-		return
+		return s.snapshotWithError(uid, im.CodeDisabled)
 	}
-	go func() {
-		s.pollAll(ctx)
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.pollAll(ctx)
-			}
-		}
-	}()
+	snapshot := s.Snapshot(uid)
+	if !snapshot.LastPollAt.IsZero() && time.Since(snapshot.LastPollAt) < s.minFetchInterval {
+		return snapshot
+	}
+	return s.refreshAccount(ctx, uid, false)
 }
 
-func (s *IMSignService) pollAll(ctx context.Context) {
-	var uids []int64
-	err := s.db.Table("users u").
-		Joins("JOIN whitelists w ON w.mobile = u.mobile").
-		Where("u.permission > 0 AND w.permission > 0 AND length(u.credential_cipher) > 0").
-		Where("EXISTS (SELECT 1 FROM user_courses uc WHERE uc.user_uid = u.uid AND uc.is_selected = true)").
-		Order("u.uid asc").
-		Pluck("u.uid", &uids).Error
-	if err != nil {
-		log.Printf("im poll: source=%s error=%s", im.SourceIMGroup, im.CodeNetwork)
-		return
-	}
-	for _, uid := range uids {
-		if ctx.Err() != nil {
-			return
-		}
-		accountCtx, cancel := context.WithTimeout(ctx, imAccountPollTimeout)
-		s.RefreshAccount(accountCtx, uid)
-		cancel()
-	}
-}
-
-// RefreshAccount performs one complete poll for uid. It never returns an error
-// to callers: failures are recorded in the snapshot's ErrorCode so the normal
-// activity list and sign flow stay available.
-func (s *IMSignService) RefreshAccount(ctx context.Context, uid int64) IMSnapshot {
+func (s *IMSignService) refreshAccount(ctx context.Context, uid int64, force bool) IMSnapshot {
 	if !s.enabled {
 		return s.snapshotWithError(uid, im.CodeDisabled)
 	}
@@ -171,25 +150,34 @@ func (s *IMSignService) RefreshAccount(ctx context.Context, uid int64) IMSnapsho
 
 	startedAt := time.Now()
 	snapshot := s.Snapshot(uid)
+	if !force && !snapshot.LastPollAt.IsZero() && startedAt.Sub(snapshot.LastPollAt) < s.minFetchInterval {
+		return snapshot
+	}
+	// Mark the attempt before touching upstream. A request arriving while this
+	// fetch is running (or after it times out) must not start a second fetch.
 	snapshot.LastPollAt = startedAt
+	s.storeSnapshot(uid, snapshot)
+
+	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
 
 	credentials, err := s.accountCredentials(uid)
 	if err != nil {
 		return s.finishPoll(uid, snapshot, 0, nil, imErrorCode(err))
 	}
-	token, err := s.accountToken(ctx, uid, credentials.password)
+	token, err := s.accountToken(fetchCtx, uid, credentials.password)
 	if err != nil {
 		return s.finishPoll(uid, snapshot, 0, nil, tokenErrorCode(err))
 	}
 
-	groups, activities, err := s.client.Discover(ctx, token)
+	groups, activities, err := s.client.Discover(fetchCtx, token)
 	if errors.Is(err, im.ErrUnauthorized) {
 		s.dropToken(uid)
-		token, tokenErr := s.accountToken(ctx, uid, credentials.password)
+		token, tokenErr := s.accountToken(fetchCtx, uid, credentials.password)
 		if tokenErr != nil {
 			return s.finishPoll(uid, snapshot, 0, nil, tokenErrorCode(tokenErr))
 		}
-		groups, activities, err = s.client.Discover(ctx, token)
+		groups, activities, err = s.client.Discover(fetchCtx, token)
 		if errors.Is(err, im.ErrUnauthorized) {
 			return s.finishPoll(uid, snapshot, 0, nil, im.CodeUnauthorized)
 		}
@@ -202,27 +190,27 @@ func (s *IMSignService) RefreshAccount(ctx context.Context, uid int64) IMSnapsho
 
 func (s *IMSignService) finishPoll(uid int64, snapshot IMSnapshot, groupCount int, activities []im.SignActivity, code string) IMSnapshot {
 	now := time.Now()
+	durationMS := now.Sub(snapshot.LastPollAt).Milliseconds()
 	snapshot.LastPollAt = now
 	snapshot.GroupCount = groupCount
-	snapshot.ActivityCount = len(activities)
 	snapshot.ErrorCode = code
 	if code == "" {
 		snapshot.LastSuccessAt = now
 		snapshot.Activities = append([]im.SignActivity(nil), activities...)
+		snapshot.ActivityCount = len(activities)
 	}
 
 	s.mu.Lock()
 	previous := s.snapshots[uid]
-	if code == "" {
-		s.snapshots[uid] = snapshot
-	} else {
+	if code != "" {
 		// Keep the last successful activity set so a transient IM failure does
 		// not erase discovered sign cards from the list.
 		snapshot.Activities = previous.Activities
 		snapshot.ActivityCount = len(previous.Activities)
 		snapshot.LastSuccessAt = previous.LastSuccessAt
-		s.snapshots[uid] = snapshot
+		snapshot.GroupCount = previous.GroupCount
 	}
+	s.snapshots[uid] = snapshot
 	var discovered []int64
 	if code == "" {
 		known := s.known[uid]
@@ -249,11 +237,17 @@ func (s *IMSignService) finishPoll(uid int64, snapshot IMSnapshot, groupCount in
 		log.Printf("im activity discovered: uid=%d active_id=%d source=%s result=ok", uid, activeID, im.SourceIMGroup)
 	}
 	if code == "" {
-		log.Printf("im poll: uid=%d source=%s groups=%d activities=%d result=ok", uid, im.SourceIMGroup, groupCount, len(activities))
+		log.Printf("im fetch: uid=%d source=%s groups=%d activities=%d result=ok duration_ms=%d", uid, im.SourceIMGroup, groupCount, len(activities), durationMS)
 	} else {
-		log.Printf("im poll: uid=%d source=%s result=%s", uid, im.SourceIMGroup, code)
+		log.Printf("im fetch: uid=%d source=%s result=%s duration_ms=%d", uid, im.SourceIMGroup, code, durationMS)
 	}
 	return snapshot
+}
+
+func (s *IMSignService) storeSnapshot(uid int64, snapshot IMSnapshot) {
+	s.mu.Lock()
+	s.snapshots[uid] = snapshot
+	s.mu.Unlock()
 }
 
 func (s *IMSignService) snapshotWithError(uid int64, code string) IMSnapshot {
@@ -262,9 +256,10 @@ func (s *IMSignService) snapshotWithError(uid int64, code string) IMSnapshot {
 	previous := s.snapshots[uid]
 	previous.Enabled = s.enabled
 	previous.IntervalSeconds = s.intervalSec
+	previous.FetchTimeoutSeconds = s.fetchTimeoutSec
 	previous.ErrorCode = code
-	previous.LastPollAt = time.Now()
 	previous.Activities = append([]im.SignActivity(nil), previous.Activities...)
+	s.snapshots[uid] = previous
 	return previous
 }
 
@@ -349,17 +344,17 @@ func (s *IMSignService) dropToken(uid int64) {
 }
 
 func imErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return im.CodeTimeout
+	}
 	var imErr *im.Error
 	if errors.As(err, &imErr) {
 		switch imErr.Code {
 		case im.CodeAuthFailed, im.CodeNotConfigured, im.CodeUnauthorized,
 			im.CodeTokenFailed, im.CodeGroupsFailed, im.CodeMessagesFailed,
-			im.CodeParseFailed, im.CodeNetwork:
+			im.CodeParseFailed, im.CodeNetwork, im.CodeTimeout:
 			return imErr.Code
 		}
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return im.CodeNetwork
 	}
 	return im.CodeNetwork
 }
@@ -367,7 +362,7 @@ func imErrorCode(err error) string {
 func tokenErrorCode(err error) string {
 	code := imErrorCode(err)
 	switch code {
-	case im.CodeAuthFailed, im.CodeNotConfigured:
+	case im.CodeAuthFailed, im.CodeNotConfigured, im.CodeTimeout, im.CodeUnauthorized:
 		return code
 	default:
 		return im.CodeTokenFailed

@@ -13,6 +13,7 @@ import (
 	"xbt2/server/internal/common"
 	"xbt2/server/internal/im"
 	"xbt2/server/internal/model"
+	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
 )
 
@@ -23,8 +24,7 @@ func activityKey(courseID, classID int64) string {
 // mergeIMActivities adds the last successful IM snapshot to the per-course
 // groups already built from taskactivelist. The same active_id appears once;
 // its sources list records both origins.
-func (h *SignHandler) mergeIMActivities(uid int64, user model.User, password string, selected []selectedCourseInfo, resp []gin.H) {
-	snapshot := h.imSource.Snapshot(uid)
+func (h *SignHandler) mergeIMActivities(uid int64, user model.User, password string, selected []selectedCourseInfo, resp []gin.H, snapshot service.IMSnapshot) {
 	if len(snapshot.Activities) == 0 {
 		return
 	}
@@ -245,25 +245,31 @@ func (h *SignHandler) IMStatus(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	if h.imSource == nil {
 		common.Success(c, gin.H{
-			"enabled":          false,
-			"interval_seconds": 0,
-			"error_code":       im.CodeDisabled,
-			"last_poll_at":     0,
-			"last_success_at":  0,
-			"group_count":      0,
-			"activity_count":   0,
+			"enabled":               false,
+			"interval_seconds":      0,
+			"fetch_timeout_seconds": 0,
+			"error_code":            im.CodeDisabled,
+			"last_poll_at":          0,
+			"last_success_at":       0,
+			"group_count":           0,
+			"activity_count":        0,
 		})
 		return
 	}
 	snapshot := h.imSource.Snapshot(uid)
+	errorCode := snapshot.ErrorCode
+	if !snapshot.Enabled && errorCode == "" {
+		errorCode = im.CodeDisabled
+	}
 	common.Success(c, gin.H{
-		"enabled":          snapshot.Enabled,
-		"interval_seconds": snapshot.IntervalSeconds,
-		"error_code":       snapshot.ErrorCode,
-		"last_poll_at":     unixMilli(snapshot.LastPollAt),
-		"last_success_at":  unixMilli(snapshot.LastSuccessAt),
-		"group_count":      snapshot.GroupCount,
-		"activity_count":   snapshot.ActivityCount,
+		"enabled":               snapshot.Enabled,
+		"interval_seconds":      snapshot.IntervalSeconds,
+		"fetch_timeout_seconds": snapshot.FetchTimeoutSeconds,
+		"error_code":            errorCode,
+		"last_poll_at":          unixMilli(snapshot.LastPollAt),
+		"last_success_at":       unixMilli(snapshot.LastSuccessAt),
+		"group_count":           snapshot.GroupCount,
+		"activity_count":        snapshot.ActivityCount,
 	})
 }
 

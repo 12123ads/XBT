@@ -40,8 +40,11 @@ func TestVikunjaEndpointRejectsAmbiguousDestinations(t *testing.T) {
 func TestIMConfigDefaultsAndOverrides(t *testing.T) {
 	cfg := Config{}
 	cfg.applyIMDefaults()
-	if cfg.IMPollIntervalSeconds != 30 || cfg.IMPollInterval() != 30*time.Second {
-		t.Fatalf("default interval: %d %v", cfg.IMPollIntervalSeconds, cfg.IMPollInterval())
+	if cfg.IMMinFetchInterval() != 30*time.Second || cfg.IMFetchTimeout() != 5*time.Second {
+		t.Fatalf("defaults: interval=%v timeout=%v", cfg.IMMinFetchInterval(), cfg.IMFetchTimeout())
+	}
+	if cfg.IMMinFetchIntervalSeconds == nil || *cfg.IMMinFetchIntervalSeconds != 30 {
+		t.Fatalf("default min interval pointer: %+v", cfg.IMMinFetchIntervalSeconds)
 	}
 	if cfg.IMTokenURL != "https://a1-vip6.easemob.com/cx-dev/cxstudy/token" ||
 		cfg.IMAPIBaseURL != "https://a1-vip6.easemob.com/cx-dev/cxstudy" ||
@@ -49,18 +52,27 @@ func TestIMConfigDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("unexpected default endpoints: %+v", cfg)
 	}
 	if !cfg.IMEnabled() {
-		t.Fatal("IM polling should default to enabled")
+		t.Fatal("IM fetch should default to enabled")
 	}
 
+	zero := 0
+	cfg = Config{IMMinFetchIntervalSeconds: &zero}
+	cfg.applyIMDefaults()
+	if cfg.IMEnabled() || cfg.IMMinFetchInterval() != 0 {
+		t.Fatalf("min interval 0 must disable fetch: %+v", cfg)
+	}
+
+	override := 120
 	cfg = Config{
-		IMDisabled:            true,
-		IMPollIntervalSeconds: 120,
-		IMTokenURL:            "https://example.test/token",
-		IMAPIBaseURL:          "https://example.test/api",
-		IMMessageBaseURL:      "https://example.test/messages",
+		IMDisabled:                true,
+		IMMinFetchIntervalSeconds: &override,
+		IMFetchTimeoutSeconds:     9,
+		IMTokenURL:                "https://example.test/token",
+		IMAPIBaseURL:              "https://example.test/api",
+		IMMessageBaseURL:          "https://example.test/messages",
 	}
 	cfg.applyIMDefaults()
-	if cfg.IMPollInterval() != 120*time.Second || cfg.IMEnabled() {
+	if cfg.IMMinFetchInterval() != 120*time.Second || cfg.IMFetchTimeout() != 9*time.Second || cfg.IMEnabled() {
 		t.Fatalf("override not applied: %+v", cfg)
 	}
 	if cfg.IMTokenURL != "https://example.test/token" {

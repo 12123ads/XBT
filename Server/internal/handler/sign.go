@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -43,6 +44,7 @@ type signActivityClient interface {
 // taskactivelist response.
 type imActivitySource interface {
 	Snapshot(uid int64) service.IMSnapshot
+	RefreshIfStale(ctx context.Context, uid int64) service.IMSnapshot
 }
 
 type SignHandler struct {
@@ -128,8 +130,9 @@ func (h *SignHandler) Activities(c *gin.Context) {
 		return
 	}
 
-	if h.imSource != nil {
-		h.mergeIMActivities(uid, user, password, selected, resp)
+	if h.imSource != nil && len(selected) > 0 {
+		snapshot := h.imSource.RefreshIfStale(c.Request.Context(), uid)
+		h.mergeIMActivities(uid, user, password, selected, resp, snapshot)
 	}
 
 	// 课程分组按“组内最新活动时间”倒序

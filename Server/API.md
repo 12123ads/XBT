@@ -546,7 +546,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 
 说明：`contributions_enabled` 由管理员通过 `PUT /api/admin/settings` 修改。关闭后主页隐藏贡献榜入口，`GET /api/sign/contributions` 返回 `403`。`class_admin_group_id/name` 仅当当前账号是某个班级的班级管理员时返回。
 
-### 5.9 群聊签到轮询状态
+### 5.9 群聊签到按需抓取状态
 - Method: `GET`
 - Path: `/api/sign/im/status`
 - Auth: 是
@@ -557,6 +557,7 @@ curl -X POST http://localhost:3030/api/sign/photo \
 {
   "enabled": true,
   "interval_seconds": 30,
+  "fetch_timeout_seconds": 5,
   "error_code": "",
   "last_poll_at": 1760000200000,
   "last_success_at": 1760000200000,
@@ -566,20 +567,23 @@ curl -X POST http://localhost:3030/api/sign/photo \
 ```
 
 `error_code` 可能值：
-- `""`: 最近一轮成功。
+- `""`: 最近一次抓取成功。
 - `im_auth_failed`: 学习通凭据或 IM 密码解密失败。
 - `im_not_configured`: 该账号没有 Easemob IM 账号。
 - `im_unauthorized`: 重取 token 后仍返回 401/408。
 - `im_token_failed`: token 端点失败。
 - `im_groups_failed` / `im_messages_failed`: 群列表/消息端点失败。
 - `im_parse_failed`: 上游响应无法解析。
+- `im_timeout`: 抓取超过 `im_fetch_timeout_seconds`。
 - `im_network`: 网络或未知失败。
-- `im_disabled`: 服务端关闭了群聊轮询（`im_disabled: true`）。
+- `im_disabled`: 服务端关闭了群聊抓取（`im_disabled: true` 或 `im_min_fetch_interval_seconds: 0`）。
 
 说明：
-- 默认每账号 `30s` 轮询一次，可通过 `im_poll_interval_seconds` 配置；同一账号并发轮询不超过 1。
-- 轮询只缓存解析后的签到字段（`active_id/title/course/atype`），不持久化原始消息、IM 密码或 `access_token`。
-- 只有 `401/408` 会触发一次 token 重取并重试一次；第二次仍失败则记录 `im_unauthorized` 并结束本轮。
+- 触发方式为 **B 方案**：`GET /api/sign/activities` 处理时，若距上次抓取 ≥ `im_min_fetch_interval_seconds`（默认 `30`）则同步抓一次，硬超时 `im_fetch_timeout_seconds`（默认 `5s`）；否则直接用快照，不发上游请求。没有后台 ticker，进程启动时不抓取。
+- 同一账号并发抓取不超过 1：已有抓取在跑时，本次请求直接用旧快照返回，不排队、不阻塞列表。
+- 抓取只缓存解析后的签到字段（`active_id/title/course/atype`），不持久化原始消息、IM 密码或 `access_token`。
+- 只有 `401/408` 会触发一次 token 重取并重试一次；第二次仍失败则记录 `im_unauthorized` 并结束本次抓取。
+- 抓取失败只写 `error_code`，`taskactivelist` 结果照常返回。
 
 ---
 

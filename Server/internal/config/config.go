@@ -45,13 +45,15 @@ type Config struct {
 	QMXLocationPresets    []QMXLocationPreset    `yaml:"qmx_location_presets"`
 	CourseLocationPresets []CourseLocationPreset `yaml:"course_location_presets"`
 
-	// Group-chat sign discovery (Easemob IM polling). Endpoints are
-	// reverse-engineered and not a public contract, so they stay configurable.
-	IMDisabled            bool   `yaml:"im_disabled"`
-	IMPollIntervalSeconds int    `yaml:"im_poll_interval_seconds"`
-	IMTokenURL            string `yaml:"im_token_url"`
-	IMAPIBaseURL          string `yaml:"im_api_base_url"`
-	IMMessageBaseURL      string `yaml:"im_message_base_url"`
+	// Group-chat sign discovery (Easemob IM, fetched on demand while serving
+	// /sign/activities). Endpoints are reverse-engineered and not a public
+	// contract, so they stay configurable. A min interval of 0 disables fetch.
+	IMDisabled                bool   `yaml:"im_disabled"`
+	IMMinFetchIntervalSeconds *int   `yaml:"im_min_fetch_interval_seconds"`
+	IMFetchTimeoutSeconds     int    `yaml:"im_fetch_timeout_seconds"`
+	IMTokenURL                string `yaml:"im_token_url"`
+	IMAPIBaseURL              string `yaml:"im_api_base_url"`
+	IMMessageBaseURL          string `yaml:"im_message_base_url"`
 }
 
 func Load() Config {
@@ -79,8 +81,12 @@ func Load() Config {
 }
 
 func (c *Config) applyIMDefaults() {
-	if c.IMPollIntervalSeconds <= 0 {
-		c.IMPollIntervalSeconds = 30
+	if c.IMMinFetchIntervalSeconds == nil {
+		seconds := 30
+		c.IMMinFetchIntervalSeconds = &seconds
+	}
+	if c.IMFetchTimeoutSeconds <= 0 {
+		c.IMFetchTimeoutSeconds = 5
 	}
 	if strings.TrimSpace(c.IMTokenURL) == "" {
 		c.IMTokenURL = im.DefaultTokenURL
@@ -93,16 +99,27 @@ func (c *Config) applyIMDefaults() {
 	}
 }
 
-func (c Config) IMPollInterval() time.Duration {
-	seconds := c.IMPollIntervalSeconds
+func (c Config) IMMinFetchInterval() time.Duration {
+	if c.IMMinFetchIntervalSeconds == nil {
+		return 30 * time.Second
+	}
+	seconds := *c.IMMinFetchIntervalSeconds
+	if seconds < 0 {
+		seconds = 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (c Config) IMFetchTimeout() time.Duration {
+	seconds := c.IMFetchTimeoutSeconds
 	if seconds <= 0 {
-		seconds = 30
+		seconds = 5
 	}
 	return time.Duration(seconds) * time.Second
 }
 
 func (c Config) IMEnabled() bool {
-	return !c.IMDisabled
+	return !c.IMDisabled && c.IMMinFetchInterval() > 0
 }
 
 // NormalizeVikunjaBaseURL is shared by configured endpoints and credential bindings.

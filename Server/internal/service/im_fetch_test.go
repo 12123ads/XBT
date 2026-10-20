@@ -105,10 +105,10 @@ func imServiceFixture(t *testing.T) (*gorm.DB, *CredentialCrypto, int64) {
 func newTestIMService(t *testing.T, provider IMAccountProvider, client IMClient) (*IMSignService, *CredentialCrypto, int64) {
 	t.Helper()
 	database, cc, uid := imServiceFixture(t)
-	return NewIMSignService(database, provider, client, cc, 30*time.Second, true), cc, uid
+	return NewIMSignService(database, provider, client, cc, 30*time.Second, 5*time.Second, true), cc, uid
 }
 
-func TestIMRefreshAccountDiscoversActivities(t *testing.T) {
+func TestIMFetchDiscoversActivities(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{UID: 101, Password: imTestEncryptedPassword}}
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
 		return []im.Group{{ID: "g1"}, {ID: "g2"}}, []im.SignActivity{
@@ -117,7 +117,7 @@ func TestIMRefreshAccountDiscoversActivities(t *testing.T) {
 		}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.RefreshAccount(context.Background(), uid)
+	snapshot := svc.refreshAccount(context.Background(), uid, true)
 	if snapshot.ErrorCode != "" || snapshot.GroupCount != 2 || snapshot.ActivityCount != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
@@ -132,7 +132,7 @@ func TestIMRefreshAccountDiscoversActivities(t *testing.T) {
 	}
 }
 
-func TestIMRefreshAccountRefreshesTokenOnceAfterUnauthorized(t *testing.T) {
+func TestIMFetchRefreshesTokenOnceAfterUnauthorized(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	attempts := 0
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
@@ -143,7 +143,7 @@ func TestIMRefreshAccountRefreshesTokenOnceAfterUnauthorized(t *testing.T) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{ActiveID: 7, CourseID: 1, ClassID: 2, AType: 2}}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.RefreshAccount(context.Background(), uid)
+	snapshot := svc.refreshAccount(context.Background(), uid, true)
 	if snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
@@ -156,13 +156,13 @@ func TestIMRefreshAccountRefreshesTokenOnceAfterUnauthorized(t *testing.T) {
 	}
 }
 
-func TestIMRefreshAccountStopsAfterSecondUnauthorized(t *testing.T) {
+func TestIMFetchStopsAfterSecondUnauthorized(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
 		return nil, nil, &im.Error{Code: im.CodeUnauthorized, Status: 401}
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	snapshot := svc.RefreshAccount(context.Background(), uid)
+	snapshot := svc.refreshAccount(context.Background(), uid, true)
 	if snapshot.ErrorCode != im.CodeUnauthorized {
 		t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, im.CodeUnauthorized)
 	}
@@ -172,7 +172,7 @@ func TestIMRefreshAccountStopsAfterSecondUnauthorized(t *testing.T) {
 	}
 }
 
-func TestIMRefreshAccountMapsCredentialFailures(t *testing.T) {
+func TestIMFetchMapsCredentialFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		provider *fakeIMAccountProvider
@@ -197,7 +197,7 @@ func TestIMRefreshAccountMapsCredentialFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &fakeIMClient{}
 			svc, _, uid := newTestIMService(t, tc.provider, client)
-			snapshot := svc.RefreshAccount(context.Background(), uid)
+			snapshot := svc.refreshAccount(context.Background(), uid, true)
 			if snapshot.ErrorCode != tc.want {
 				t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, tc.want)
 			}
@@ -208,7 +208,7 @@ func TestIMRefreshAccountMapsCredentialFailures(t *testing.T) {
 	}
 }
 
-func TestIMRefreshAccountRetainsLastSuccessOnFailure(t *testing.T) {
+func TestIMFetchRetainsLastSuccessOnFailure(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	fail := false
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
@@ -218,11 +218,11 @@ func TestIMRefreshAccountRetainsLastSuccessOnFailure(t *testing.T) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{ActiveID: 55, CourseID: 1, ClassID: 2, AType: 2}}, nil
 	}}
 	svc, _, uid := newTestIMService(t, provider, client)
-	if snapshot := svc.RefreshAccount(context.Background(), uid); snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
+	if snapshot := svc.refreshAccount(context.Background(), uid, true); snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
 		t.Fatalf("initial poll: %+v", snapshot)
 	}
 	fail = true
-	snapshot := svc.RefreshAccount(context.Background(), uid)
+	snapshot := svc.refreshAccount(context.Background(), uid, true)
 	if snapshot.ErrorCode != im.CodeNetwork {
 		t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, im.CodeNetwork)
 	}
@@ -231,7 +231,7 @@ func TestIMRefreshAccountRetainsLastSuccessOnFailure(t *testing.T) {
 	}
 }
 
-func TestIMConcurrentPollIsSingleFlightPerAccount(t *testing.T) {
+func TestIMConcurrentFetchIsSingleFlightPerAccount(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -248,7 +248,7 @@ func TestIMConcurrentPollIsSingleFlightPerAccount(t *testing.T) {
 	svc, _, uid := newTestIMService(t, provider, client)
 
 	firstDone := make(chan IMSnapshot, 1)
-	go func() { firstDone <- svc.RefreshAccount(context.Background(), uid) }()
+	go func() { firstDone <- svc.refreshAccount(context.Background(), uid, true) }()
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -256,7 +256,7 @@ func TestIMConcurrentPollIsSingleFlightPerAccount(t *testing.T) {
 	}
 
 	secondDone := make(chan IMSnapshot, 1)
-	go func() { secondDone <- svc.RefreshAccount(context.Background(), uid) }()
+	go func() { secondDone <- svc.refreshAccount(context.Background(), uid, true) }()
 	select {
 	case <-secondDone:
 	case <-time.After(2 * time.Second):
@@ -270,32 +270,75 @@ func TestIMConcurrentPollIsSingleFlightPerAccount(t *testing.T) {
 	}
 }
 
-func TestIMPollAllPollsOnlyAccountsWithSelectedCourses(t *testing.T) {
+func TestIMRefreshIfStaleRespectsMinInterval(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{ActiveID: 5, CourseID: 10, ClassID: 20, AType: 2}}, nil
 	}}
-	database, cc, uid := imServiceFixture(t)
-	svc := NewIMSignService(database, provider, client, cc, 30*time.Second, true)
+	svc, _, uid := newTestIMService(t, provider, client)
 
-	svc.pollAll(context.Background())
-	if provider.calls != 0 {
-		t.Fatalf("polled account without selected courses: %d", provider.calls)
+	first := svc.RefreshIfStale(context.Background(), uid)
+	if first.ErrorCode != "" || first.ActivityCount != 1 {
+		t.Fatalf("first fetch: %+v", first)
+	}
+	_, discoverCalls := client.counts()
+	if discoverCalls != 1 {
+		t.Fatalf("discover calls=%d, want 1", discoverCalls)
 	}
 
-	if err := database.Create(&model.UserCourse{UserUID: uid, CourseID: 10, ClassID: 20, IsSelected: true}).Error; err != nil {
-		t.Fatal(err)
+	second := svc.RefreshIfStale(context.Background(), uid)
+	if second.ErrorCode != "" || second.ActivityCount != 1 {
+		t.Fatalf("cached snapshot: %+v", second)
 	}
-	svc.pollAll(context.Background())
-	if provider.calls != 1 {
-		t.Fatalf("provider calls=%d, want 1", provider.calls)
+	if _, discoverCalls := client.counts(); discoverCalls != 1 {
+		t.Fatalf("second request inside interval fetched upstream: %d", discoverCalls)
 	}
-	if snapshot := svc.Snapshot(uid); snapshot.ErrorCode != "" || snapshot.ActivityCount != 1 {
-		t.Fatalf("unexpected snapshot: %+v", snapshot)
+
+	svc.mu.Lock()
+	snapshot := svc.snapshots[uid]
+	snapshot.LastPollAt = time.Now().Add(-31 * time.Second)
+	svc.snapshots[uid] = snapshot
+	svc.mu.Unlock()
+	_ = svc.RefreshIfStale(context.Background(), uid)
+	if _, discoverCalls := client.counts(); discoverCalls != 2 {
+		t.Fatalf("stale snapshot did not fetch: %d", discoverCalls)
 	}
 }
 
-func TestIMPollLogsDoNotContainSecrets(t *testing.T) {
+func TestIMRefreshIfStaleTimesOutAndDegrades(t *testing.T) {
+	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
+	client := &fakeIMClient{discover: func(ctx context.Context, _ im.Token) ([]im.Group, []im.SignActivity, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}}
+	database, cc, uid := imServiceFixture(t)
+	svc := NewIMSignService(database, provider, client, cc, 30*time.Second, 50*time.Millisecond, true)
+
+	started := time.Now()
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
+	if snapshot.ErrorCode != im.CodeTimeout {
+		t.Fatalf("error_code=%q, want %q", snapshot.ErrorCode, im.CodeTimeout)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("fetch timeout not enforced: %v", elapsed)
+	}
+}
+
+func TestIMRefreshIfStaleDisabledWhenIntervalZero(t *testing.T) {
+	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
+	client := &fakeIMClient{}
+	database, cc, uid := imServiceFixture(t)
+	svc := NewIMSignService(database, provider, client, cc, 0, 5*time.Second, true)
+	snapshot := svc.RefreshIfStale(context.Background(), uid)
+	if snapshot.Enabled || snapshot.ErrorCode != im.CodeDisabled {
+		t.Fatalf("unexpected disabled snapshot: %+v", snapshot)
+	}
+	if tokenCalls, discoverCalls := client.counts(); tokenCalls != 0 || discoverCalls != 0 {
+		t.Fatalf("disabled service contacted upstream: token=%d discover=%d", tokenCalls, discoverCalls)
+	}
+}
+
+func TestIMFetchLogsDoNotContainSecrets(t *testing.T) {
 	provider := &fakeIMAccountProvider{account: xxt.IMAccount{Password: imTestEncryptedPassword}}
 	client := &fakeIMClient{discover: func(context.Context, im.Token) ([]im.Group, []im.SignActivity, error) {
 		return []im.Group{{ID: "g1"}}, []im.SignActivity{{
@@ -309,7 +352,7 @@ func TestIMPollLogsDoNotContainSecrets(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	defer log.SetOutput(previous)
-	snapshot := svc.RefreshAccount(context.Background(), uid)
+	snapshot := svc.refreshAccount(context.Background(), uid, true)
 	if snapshot.ErrorCode != "" {
 		t.Fatalf("unexpected error: %s", snapshot.ErrorCode)
 	}

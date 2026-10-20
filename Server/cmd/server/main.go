@@ -37,7 +37,7 @@ func main() {
 	signSvc := service.NewSignService(database, xxtClient, credentialCrypto, courseSignWebhook)
 	signHandler := handler.NewSignHandler(database, xxtClient, credentialCrypto, signSvc, cfg.ActivityListLimit, runtimeSettingsSvc)
 	imClient := im.New(cfg.IMTokenURL, cfg.IMAPIBaseURL, cfg.IMMessageBaseURL)
-	imSignSvc := service.NewIMSignService(database, xxtClient, imClient, credentialCrypto, cfg.IMPollInterval(), cfg.IMEnabled())
+	imSignSvc := service.NewIMSignService(database, xxtClient, imClient, credentialCrypto, cfg.IMMinFetchInterval(), cfg.IMFetchTimeout(), cfg.IMEnabled())
 	signHandler.SetIMSignSource(imSignSvc)
 	whitelistHandler := handler.NewWhitelistHandler(database)
 	adminAccountHandler := handler.NewAdminAccountHandler(database, xxtClient, credentialCrypto)
@@ -140,7 +140,6 @@ func main() {
 
 	qmxAutoSignSvc.StartScheduler(context.Background())
 	vikunjaSyncSvc.StartScheduler(context.Background())
-	imSignSvc.Start(context.Background())
 	log.Printf("xbt2 server listening on %s (app_env=%s, gin_mode=%s)", cfg.HTTPAddr, cfg.AppEnv, gin.Mode())
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("server start failed: %v", err)
