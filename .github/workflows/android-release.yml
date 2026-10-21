@@ -10,7 +10,9 @@ name: Android Release
 #   XBT_TARGET_URL       https:// front-end origin baked into strings.xml
 #
 # Publishing the APK to Server/releases/ is intentionally manual; see
-# DEPLOY.md. This workflow only creates the GitHub Release assets.
+# DEPLOY.md. This workflow only creates the GitHub Release assets. Every
+# release also carries a byte-identical xbt-latest.apk so the web download
+# link can use /releases/latest/download/xbt-latest.apk.
 
 on:
   push:
@@ -405,9 +407,28 @@ jobs:
           )
           APK_SHA256_FILE="$APK.sha256"
 
+          # GitHub serves /releases/latest/download/<asset> as a stable URL.
+          # Keep a fixed-name copy in every release so the web download link
+          # does not need to know the current version.
+          APK_LATEST_NAME="xbt-latest.apk"
+          APK_LATEST="$OUT_DIR/$APK_LATEST_NAME"
+          cp -p "$APK" "$APK_LATEST"
+          if ! cmp -s "$APK" "$APK_LATEST"; then
+            echo "::error::xbt-latest.apk is not byte-identical to $APK_NAME"
+            exit 1
+          fi
+          (
+            cd "$OUT_DIR"
+            sha256sum "$APK_LATEST_NAME" > "$APK_LATEST_NAME.sha256"
+            sha256sum -c "$APK_LATEST_NAME.sha256"
+          )
+          APK_LATEST_SHA256_FILE="$APK_LATEST.sha256"
+
           {
             echo "APK_PATH=$APK"
             echo "APK_SHA256_PATH=$APK_SHA256_FILE"
+            echo "APK_LATEST_PATH=$APK_LATEST"
+            echo "APK_LATEST_SHA256_PATH=$APK_LATEST_SHA256_FILE"
             echo "APK_SHA256=$APK_SHA256"
             echo "APK_SIZE=$APK_SIZE"
           } >> "$GITHUB_ENV"
@@ -424,10 +445,13 @@ jobs:
             echo "| signer SHA-256 | $SIGNER_SHA256 |"
             echo "| APK SHA-256 | $APK_SHA256 |"
             echo "| size (bytes) | $APK_SIZE |"
+            echo "| versioned asset | $APK_NAME |"
+            echo "| stable asset | $APK_LATEST_NAME |"
             echo "| commit | $RELEASE_COMMIT |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "APK: $APK_NAME"
+          echo "Stable asset: $APK_LATEST_NAME"
           echo "SHA-256: $APK_SHA256"
           echo "size: $APK_SIZE bytes"
 
@@ -441,15 +465,17 @@ jobs:
             echo "::error::Release '$RELEASE_TAG' already exists; refusing to overwrite its assets"
             exit 1
           fi
-          gh release create "$RELEASE_TAG" "$APK_PATH" "$APK_SHA256_PATH" \
+          gh release create "$RELEASE_TAG" "$APK_PATH" "$APK_SHA256_PATH" "$APK_LATEST_PATH" "$APK_LATEST_SHA256_PATH" \
             --verify-tag \
             --title "XBT $VERSION_NAME" \
             --notes "versionCode: $VERSION_CODE
           versionName: $VERSION_NAME
           commit: $RELEASE_COMMIT
 
-          Signed APK: $APK_NAME
+          Versioned APK: $APK_NAME
+          Stable APK: xbt-latest.apk (same bytes as $APK_NAME)
           SHA-256: $APK_SHA256
+          Stable URL: https://github.com/12123ads/XBT/releases/latest/download/xbt-latest.apk
 
           This GitHub Release is not served by the in-app update endpoint yet.
           Copy the APK to Server/releases/ and update releases.json, then restart the server."
