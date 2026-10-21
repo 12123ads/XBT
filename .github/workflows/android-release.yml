@@ -1,0 +1,461 @@
+name: Android Release
+
+# Builds, signs and publishes the release APK when a version tag is pushed.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   XBT_KEYSTORE_BASE64  base64 of xbt-release.jks
+#   XBT_STORE_PASS       keystore password
+#   XBT_KEY_PASS         key password
+#   XBT_KEY_ALIAS        key alias (defaults to xbt)
+#   XBT_TARGET_URL       https:// front-end origin baked into strings.xml
+#
+# Publishing the APK to Server/releases/ is intentionally manual; see
+# DEPLOY.md. This workflow only creates the GitHub Release assets.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing git tag to build and publish (for example v2.0.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  ANDROID_COMPILE_SDK: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+  # Signing certificate of the published 2.0.2 APK. Every future release must
+  # use the same key or existing installs cannot be upgraded in place.
+  EXPECTED_SIGNER_SHA256: '7c2d4994c5bb5f6b27b46aab58253d6ef2fe3e457ea1ceab88d239e00daa6919'
+
+jobs:
+  release:
+    name: Build and publish signed APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag, version and published baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE_TAG" =~ [[:space:]] ]]; then
+            echo "::error::Release tag must not contain whitespace: '$RELEASE_TAG'"
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            echo "::error::Release tag must start with 'v': '$RELEASE_TAG'"
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "::error::Tag '${RELEASE_TAG}' does not exist in this repository"
+            exit 1
+          fi
+
+          GRADLE_FILE="Android/app/build.gradle.kts"
+          MANIFEST="Server/releases/releases.json"
+          VERSION_CODE="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$GRADLE_FILE" | head -n 1)"
+          VERSION_NAME="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' "$GRADLE_FILE" | head -n 1)"
+
+          if [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]] || (( VERSION_CODE <= 0 )); then
+            echo "::error::Cannot read a positive versionCode from $GRADLE_FILE"
+            exit 1
+          fi
+          if [[ ! "$VERSION_NAME" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+            echo "::error::Cannot read a safe versionName from $GRADLE_FILE"
+            exit 1
+          fi
+
+          TAG_VERSION="${RELEASE_TAG#v}"
+          if [[ "$TAG_VERSION" != "$VERSION_NAME" ]]; then
+            echo "::error::Tag '${RELEASE_TAG}' does not match versionName '${VERSION_NAME}' in $GRADLE_FILE"
+            echo "Bump versionName and versionCode together, then tag the commit."
+            exit 1
+          fi
+
+          COMPILE_SDK="$(sed -nE 's/^[[:space:]]*compileSdk[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$GRADLE_FILE" | head -n 1)"
+          if [[ "$COMPILE_SDK" != "$ANDROID_COMPILE_SDK" ]]; then
+            echo "::error::compileSdk=$COMPILE_SDK in $GRADLE_FILE does not match ANDROID_COMPILE_SDK=$ANDROID_COMPILE_SDK"
+            echo "Update the workflow's pinned SDK versions together with the app."
+            exit 1
+          fi
+
+          if [[ ! -f "$MANIFEST" ]]; then
+            echo "::error::Release manifest not found: $MANIFEST"
+            exit 1
+          fi
+          PUBLISHED_VERSION_CODE="$(python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  manifest = json.load(handle)
+              value = manifest["latest"]["versionCode"]
+              if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                  raise ValueError("latest.versionCode must be a positive integer")
+          except Exception as exc:  # noqa: BLE001 - surface the exact parse failure
+              sys.stderr.write(f"cannot read latest.versionCode from {sys.argv[1]}: {exc}\n")
+              sys.exit(1)
+          print(value)
+          PY
+          )"
+
+          if (( VERSION_CODE <= PUBLISHED_VERSION_CODE )); then
+            echo "::error::versionCode must increase monotonically: current=${VERSION_CODE} published=${PUBLISHED_VERSION_CODE}"
+            echo "Bump versionCode in $GRADLE_FILE before tagging another release."
+            exit 1
+          fi
+
+          EXPECTED_PACKAGE="$(python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  package = json.load(handle)["package"]
+              if not isinstance(package, str) or not package.strip():
+                  raise ValueError("package must be a non-empty string")
+          except Exception as exc:  # noqa: BLE001 - surface the exact parse failure
+              sys.stderr.write(f"cannot read package from {sys.argv[1]}: {exc}\n")
+              sys.exit(1)
+          print(package.strip())
+          PY
+          )"
+
+          if [[ ! "$EXPECTED_PACKAGE" =~ ^[A-Za-z0-9_.]+$ ]]; then
+            echo "::error::Manifest package name contains unsupported characters: '$EXPECTED_PACKAGE'"
+            exit 1
+          fi
+
+          RELEASE_COMMIT="$(git rev-parse HEAD)"
+          {
+            echo "VERSION_CODE=$VERSION_CODE"
+            echo "VERSION_NAME=$VERSION_NAME"
+            echo "APK_NAME=xbt-${VERSION_NAME}.apk"
+            echo "EXPECTED_PACKAGE=$EXPECTED_PACKAGE"
+            echo "RELEASE_COMMIT=$RELEASE_COMMIT"
+          } >> "$GITHUB_ENV"
+
+          echo "Release tag: $RELEASE_TAG"
+          echo "versionCode: $VERSION_CODE (published: $PUBLISHED_VERSION_CODE)"
+          echo "versionName: $VERSION_NAME"
+          echo "package: $EXPECTED_PACKAGE"
+          echo "commit: $RELEASE_COMMIT"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            Android/**/*.gradle*
+            Android/gradle/wrapper/gradle-wrapper.properties
+            Android/gradle/libs.versions.toml
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Web/package-lock.json
+
+      - name: Install pinned Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$SDK_ROOT" || ! -d "$SDK_ROOT" ]]; then
+            echo "::error::Android SDK not found; ANDROID_HOME/ANDROID_SDK_ROOT is unset"
+            exit 1
+          fi
+
+          BUILD_TOOLS_DIR="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS"
+          PLATFORM_DIR="$SDK_ROOT/platforms/android-$ANDROID_COMPILE_SDK"
+          if [[ ! -d "$BUILD_TOOLS_DIR" || ! -d "$PLATFORM_DIR" ]]; then
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+            if [[ ! -x "$SDKMANAGER" ]]; then
+              SDKMANAGER="$(command -v sdkmanager || true)"
+            fi
+            if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
+              echo "::error::sdkmanager not found; cannot install platforms;android-$ANDROID_COMPILE_SDK and build-tools;$ANDROID_BUILD_TOOLS"
+              exit 1
+            fi
+            yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+            "$SDKMANAGER" --install "platforms;android-$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
+          fi
+
+          for tool in zipalign apksigner aapt2; do
+            if [[ ! -x "$BUILD_TOOLS_DIR/$tool" ]]; then
+              echo "::error::Missing $BUILD_TOOLS_DIR/$tool"
+              exit 1
+            fi
+          done
+          echo "Android SDK: $SDK_ROOT"
+          echo "Build tools: $BUILD_TOOLS_DIR"
+
+      - name: Build web assets and sync into APK
+        shell: bash
+        working-directory: Web
+        run: |
+          set -euo pipefail
+          npm ci --include=dev --no-audit --no-fund
+          npm run build
+          test -f dist/index.html
+          rm -rf ../Android/app/src/main/assets/web
+          mkdir -p ../Android/app/src/main/assets/web
+          cp -a dist/. ../Android/app/src/main/assets/web/
+          test -f ../Android/app/src/main/assets/web/index.html
+
+      - name: Generate strings.xml
+        shell: bash
+        env:
+          XBT_TARGET_URL: ${{ secrets.XBT_TARGET_URL }}
+        run: |
+          set -euo pipefail
+          TEMPLATE="Android/strings_example.xml"
+          OUT="Android/app/src/main/res/values/strings.xml"
+          python3 - "$TEMPLATE" "$OUT" <<'PY'
+          import os
+          import re
+          import sys
+          from urllib.parse import urlparse
+          from xml.sax.saxutils import escape
+
+          template_path, out_path = sys.argv[1], sys.argv[2]
+          target_url = os.environ.get("XBT_TARGET_URL", "").strip()
+          if not target_url:
+              sys.exit("XBT_TARGET_URL secret is empty")
+          if any(ch.isspace() for ch in target_url):
+              sys.exit("XBT_TARGET_URL must not contain whitespace")
+          parsed = urlparse(target_url)
+          if parsed.scheme != "https" or not parsed.netloc or not parsed.hostname:
+              sys.exit("XBT_TARGET_URL must be an absolute https:// URL")
+          if parsed.username or parsed.password:
+              sys.exit("XBT_TARGET_URL must not contain credentials")
+          if parsed.hostname.lower() == "xbt.example.com":
+              sys.exit("XBT_TARGET_URL must not be the placeholder xbt.example.com")
+
+          with open(template_path, encoding="utf-8") as handle:
+              content = handle.read()
+          pattern = re.compile(r'(<string name="target_url">)(.*?)(</string>)', re.S)
+          if len(pattern.findall(content)) != 1:
+              sys.exit(f"expected exactly one target_url string in {template_path}")
+          content = pattern.sub(
+              lambda match: match.group(1) + escape(target_url) + match.group(3),
+              content,
+              count=1,
+          )
+          with open(out_path, "w", encoding="utf-8") as handle:
+              handle.write(content)
+          print(f"wrote {out_path}")
+          PY
+
+      - name: Restore signing material
+        shell: bash
+        env:
+          XBT_KEYSTORE_BASE64: ${{ secrets.XBT_KEYSTORE_BASE64 }}
+          XBT_STORE_PASS: ${{ secrets.XBT_STORE_PASS }}
+          XBT_KEY_PASS: ${{ secrets.XBT_KEY_PASS }}
+          XBT_KEY_ALIAS_SECRET: ${{ secrets.XBT_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          for name in XBT_KEYSTORE_BASE64 XBT_STORE_PASS XBT_KEY_PASS; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing repository secret $name"
+              exit 1
+            fi
+          done
+
+          ALIAS="${XBT_KEY_ALIAS_SECRET:-xbt}"
+          if [[ ! "$ALIAS" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::XBT_KEY_ALIAS contains unsupported characters"
+            exit 1
+          fi
+
+          SIGNING_DIR="$RUNNER_TEMP/xbt-signing"
+          rm -rf "$SIGNING_DIR"
+          mkdir -p "$SIGNING_DIR"
+          chmod 700 "$SIGNING_DIR"
+
+          printf '%s' "$XBT_KEYSTORE_BASE64" | tr -d '\r\n' | base64 --decode > "$SIGNING_DIR/xbt-release.jks"
+          chmod 600 "$SIGNING_DIR/xbt-release.jks"
+          if [[ ! -s "$SIGNING_DIR/xbt-release.jks" ]]; then
+            echo "::error::Decoded XBT_KEYSTORE_BASE64 is empty"
+            exit 1
+          fi
+
+          {
+            printf 'STORE_PASS=%s\n' "$XBT_STORE_PASS"
+            printf 'KEY_PASS=%s\n' "$XBT_KEY_PASS"
+          } > "$SIGNING_DIR/keystore.properties"
+          chmod 600 "$SIGNING_DIR/keystore.properties"
+
+          if ! keytool -list \
+              -keystore "$SIGNING_DIR/xbt-release.jks" \
+              -storepass:env XBT_STORE_PASS \
+              -alias "$ALIAS" >/dev/null 2>&1; then
+            echo "::error::Keystore does not contain alias '$ALIAS' or XBT_STORE_PASS is wrong"
+            exit 1
+          fi
+
+          {
+            echo "XBT_KEYSTORE_PATH=$SIGNING_DIR/xbt-release.jks"
+            echo "XBT_KEY_ALIAS=$ALIAS"
+          } >> "$GITHUB_ENV"
+          echo "Signing material restored in $SIGNING_DIR (contents not logged)"
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd Android
+          ./gradlew :app:assembleRelease --no-daemon --console=plain --stacktrace
+
+      - name: Align, sign, verify and checksum APK
+        shell: bash
+        env:
+          XBT_STORE_PASS: ${{ secrets.XBT_STORE_PASS }}
+          XBT_KEY_PASS: ${{ secrets.XBT_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          BUILD_TOOLS="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS"
+          UNSIGNED="Android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [[ ! -f "$UNSIGNED" ]]; then
+            echo "::error::Unsigned release APK not found: $UNSIGNED"
+            exit 1
+          fi
+
+          OUT_DIR="$RUNNER_TEMP/xbt-release"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          ALIGNED="$OUT_DIR/app-release-aligned.apk"
+          APK="$OUT_DIR/$APK_NAME"
+
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$XBT_KEYSTORE_PATH" \
+            --ks-key-alias "$XBT_KEY_ALIAS" \
+            --ks-pass env:XBT_STORE_PASS \
+            --key-pass env:XBT_KEY_PASS \
+            --out "$APK" \
+            "$ALIGNED"
+          rm -f "$ALIGNED"
+
+          VERIFY_LOG="$OUT_DIR/apksigner-verify.txt"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" > "$VERIFY_LOG"
+          cat "$VERIFY_LOG"
+          "$BUILD_TOOLS/zipalign" -c -p 4 "$APK"
+
+          SIGNER_SHA256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$VERIFY_LOG" | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          SIGNER_COUNT="$(grep -c '^Signer #[0-9][0-9]* certificate SHA-256 digest:' "$VERIFY_LOG" || true)"
+          if [[ "$SIGNER_COUNT" != "1" || -z "$SIGNER_SHA256" ]]; then
+            echo "::error::Expected exactly one signer certificate in $APK"
+            exit 1
+          fi
+          if [[ "$SIGNER_SHA256" != "$EXPECTED_SIGNER_SHA256" ]]; then
+            echo "::error::Signer certificate SHA-256 mismatch: got $SIGNER_SHA256 expected $EXPECTED_SIGNER_SHA256"
+            echo "Existing installations cannot upgrade in place with a different signing key."
+            exit 1
+          fi
+
+          BADGING="$OUT_DIR/badging.txt"
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" > "$BADGING"
+          ACTUAL_PACKAGE="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "$BADGING" | head -n 1)"
+          ACTUAL_VERSION_CODE="$(sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p" "$BADGING" | head -n 1)"
+          ACTUAL_VERSION_NAME="$(sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p" "$BADGING" | head -n 1)"
+          if [[ "$ACTUAL_PACKAGE" != "$EXPECTED_PACKAGE" ]]; then
+            echo "::error::Package mismatch: got '$ACTUAL_PACKAGE' expected '$EXPECTED_PACKAGE'"
+            exit 1
+          fi
+          if [[ "$ACTUAL_VERSION_CODE" != "$VERSION_CODE" || "$ACTUAL_VERSION_NAME" != "$VERSION_NAME" ]]; then
+            echo "::error::APK version mismatch: got versionCode='$ACTUAL_VERSION_CODE' versionName='$ACTUAL_VERSION_NAME', expected '$VERSION_CODE'/'$VERSION_NAME'"
+            exit 1
+          fi
+          if ! grep -q "native-code: .*'arm64-v8a'" "$BADGING"; then
+            echo "::error::APK does not contain the arm64-v8a native code required by the release manifest"
+            exit 1
+          fi
+
+          APK_SHA256="$(sha256sum "$APK" | awk '{print $1}')"
+          APK_SIZE="$(stat -c %s "$APK")"
+          (
+            cd "$OUT_DIR"
+            sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+            sha256sum -c "$APK_NAME.sha256"
+          )
+          APK_SHA256_FILE="$APK.sha256"
+
+          {
+            echo "APK_PATH=$APK"
+            echo "APK_SHA256_PATH=$APK_SHA256_FILE"
+            echo "APK_SHA256=$APK_SHA256"
+            echo "APK_SIZE=$APK_SIZE"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "### Android release $RELEASE_TAG"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| versionCode | $VERSION_CODE |"
+            echo "| versionName | $VERSION_NAME |"
+            echo "| package | $ACTUAL_PACKAGE |"
+            echo "| ABI | arm64-v8a |"
+            echo "| signer SHA-256 | $SIGNER_SHA256 |"
+            echo "| APK SHA-256 | $APK_SHA256 |"
+            echo "| size (bytes) | $APK_SIZE |"
+            echo "| commit | $RELEASE_COMMIT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "APK: $APK_NAME"
+          echo "SHA-256: $APK_SHA256"
+          echo "size: $APK_SIZE bytes"
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release '$RELEASE_TAG' already exists; refusing to overwrite its assets"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "$APK_PATH" "$APK_SHA256_PATH" \
+            --verify-tag \
+            --title "XBT $VERSION_NAME" \
+            --notes "versionCode: $VERSION_CODE
+          versionName: $VERSION_NAME
+          commit: $RELEASE_COMMIT
+
+          Signed APK: $APK_NAME
+          SHA-256: $APK_SHA256
+
+          This GitHub Release is not served by the in-app update endpoint yet.
+          Copy the APK to Server/releases/ and update releases.json, then restart the server."
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/xbt-signing" "$RUNNER_TEMP/xbt-release"
