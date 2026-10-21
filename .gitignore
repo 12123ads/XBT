@@ -10,3 +10,8 @@
 *.sw?
 
 /dist/
+
+# 内部方案/验收文档只保留在本地，不进入仓库
+docs/sign-parity-plan.md
+docs/sign-parity-acceptance.md
+docs/qr-scan-comparison.md
