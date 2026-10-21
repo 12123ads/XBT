@@ -1,0 +1,14 @@
+{
+  "package": "com.github.enderwolf006.xbt",
+  "abi": "arm64-v8a",
+  "minSupportedVersionCode": 3,
+  "latest": {
+    "versionCode": 4,
+    "versionName": "2.0.2",
+    "apkFile": "xbt-2.0.2.apk",
+    "sha256": "b67817a694ddfcff1d5d3ff1d8081237a4e16938091bca824a8e455b0bbfc906",
+    "sizeBytes": 9390437,
+    "changelog": "2.0.2：应用与 WebView 默认禁止明文 HTTP（仅允许 HTTPS）；更新检查与下载策略保持一致。",
+    "publishedAt": "2026-10-21T14:35:00Z"
+  }
+}
