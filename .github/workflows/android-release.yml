@@ -12,7 +12,8 @@ name: Android Release
 # Publishing the APK to Server/releases/ is intentionally manual; see
 # DEPLOY.md. This workflow only creates the GitHub Release assets. Every
 # release also carries a byte-identical xbt-latest.apk so the web download
-# link can use /releases/latest/download/xbt-latest.apk.
+# link can use /releases/latest/download/xbt-latest.apk, and a fixed-name
+# version.json describing the exact APK that was uploaded (see OMP-81).
 
 on:
   push:
@@ -147,12 +148,34 @@ jobs:
             exit 1
           fi
 
+          MIN_SUPPORTED_VERSION_CODE="$(python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  value = json.load(handle)["minSupportedVersionCode"]
+              if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                  raise ValueError("minSupportedVersionCode must be a non-negative integer")
+          except Exception as exc:  # noqa: BLE001 - surface the exact parse failure
+              sys.stderr.write(f"cannot read minSupportedVersionCode from {sys.argv[1]}: {exc}\n")
+              sys.exit(1)
+          print(value)
+          PY
+          )"
+
+          if (( MIN_SUPPORTED_VERSION_CODE > VERSION_CODE )); then
+            echo "::error::minSupportedVersionCode (${MIN_SUPPORTED_VERSION_CODE}) must not exceed versionCode (${VERSION_CODE})"
+            exit 1
+          fi
+
           RELEASE_COMMIT="$(git rev-parse HEAD)"
           {
             echo "VERSION_CODE=$VERSION_CODE"
             echo "VERSION_NAME=$VERSION_NAME"
             echo "APK_NAME=xbt-${VERSION_NAME}.apk"
             echo "EXPECTED_PACKAGE=$EXPECTED_PACKAGE"
+            echo "MIN_SUPPORTED_VERSION_CODE=$MIN_SUPPORTED_VERSION_CODE"
             echo "RELEASE_COMMIT=$RELEASE_COMMIT"
           } >> "$GITHUB_ENV"
 
@@ -447,6 +470,8 @@ jobs:
             echo "| size (bytes) | $APK_SIZE |"
             echo "| versioned asset | $APK_NAME |"
             echo "| stable asset | $APK_LATEST_NAME |"
+            echo "| version manifest | version.json |"
+            echo "| minSupportedVersionCode | $MIN_SUPPORTED_VERSION_CODE |"
             echo "| commit | $RELEASE_COMMIT |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -454,6 +479,75 @@ jobs:
           echo "Stable asset: $APK_LATEST_NAME"
           echo "SHA-256: $APK_SHA256"
           echo "size: $APK_SIZE bytes"
+
+      - name: Generate version.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_JSON="$RUNNER_TEMP/xbt-release/version.json"
+          python3 - "$APK_PATH" "$VERSION_JSON" <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+
+          apk_path, out_path = sys.argv[1], sys.argv[2]
+          version_code = int(os.environ["VERSION_CODE"])
+          version_name = os.environ["VERSION_NAME"]
+          min_supported = int(os.environ["MIN_SUPPORTED_VERSION_CODE"])
+          tag = os.environ["RELEASE_TAG"]
+          expected_sha = os.environ["APK_SHA256"]
+          expected_size = int(os.environ["APK_SIZE"])
+
+          def git(*args):
+              result = subprocess.run(["git", *args], capture_output=True, text=True)
+              if result.returncode != 0:
+                  sys.exit(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+              return result.stdout
+
+          digest = hashlib.sha256()
+          with open(apk_path, "rb") as handle:
+              for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          apk_sha = digest.hexdigest()
+          apk_size = os.path.getsize(apk_path)
+          if apk_sha != expected_sha or apk_size != expected_size:
+              sys.exit(
+                  f"refusing to describe a different APK: got {apk_sha}/{apk_size} "
+                  f"expected {expected_sha}/{expected_size}"
+              )
+
+          previous = subprocess.run(
+              ["git", "describe", "--tags", "--abbrev=0", "--match", "v*", f"{tag}^"],
+              capture_output=True,
+              text=True,
+          )
+          previous_tag = previous.stdout.strip() if previous.returncode == 0 else ""
+          revision_range = f"{previous_tag}..{tag}" if previous_tag and previous_tag != tag else tag
+          subjects = [
+              line.strip()
+              for line in git("log", "--no-merges", "--pretty=%s", "--max-count=50", revision_range).splitlines()
+              if line.strip()
+          ]
+          changelog = "; ".join(subjects)[:2000] or f"Release {tag}"
+
+          payload = {
+              "versionCode": version_code,
+              "versionName": version_name,
+              "sha256": apk_sha,
+              "sizeBytes": apk_size,
+              "changelog": changelog,
+              "minSupportedVersionCode": min_supported,
+          }
+          with open(out_path, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, ensure_ascii=False, indent=2)
+              handle.write("\n")
+          print(f"wrote {out_path}")
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+          python3 -m json.tool "$VERSION_JSON" >/dev/null
+          echo "VERSION_JSON_PATH=$VERSION_JSON" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         shell: bash
@@ -465,7 +559,7 @@ jobs:
             echo "::error::Release '$RELEASE_TAG' already exists; refusing to overwrite its assets"
             exit 1
           fi
-          gh release create "$RELEASE_TAG" "$APK_PATH" "$APK_SHA256_PATH" "$APK_LATEST_PATH" "$APK_LATEST_SHA256_PATH" \
+          gh release create "$RELEASE_TAG" "$APK_PATH" "$APK_SHA256_PATH" "$APK_LATEST_PATH" "$APK_LATEST_SHA256_PATH" "$VERSION_JSON_PATH" \
             --verify-tag \
             --title "XBT $VERSION_NAME" \
             --notes "versionCode: $VERSION_CODE
@@ -476,6 +570,8 @@ jobs:
           Stable APK: xbt-latest.apk (same bytes as $APK_NAME)
           SHA-256: $APK_SHA256
           Stable URL: https://github.com/12123ads/XBT/releases/latest/download/xbt-latest.apk
+          Version manifest: version.json (sha256/sizeBytes describe the APK above)
+          Stable manifest URL: https://github.com/12123ads/XBT/releases/latest/download/version.json
 
           This GitHub Release is not served by the in-app update endpoint yet.
           Copy the APK to Server/releases/ and update releases.json, then restart the server."
