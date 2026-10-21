@@ -4,6 +4,11 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
+
+	// Embed the IANA timezone database so TZ and time.LoadLocation keep working
+	// even when the runtime image has no /usr/share/zoneinfo (distroless, scratch).
+	_ "time/tzdata"
 
 	"github.com/gin-gonic/gin"
 	"xbt2/server/internal/captcha"
@@ -19,7 +24,10 @@ import (
 	"xbt2/server/internal/xxt"
 )
 
+const appTimezone = "Asia/Shanghai"
+
 func main() {
+	checkTimezone()
 	cfg := config.Load()
 	gin.SetMode(resolveGinMode(cfg.AppEnv))
 
@@ -195,6 +203,18 @@ func main() {
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("server start failed: %v", err)
 	}
+}
+
+// checkTimezone reports whether the process-local timezone matches the
+// application timezone. It never aborts startup: a mismatch degrades log
+// timestamps and ParseInLocation, but the service can still serve requests.
+func checkTimezone() {
+	loc, err := time.LoadLocation(appTimezone)
+	if err != nil || time.Local.String() != appTimezone {
+		log.Printf("timezone check: status=degraded local=%s want=%s load_err=%v", time.Local, appTimezone, err)
+		return
+	}
+	log.Printf("timezone check: status=ok local=%s", loc)
 }
 
 func resolveGinMode(appEnv string) string {
