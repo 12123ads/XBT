@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import android.util.Size
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -28,6 +30,9 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.CubicBezierEasing
@@ -67,6 +72,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 private const val LOCAL_WEB_ASSET_ROOT = "web"
+private const val BARCODE_OVERLAY_TAG = "XBTBarcodeOverlay"
+private const val BARCODE_OVERLAY_STALE_MS = 500L
 
 private fun localWebMimeType(assetPath: String): String = when (assetPath.substringAfterLast('.', "").lowercase()) {
     "html" -> "text/html"
@@ -178,6 +185,7 @@ private class NativeCameraPunchController(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
     private val previewView: PreviewView,
+    private val overlayView: BarcodeOverlayView,
     private val webView: WebView,
     private val hasCameraPermission: () -> Boolean,
     private val requestCameraPermission: () -> Unit,
@@ -191,6 +199,7 @@ private class NativeCameraPunchController(
     private var pendingTakePhoto = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bindRunnable = Runnable { bindCamera() }
+    private val clearOverlayRunnable = Runnable { overlayView.clear() }
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val barcodeScanner = BarcodeScanning.getClient()
     private var lastQrPayload = ""
@@ -198,8 +207,24 @@ private class NativeCameraPunchController(
     @Volatile private var lastCameraActive = false
     @Volatile private var lastCameraError = ""
 
+    // Preview and analysis must share one aspect ratio, otherwise their crop rects (and therefore
+    // the overlay coordinates) no longer describe the same field of view.
+    private val previewResolutionSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+        .build()
+    private val analysisResolutionSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .setResolutionStrategy(
+            ResolutionStrategy(
+                Size(640, 480),
+                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+            )
+        )
+        .build()
+
     init {
-        previewView.visibility = View.GONE
+        setPreviewVisible(false)
         previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         previewView.setBackgroundColor(AndroidColor.BLACK)
@@ -222,9 +247,21 @@ private class NativeCameraPunchController(
         mainHandler.removeCallbacks(bindRunnable)
         imageCapture = null
         cameraProvider?.unbindAll()
-        previewView.visibility = View.GONE
+        setPreviewVisible(false)
         barcodeScanner.close()
         cameraExecutor.shutdown()
+    }
+
+    private fun setPreviewVisible(visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.GONE
+        previewView.visibility = visibility
+        overlayView.visibility = visibility
+        if (!visible) clearOverlay()
+    }
+
+    private fun clearOverlay() {
+        mainHandler.removeCallbacks(clearOverlayRunnable)
+        overlayView.clear()
     }
 
     private fun scheduleBind() {
@@ -235,17 +272,18 @@ private class NativeCameraPunchController(
 
     private fun bindCamera() {
         val provider = cameraProvider ?: return
+        clearOverlay()
         if (!isScannerActive) {
             mainHandler.removeCallbacks(bindRunnable)
             permissionRetryCount = 0
             pendingTakePhoto = false
             imageCapture = null
             provider.unbindAll()
-            previewView.visibility = View.GONE
+            setPreviewVisible(false)
             return
         }
         if (!hasCameraPermission()) {
-            previewView.visibility = View.GONE
+            setPreviewVisible(false)
             emitCameraState(false, "no-camera-permission")
             if (permissionRetryCount == 0) {
                 requestCameraPermission()
@@ -262,15 +300,19 @@ private class NativeCameraPunchController(
             .requireLensFacing(requestedFacing)
             .build()
 
-        val preview = Preview.Builder().build().also {
-            it.surfaceProvider = previewView.surfaceProvider
-        }
+        val preview = Preview.Builder()
+            .setResolutionSelector(previewResolutionSelector)
+            .build()
+            .also {
+                it.surfaceProvider = previewView.surfaceProvider
+            }
         val capture = androidx.camera.core.ImageCapture.Builder()
             .setCaptureMode(androidx.camera.core.ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
             .build()
         imageCapture = capture
 
         val analysis = ImageAnalysis.Builder()
+            .setResolutionSelector(analysisResolutionSelector)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { imageAnalysis ->
@@ -282,7 +324,7 @@ private class NativeCameraPunchController(
         runCatching {
             provider.unbindAll()
             camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
-            previewView.visibility = View.VISIBLE
+            setPreviewVisible(true)
             emitCameraState(true, null)
             if (pendingTakePhoto) {
                 pendingTakePhoto = false
@@ -295,7 +337,7 @@ private class NativeCameraPunchController(
                 bindCamera()
             } else {
                 pendingTakePhoto = false
-                previewView.visibility = View.GONE
+                setPreviewVisible(false)
                 val detail = "${it.javaClass.simpleName}:${it.message ?: "bind-failed"}"
                 emitCameraState(false, detail)
             }
@@ -340,24 +382,79 @@ private class NativeCameraPunchController(
         return target
     }
 
+    // ImageProxy.image is a Java-style experimental API; the Kotlin opt-in marker cannot express it.
+    @SuppressLint("UnsafeOptInUsageError")
     private fun analyzeQrFrame(imageProxy: ImageProxy) {
         val image = imageProxy.image
         if (image == null) {
             imageProxy.close()
             return
         }
-        val inputImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
+        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+        val imageWidth = imageProxy.width
+        val imageHeight = imageProxy.height
+        val inputImage = InputImage.fromMediaImage(image, rotationDegrees)
         barcodeScanner.process(inputImage)
             .addOnSuccessListener { barcodes ->
-                emitFirstQr(barcodes)
+                handleBarcodes(barcodes, imageWidth, imageHeight, rotationDegrees)
             }
             .addOnCompleteListener {
                 imageProxy.close()
             }
     }
 
-    private fun emitFirstQr(barcodes: List<Barcode>) {
-        val qrText = barcodes.firstOrNull { it.rawValue?.isNotBlank() == true }?.rawValue ?: return
+    private fun handleBarcodes(
+        barcodes: List<Barcode>,
+        imageWidth: Int,
+        imageHeight: Int,
+        rotationDegrees: Int,
+    ) {
+        // The box and the emitted payload must always describe the same barcode: the first one
+        // with a non-blank value, which is what the WebView receives.
+        val barcode = barcodes.firstOrNull { it.rawValue?.isNotBlank() == true } ?: return
+        val qrText = barcode.rawValue ?: return
+        updateBarcodeOverlay(barcode, imageWidth, imageHeight, rotationDegrees)
+        emitQr(qrText)
+    }
+
+    private fun updateBarcodeOverlay(
+        barcode: Barcode,
+        imageWidth: Int,
+        imageHeight: Int,
+        rotationDegrees: Int,
+    ) {
+        val bounds = barcode.boundingBox ?: return
+        if (!isScannerActive || previewView.visibility != View.VISIBLE) return
+        val viewWidth = previewView.width.toFloat()
+        val viewHeight = previewView.height.toFloat()
+        if (viewWidth <= 0f || viewHeight <= 0f) return
+
+        val mapped = runCatching {
+            BarcodeOverlayGeometry.mapToPreview(
+                box = BarcodeBox(
+                    left = bounds.left.toFloat(),
+                    top = bounds.top.toFloat(),
+                    right = bounds.right.toFloat(),
+                    bottom = bounds.bottom.toFloat(),
+                ),
+                imageWidth = imageWidth,
+                imageHeight = imageHeight,
+                rotationDegrees = rotationDegrees,
+                mirrored = camera?.cameraInfo?.lensFacing == CameraSelector.LENS_FACING_FRONT,
+                fillCenter = previewView.scaleType == PreviewView.ScaleType.FILL_CENTER,
+                viewWidth = viewWidth,
+                viewHeight = viewHeight,
+            )
+        }.onFailure {
+            Log.w(BARCODE_OVERLAY_TAG, "Failed to map barcode bounds", it)
+        }.getOrNull() ?: return
+
+        mainHandler.removeCallbacks(clearOverlayRunnable)
+        overlayView.show(mapped)
+        mainHandler.postDelayed(clearOverlayRunnable, BARCODE_OVERLAY_STALE_MS)
+    }
+
+    private fun emitQr(qrText: String) {
         val now = System.currentTimeMillis()
         if (qrText == lastQrPayload && now - lastQrEmitAt < 700L) return
         lastQrPayload = qrText
@@ -505,7 +602,7 @@ private class NativeCameraPunchController(
             // 当前扫码页视频区域是全屏，先保留参数用于后续扩展：
             // 当视频区域不是全屏时，可基于这里做原生遮罩裁切。
             webView.post {
-                previewView.visibility = if (isScannerActive) View.VISIBLE else View.GONE
+                setPreviewVisible(isScannerActive)
             }
         }
     }
@@ -666,6 +763,15 @@ internal fun MainScreen(
                     )
                 }
 
+                // Sits above the camera preview but below the transparent WebView. Touches still
+                // reach the page because a non-clickable View never consumes them.
+                val barcodeOverlay = BarcodeOverlayView(ctx).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                }
+
                 val innerWebView = object : WebView(ctx) {
                     private var hasCancelledByMultiTouch = false
 
@@ -814,6 +920,7 @@ internal fun MainScreen(
                     context = ctx,
                     lifecycleOwner = context as LifecycleOwner,
                     previewView = preview,
+                    overlayView = barcodeOverlay,
                     webView = innerWebView,
                     hasCameraPermission = {
                         ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -827,6 +934,7 @@ internal fun MainScreen(
                 }
 
                 root.addView(preview)
+                root.addView(barcodeOverlay)
                 root.addView(innerWebView)
                 innerWebView.loadUrl(url)
                 root
