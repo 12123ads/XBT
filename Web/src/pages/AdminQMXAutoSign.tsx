@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import AdminModal from '../components/admin/AdminModal';
 import AdminShell from '../components/admin/AdminShell';
 import client from '../api/client';
+import { formatDateTime, formatDateTimeRange, formatTimeZoneHint } from '../utils/datetime';
 import type {
   AdminQMXAutoSignAccount,
   AdminQMXAutoSignOverview,
@@ -27,22 +28,13 @@ const getErrorMessage = (error: unknown, fallback: string) => (
   error instanceof Error ? error.message : fallback
 );
 
-const formatTime = (value?: number) => {
-  if (!value) return '暂无';
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
-};
+const formatTime = (value?: number, timeZone?: string | null) => (
+  value ? formatDateTime(value, timeZone) : '暂无'
+);
 
-const formatNextRun = (start?: number, end?: number) => {
-  if (!start) return '暂无';
-  if (!end || end <= start) return formatTime(start);
-  const startAt = new Date(start);
-  const endAt = new Date(end);
-  if (startAt.toDateString() !== endAt.toDateString()) {
-    return `${formatTime(start)} – ${formatTime(end)}`;
-  }
-  const clock = (value: Date) => value.toLocaleTimeString('zh-CN', { hour12: false });
-  return `${clock(startAt)} – ${clock(endAt)}`;
-};
+const formatNextRun = (start?: number, end?: number, timeZone?: string | null) => (
+  formatDateTimeRange(start, end, timeZone)
+);
 
 const formatCoordinate = (value: number) => (
   Number.isFinite(value) && value !== 0 ? value.toFixed(6) : '-'
@@ -199,6 +191,7 @@ const AdminQMXAutoSign = () => {
   };
 
   const settings = overview?.settings;
+  const timeZone = settings?.timezone;
   const accounts = overview?.accounts || [];
 
   return (
@@ -226,7 +219,8 @@ const AdminQMXAutoSign = () => {
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rounded-2xl bg-white/10 p-3">
               <p className="text-[10px] font-bold text-slate-400">下次执行</p>
-              <p className="mt-1 text-sm font-black">{formatNextRun(settings?.next_run_at, settings?.next_run_window_end)}</p>
+              <p className="mt-1 text-sm font-black">{formatNextRun(settings?.next_run_at, settings?.next_run_window_end, timeZone)}</p>
+              <p className="mt-1 text-[10px] font-semibold text-slate-400">时间按 {formatTimeZoneHint(timeZone)} 显示</p>
             </div>
             <button
               onClick={handleToggleSettings}
@@ -307,7 +301,7 @@ const AdminQMXAutoSign = () => {
                       </div>
                       {account.last_record && (
                         <p className={`mt-2 text-[11px] font-semibold ${account.last_record.success ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          最近{triggerLabel(account.last_record.trigger)}：{account.last_record.message || (account.last_record.success ? '成功' : '失败')} · {formatTime(account.last_record.executed_at)}
+                          最近{triggerLabel(account.last_record.trigger)}：{account.last_record.message || (account.last_record.success ? '成功' : '失败')} · {formatTime(account.last_record.executed_at, timeZone)}
                         </p>
                       )}
                     </div>
@@ -372,7 +366,7 @@ const AdminQMXAutoSign = () => {
                         {triggerLabel(record.trigger)}执行 · {record.total_count || 1} 个账号
                       </p>
                       <p className="text-[11px] text-slate-400">
-                        {formatTime(record.first_executed_at)} - {formatTime(record.last_executed_at)}
+                        {formatTime(record.first_executed_at, timeZone)} - {formatTime(record.last_executed_at, timeZone)}
                       </p>
                     </div>
                     <span className={`px-2 py-1 rounded-full text-[10px] font-black shrink-0 ${

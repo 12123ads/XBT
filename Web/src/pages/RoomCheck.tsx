@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
+import { formatDateTime, formatTimeZoneHint } from '../utils/datetime';
 import type {
   AdminQMXAutoSignRecord,
   ApiResponse,
@@ -49,10 +50,9 @@ const getErrorMessage = (error: unknown, fallback: string) => (
   error instanceof Error ? error.message : fallback
 );
 
-const formatTime = (value?: number) => {
-  if (!value) return '暂无';
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
-};
+const formatTime = (value: number | undefined, timeZone?: string | null) => (
+  value ? formatDateTime(value, timeZone) : '暂无'
+);
 
 const formatCoordinate = (value: number) => (
   Number.isFinite(value) && value !== 0 ? value.toFixed(6) : '-'
@@ -67,7 +67,7 @@ const triggerLabel = (trigger: string) => (
   trigger === 'scheduled' ? '定时' : '手动'
 );
 
-const recordSummary = (record: AdminQMXAutoSignRecord | null) => {
+const recordSummary = (record: AdminQMXAutoSignRecord | null, timeZone?: string | null) => {
   if (!record) {
     return {
       text: '暂无执行记录',
@@ -75,7 +75,7 @@ const recordSummary = (record: AdminQMXAutoSignRecord | null) => {
     };
   }
   return {
-    text: `${record.success ? '成功' : '失败'} · ${triggerLabel(record.trigger)} · ${formatTime(record.executed_at)}`,
+    text: `${record.success ? '成功' : '失败'} · ${triggerLabel(record.trigger)} · ${formatTime(record.executed_at, timeZone)}`,
     success: record.success,
   };
 };
@@ -150,8 +150,9 @@ const RoomCheck = () => {
 
   const config = settings?.config;
   const globalSettings = settings?.settings;
+  const timeZone = globalSettings?.timezone;
   const lastRecord = settings?.last_record ?? null;
-  const latest = recordSummary(lastRecord);
+  const latest = recordSummary(lastRecord, timeZone);
   const canRun = hasSavedLocation(config);
   const previewUnsupported = preview?.unsupported ?? [];
 
@@ -337,7 +338,7 @@ const RoomCheck = () => {
                 <div className="mt-5 grid grid-cols-2 gap-3">
                   <div className="rounded-2xl bg-white/10 p-3">
                     <p className="text-[10px] font-bold text-slate-400">下次执行（本账号）</p>
-                    <p className="mt-1 text-sm font-black">{formatTime(globalSettings?.next_run_at)}</p>
+                    <p className="mt-1 text-sm font-black">{formatTime(globalSettings?.next_run_at, timeZone)}</p>
                   </div>
                   <div className={`rounded-2xl p-3 ${config?.enabled ? 'bg-emerald-400 text-emerald-950' : 'bg-white/10 text-white'}`}>
                     <p className="text-[10px] font-bold opacity-70">个人状态</p>
@@ -347,6 +348,10 @@ const RoomCheck = () => {
                     </p>
                   </div>
                 </div>
+
+                <p className="mt-2 text-[10px] font-semibold text-slate-400">
+                  时间按 {formatTimeZoneHint(timeZone)} 显示
+                </p>
 
                 {!globalSettings?.enabled && (
                   <div className="mt-4 rounded-2xl bg-amber-400/15 text-amber-100 p-3 text-xs font-semibold flex gap-2">
