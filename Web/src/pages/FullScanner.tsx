@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronLeft, Camera, EyeOff, Eye, MapPin } from 'lucide-react';
+import { ChevronLeft, Camera, EyeOff, Eye } from 'lucide-react';
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
 import axios from 'axios';
@@ -12,10 +12,6 @@ import type { ApiResponse, SignActivity, SignStatusMessage, SignCheckItem, SignE
 import { parseChaoxingQrText, type QrData } from '../utils/qr';
 import { decideSignFailure } from '../utils/signError';
 import scanCursor from '../assets/scan_cursor.png';
-import { useCourseLocationPresets } from '../utils/useCourseLocationPresets';
-import { useSignLocation } from '../utils/useSignLocation';
-import { describeSignDistance, signLocationCenterFromActivity } from '../utils/location';
-import { LocationPickerSheet, type LocationPickerView } from '../components/sign/LocationPickerSheet';
 
 type NativeCameraBridge = {
   isReady?: () => boolean;
@@ -66,13 +62,13 @@ const getFriendlyCameraLabel = (camera: CameraDevice, index: number) => {
 const FullScanner = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { activity, selectedUids, classmates } = (location.state || {}) as {
+  const { activity, selectedUids, classmates, location: pickedLocation } = (location.state || {}) as {
     activity?: SignActivity;
     selectedUids?: number[];
     classmates?: Classmate[];
+    location?: SelectedLocation | null;
   };
   const { user: currentUser, activeUid, token } = useAuthStore();
-  const locationPresets = useCourseLocationPresets();
   const owner = useMemo<RequestAccount | null>(() => (
     activeUid !== null && token ? { uid: activeUid, token } : null
   ), [activeUid, token]);
@@ -94,78 +90,10 @@ const FullScanner = () => {
   const [readyScannerSessionKey, setReadyScannerSessionKey] = useState<string | null>(null);
   const isCameraReady = readyScannerSessionKey === scannerSessionKey;
 
-
-  const { location: signLocation, setLocation: setSignLocation } = useSignLocation();
-  const addressEnabled = activity?.if_open_address === true;
-  const signRange = useMemo(() => (
-    activity ? signLocationCenterFromActivity(activity) : null
-  ), [activity]);
-  // Auto sampling stays the default: a scanned code signs without any extra
-  // step. Manual selection only adds special_params for this session.
-  const [locationMode, setLocationMode] = useState<'auto' | 'manual'>('auto');
-  const locationModeRef = useRef<'auto' | 'manual'>('auto');
-  const updateLocationMode = useCallback((mode: 'auto' | 'manual') => {
-    locationModeRef.current = mode;
-    setLocationMode(mode);
-  }, []);
-  const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
-  const locationRef = useRef<SelectedLocation | null>(null);
-  // A location_point_required failure opens the picker and waits for exactly
-  // one choice. The request is shared so a multi-target batch opens one sheet.
-  const locationRequestRef = useRef<{ promise: Promise<SelectedLocation | null>; resolve: (value: SelectedLocation | null) => void } | null>(null);
-  const requestLocationSelection = useCallback((): Promise<SelectedLocation | null> => {
-    if (locationRequestRef.current) return locationRequestRef.current.promise;
-    let resolve!: (value: SelectedLocation | null) => void;
-    const promise = new Promise<SelectedLocation | null>((done) => { resolve = done; });
-    locationRequestRef.current = { promise, resolve };
-    updateLocationMode('manual');
-    setLocationPickerView('list');
-    return promise;
-  }, [updateLocationMode]);
-  const settleLocationSelection = useCallback((picked: SelectedLocation | null) => {
-    if (picked) {
-      locationRef.current = picked;
-      setSignLocation(picked);
-      updateLocationMode('manual');
-    }
-    setLocationPickerView(null);
-    const request = locationRequestRef.current;
-    if (request) {
-      locationRequestRef.current = null;
-      request.resolve(picked);
-    }
-    // Closing the picker from an explicit "手动选点" with nothing chosen
-    // returns to the zero-step automatic path; a server-required picker
-    // (request) or an existing selection keeps manual mode.
-    if (!picked && !locationRef.current && !request) updateLocationMode('auto');
-  }, [setSignLocation, updateLocationMode]);
-  const openManualLocationPicker = useCallback(() => {
-    updateLocationMode('manual');
-    setLocationPickerView('list');
-  }, [updateLocationMode]);
-  useEffect(() => () => {
-    const request = locationRequestRef.current;
-    if (request) {
-      locationRequestRef.current = null;
-      request.resolve(null);
-    }
-  }, []);
   const lastScanTimeRef = useRef<number>(0);
   // enc of the last code the server reported as expired; repeated decodes of
   // it are ignored until a different code is scanned.
   const staleQrEncRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    locationRef.current = signLocation;
-  }, [signLocation]);
-
-  // A different activity starts from automatic sampling again; the last
-  // picked point is only reused while retrying the same activity.
-  useEffect(() => {
-    updateLocationMode('auto');
-    locationRef.current = null;
-    setSignLocation(null);
-  }, [activity?.active_id, setSignLocation, updateLocationMode]);
   
   useEffect(() => {
     const handleFullScreen = async () => {
@@ -648,7 +576,6 @@ const FullScanner = () => {
       await Promise.all(toSignUids.map(async (uid) => {
         const MAX_CAPTCHA_RETRIES = 1;
         let captchaRetries = 0;
-        let locationRetried = false;
 
         for (;;) {
           if (!isCurrent()) return;
@@ -667,14 +594,12 @@ const FullScanner = () => {
           let res: SignExecuteResult | undefined;
           try {
             const special_params: SignSpecialParams = { enc: currentQr.enc, c: currentQr.c };
-            // Auto sampling sends no point; the server samples inside the
-            // activity circle. Manual mode adds the picked point for range
-            // validation and the address only.
-            const currentLocation = locationModeRef.current === 'manual' ? locationRef.current : null;
-            if (currentLocation) {
-              special_params.latitude = currentLocation.lat;
-              special_params.longitude = currentLocation.lng;
-              special_params.description = currentLocation.description;
+            // The sign page passes a picked point only for address-enabled QR
+            // activities. Without one the server samples inside the circle.
+            if (pickedLocation) {
+              special_params.latitude = pickedLocation.lat;
+              special_params.longitude = pickedLocation.lng;
+              special_params.description = pickedLocation.description;
             }
             const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: 2,
@@ -715,19 +640,21 @@ const FullScanner = () => {
             continue;
           }
 
-          // Server says the submission carried no usable coordinates or the
-          // picked point is outside the circle. Keep its message (including
-          // distance_m) visible and ask for one point, then retry exactly
-          // once; a cancelled picker stops here.
-          if (failure.action === 'relocate' && !locationRetried) {
-            locationRetried = true;
-            setSignStatuses(prev => ({
-              ...prev,
-              [uid]: { ...prev[uid], status: 'retrying', attempt: captchaRetries, message: failure.message }
-            }));
-            const picked = await requestLocationSelection();
-            if (!isCurrent()) return;
-            if (picked) continue;
+          // A missing or out-of-range point cannot be fixed on the scanner
+          // page: never open a picker or retry here. Tell the user to pick a
+          // location on the sign page and scan again.
+          if (failure.action === 'relocate') {
+            const message = res.error_code === 'location_point_required'
+              ? '该签到需要定位，请返回签到页选择位置后重试'
+              : `${failure.message}（请返回签到页重新选择位置后重试）`;
+            if (isCurrent()) {
+              setSignStatuses(prev => ({
+                ...prev,
+                [uid]: { ...prev[uid], status: 'failed', attempt: captchaRetries, message }
+              }));
+            }
+            toast.error(message, { id: 'sign-error-relocate' });
+            return;
           }
 
           if (isCurrent()) {
@@ -770,7 +697,7 @@ const FullScanner = () => {
     } finally {
       if (ownsBatch()) abortControllerRef.current = null;
     }
-  }, [activity, orderedTargetUids, owner, navigate, requestLocationSelection]);
+  }, [activity, orderedTargetUids, owner, navigate, pickedLocation]);
 
   const onScanSuccess = useCallback((decodedText: string) => {
     const now = Date.now();
@@ -906,10 +833,6 @@ const FullScanner = () => {
     retry: Object.values(signStatuses).filter(s => s.status === 'retrying').length,
     failed: Object.values(signStatuses).filter(s => s.status === 'failed').length
   };
-
-  const signDistance = signLocation && signRange
-    ? describeSignDistance(signLocation.lat, signLocation.lng, signRange.center, signRange.radius)
-    : null;
 
   return (
     <div
@@ -1082,65 +1005,6 @@ const FullScanner = () => {
         )}
       </AnimatePresence>
 
-      {addressEnabled && !isStealthMode && !isExecuting && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 10 }}
-          className="absolute bottom-[calc(128px+var(--sab))] left-8 right-8 z-20 flex justify-start pointer-events-none"
-        >
-          <div className="pointer-events-auto max-w-[320px] rounded-2xl bg-black/50 backdrop-blur-md border border-white/10 px-3 py-2 text-white shadow-lg">
-            <div className="flex items-center gap-2">
-              <MapPin size={14} className="text-blue-300 shrink-0" />
-              <span className="text-[11px] font-bold tracking-wider shrink-0">定位</span>
-              <div className="flex rounded-full bg-white/10 p-0.5" role="group" aria-label="定位方式">
-                <button
-                  type="button"
-                  aria-pressed={locationMode === 'auto'}
-                  onClick={() => updateLocationMode('auto')}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors ${locationMode === 'auto' ? 'bg-white text-slate-900' : 'text-white/70'}`}
-                >
-                  自动
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={locationMode === 'manual'}
-                  onClick={openManualLocationPicker}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors ${locationMode === 'manual' ? 'bg-white text-slate-900' : 'text-white/70'}`}
-                >
-                  手动选点
-                </button>
-              </div>
-            </div>
-            {locationMode === 'manual' && (
-              <div className="mt-2 space-y-1">
-                <button
-                  type="button"
-                  onClick={openManualLocationPicker}
-                  className="w-full flex items-center justify-between gap-2 rounded-xl bg-white/10 px-2.5 py-1.5 text-left active:scale-[0.99] transition-transform"
-                >
-                  <span className={`truncate text-[11px] font-bold ${signLocation ? '' : 'text-amber-200'}`}>
-                    {signLocation?.name || '尚未选点，点此选择'}
-                  </span>
-                  <span className="text-[10px] text-white/60 shrink-0">{signLocation ? '修改' : '选点'}</span>
-                </button>
-                {signDistance && (
-                  <p className={`text-[9px] font-bold ${signDistance.outOfRange ? 'text-red-300' : 'text-emerald-300'}`}>
-                    {signDistance.label}
-                  </p>
-                )}
-                <p className="text-[9px] leading-tight text-white/60">
-                  选点仅用于范围校验与地址，实际提交为选点附近的随机点（仍在活动范围内）
-                </p>
-              </div>
-            )}
-            {locationMode === 'auto' && (
-              <p className="mt-1 text-[9px] leading-tight text-white/60">自动采样，无需操作</p>
-            )}
-          </div>
-        </motion.div>
-      )}
-
       <div className="absolute bottom-[calc(48px+var(--sab))] left-8 right-8 z-20 flex items-center justify-between pointer-events-none">
         <div className="flex items-center space-x-6">
           <AnimatePresence initial={false}>
@@ -1165,17 +1029,6 @@ const FullScanner = () => {
           <span className="text-[10px] text-white/80 font-bold tracking-wider">{isStealthMode ? "显示" : "隐藏"}</span>
         </button>
       </div>
-
-      <LocationPickerSheet
-        open={locationPickerView !== null}
-        initialView={locationPickerView ?? 'list'}
-        value={signLocation}
-        presets={locationPresets}
-        center={signRange?.center}
-        radius={signRange?.radius}
-        onClose={() => settleLocationSelection(null)}
-        onChange={settleLocationSelection}
-      />
 
       <AnimatePresence initial={false}>
         {isStealthMode && isAllSuccess && (

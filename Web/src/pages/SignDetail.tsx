@@ -34,6 +34,7 @@ import { PinInput } from '../components/sign/PinInput';
 import { LocationInput } from '../components/sign/LocationInput';
 import { LocationPickerSheet, type LocationPickerView } from '../components/sign/LocationPickerSheet';
 import { QrInput } from '../components/sign/QrInput';
+import { QrLocationInput } from '../components/sign/QrLocationInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { PhotoInput } from '../components/sign/PhotoInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
@@ -101,6 +102,9 @@ const SignDetail = () => {
     ? describeSignDistance(signLocation.lat, signLocation.lng, signRange.center, signRange.radius)
     : null;
   const [locationPickerView, setLocationPickerView] = useState<LocationPickerView | null>(null);
+  // QR activities with address validation pick the point here, before the
+  // scanner opens. Automatic mode sends no coordinates.
+  const [qrLocationMode, setQrLocationMode] = useState<'auto' | 'manual'>('auto');
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
@@ -291,8 +295,15 @@ const SignDetail = () => {
     setLocationPickerView('list');
     return promise;
   }, []);
+  const signLocationRef = useRef<SelectedLocation | null>(null);
   const settleLocationSelection = useCallback((picked: SelectedLocation | null) => {
-    if (picked) setSignLocation(picked);
+    if (picked) {
+      signLocationRef.current = picked;
+      setSignLocation(picked);
+    } else if (!signLocationRef.current) {
+      // Closing an empty picker returns the QR section to automatic mode.
+      setQrLocationMode('auto');
+    }
     setLocationPickerView(null);
     const request = locationRequestRef.current;
     if (request) {
@@ -703,6 +714,21 @@ const SignDetail = () => {
               />
             )}
             {activity.sign_type === 2 && <QrInput />}
+            {activity.sign_type === 2 && activity.if_open_address === true && (
+              <QrLocationInput
+                mode={qrLocationMode}
+                value={signLocation}
+                distanceLabel={signDistance?.label}
+                outOfRange={signDistance?.outOfRange}
+                onModeChange={setQrLocationMode}
+                onOpen={() => setLocationPickerView('list')}
+                onClear={() => {
+                  signLocationRef.current = null;
+                  setSignLocation(null);
+                  setQrLocationMode('auto');
+                }}
+              />
+            )}
             {isPhotoSign && (
               <PhotoInput
                 files={photoFiles}
@@ -730,7 +756,7 @@ const SignDetail = () => {
 
           <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 mt-auto shrink-0">
             <button 
-              onClick={activity.sign_type === 2 ? () => navigate('/scanner', { state: { activity, course, selectedUids, classmates } }) : handleExecute}
+              onClick={activity.sign_type === 2 ? () => navigate('/scanner', { state: { activity, course, selectedUids, classmates, location: activity.if_open_address === true && qrLocationMode === 'manual' ? signLocation : null } }) : handleExecute}
               disabled={isExecuting}
               className={`w-full py-3.5 rounded-xl font-bold text-sm shadow-lg transition-all active:scale-[0.97] flex items-center justify-center gap-3 ${isExecuting ? 'bg-blue-400 text-white shadow-none' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100'}`}
             >
