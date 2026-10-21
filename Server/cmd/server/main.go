@@ -28,7 +28,13 @@ const appTimezone = "Asia/Shanghai"
 
 func main() {
 	checkTimezone()
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config load failed: %v", err)
+	}
+	if cfg.AllowInsecureTLS {
+		log.Printf("WARNING allow_insecure_tls=true: upstream TLS certificate verification is disabled for Chaoxing/QMX; use only for self-signed test environments")
+	}
 	gin.SetMode(resolveGinMode(cfg.AppEnv))
 
 	database, err := db.New(cfg)

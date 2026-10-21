@@ -197,11 +197,11 @@ Android 壳默认目标地址来自 `Android/app/src/main/res/values/strings.xml
 
 - `app_env`：运行环境标识（`dev/development` -> Gin `debug`，`prod/production` -> Gin `release`，`test/testing` -> Gin `test`）
 - `http_addr`：服务监听地址（默认 `:3030`）
-- `jwt_secret`：JWT 签名密钥（生产必须修改）
-- `credential_secret`：账号凭据加密密钥（生产必须修改）
+- `jwt_secret`：JWT 签名密钥，必须为至少 32 字节的随机值（留空/占位/过短会拒绝启动）
+- `credential_secret`：账号凭据加密密钥，必须为至少 32 字节的随机值（留空/占位/过短会拒绝启动）
 - `postgres_dsn`：PostgreSQL 连接串
 - `activity_list_limit`：每门课返回活动上限（默认 `5`）
-- `allow_insecure_tls`：是否允许不安全 TLS（生产建议关闭）
+- `allow_insecure_tls`：是否跳过上游 TLS 证书校验（默认 `false`；仅自签名测试环境临时开启，启动时打印警告）
 
 ### 前端配置：`Web/config.yaml`
 

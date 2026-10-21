@@ -3,9 +3,12 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -331,5 +334,75 @@ func TestLoginSucceedsWhenClientIDFetchFails(t *testing.T) {
 	}
 	if user.ClientIDCipher != "" {
 		t.Fatal("clientId cipher should stay empty after a fetch failure")
+	}
+}
+
+func pngChunk(kind string, data []byte) []byte {
+	chunk := make([]byte, 8+len(data)+4)
+	binary.BigEndian.PutUint32(chunk[0:4], uint32(len(data)))
+	copy(chunk[4:8], kind)
+	copy(chunk[8:], data)
+	crc := crc32.NewIEEE()
+	crc.Write(chunk[4 : 8+len(data)])
+	binary.BigEndian.PutUint32(chunk[8+len(data):], crc.Sum32())
+	return chunk
+}
+
+// oversizedPNGHeader declares huge dimensions in a tiny file so DecodeConfig
+// sees the bomb without Decode ever allocating it.
+func oversizedPNGHeader(width, height uint32) []byte {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
+	ihdr[8] = 8 // bit depth
+	ihdr[9] = 6 // RGBA
+	file := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	file = append(file, pngChunk("IHDR", ihdr)...)
+	return append(file, pngChunk("IEND", nil)...)
+}
+
+func TestResizeFaceRejectsPixelBombBeforeDecode(t *testing.T) {
+	if _, err := resizeFace(oversizedPNGHeader(20000, 20000)); !errors.Is(err, errFacePixelsExceeded) {
+		t.Fatalf("resizeFace error = %v, want errFacePixelsExceeded", err)
+	}
+}
+
+func TestLimitMultipartBodyRejectsOversizedRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name       string
+		limit      int64
+		payload    int
+		wantStatus int
+	}{
+		{"within limit", 1 << 20, 128, http.StatusOK},
+		{"over limit", 1024, 4096, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", "face.jpg")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(make([]byte, tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/", &body)
+			c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+
+			if ok := limitMultipartBody(c, tc.limit); ok != (tc.wantStatus == http.StatusOK) {
+				t.Fatalf("limitMultipartBody ok=%v body=%s", ok, recorder.Body.String())
+			}
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+		})
 	}
 }

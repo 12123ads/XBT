@@ -350,8 +350,12 @@ const (
 	SignErrorLocationPointRequired = "location_point_required"
 	SignErrorQRExpired             = "qr_expired"
 	SignErrorActivityExpired       = "activity_expired"
-	SignErrorSessionExpired        = "session_expired"
-	SignErrorUpstream              = "upstream_error"
+	// SignErrorActivityEnded is upstream's success2: the submission arrived
+	// after the activity closed. It is a distinct terminal outcome and never
+	// writes a local record.
+	SignErrorActivityEnded  = "activity_ended"
+	SignErrorSessionExpired = "session_expired"
+	SignErrorUpstream       = "upstream_error"
 	// Sign-out prerequisites are explicit results, never silent successes.
 	SignErrorSignInRequired     = "sign_in_required"
 	SignErrorSignOutUnavailable = "sign_out_unavailable"
@@ -681,7 +685,7 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) (res
 	}
 
 	switch result.Kind {
-	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
+	case xxt.SignResultSuccess:
 		return s.recordSigned(req, operatorUID)
 	case xxt.SignResultAlreadySigned:
 		return s.recordAlreadySigned(req)
@@ -801,6 +805,12 @@ func (s *SignService) signFailure(result xxt.SignResult, locationProvided bool) 
 		return SignErrorLocationOutRange, false, result.DistanceM, message
 	case xxt.SignResultQRExpired:
 		return SignErrorQRExpired, false, 0, "二维码已过期，请重新扫码"
+	case xxt.SignResultActivityEnded:
+		message := strings.TrimSpace(result.Message)
+		if message == "" {
+			message = "签到已结束（迟到或活动已关闭）"
+		}
+		return SignErrorActivityEnded, false, 0, message
 	case xxt.SignResultSessionExpired:
 		return SignErrorSessionExpired, false, 0, "学习通登录已过期，请重新登录"
 	case xxt.SignResultFaceRequired:
@@ -972,7 +982,7 @@ func (s *SignService) SignOutOne(operatorUID int64, req SignOutRequest) (SignOut
 		MarkFacePhotoFailed(s.db, signReq.facePhotoID)
 	}
 	switch upstream.Kind {
-	case xxt.SignResultSuccess, xxt.SignResultSuccess2:
+	case xxt.SignResultSuccess:
 		return s.recordSignedOut(req, signOutID, outDetail.SignType, operatorUID, false)
 	case xxt.SignResultAlreadySigned:
 		return s.recordSignedOut(req, signOutID, outDetail.SignType, -1, true)
@@ -1094,6 +1104,9 @@ func (s *SignService) signOutFailure(result xxt.SignResult, locationProvided boo
 	code, retryable, distance, message := s.signFailure(result, locationProvided)
 	if code == SignErrorLocationOutRange && distance > 0 {
 		message = fmt.Sprintf("签退位置超出范围，距签退点%.0f米，请重新选择位置", math.Round(distance))
+	}
+	if code == SignErrorActivityEnded {
+		message = "签退已结束（迟到或活动已关闭）"
 	}
 	return code, retryable, message
 }

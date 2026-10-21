@@ -168,6 +168,7 @@ export type SignErrorCode =
   | 'location_out_of_range'
   | 'location_point_required'
   | 'qr_expired'
+  | 'activity_ended'
   | 'session_expired'
   | 'upstream_error';
 

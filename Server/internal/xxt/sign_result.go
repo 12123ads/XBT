@@ -12,7 +12,7 @@ type SignResultKind string
 
 const (
 	SignResultSuccess            SignResultKind = "success"
-	SignResultSuccess2           SignResultKind = "success2"
+	SignResultActivityEnded      SignResultKind = "activity_ended"
 	SignResultAlreadySigned      SignResultKind = "already_signed"
 	SignResultCaptchaRequired    SignResultKind = "captcha_required"
 	SignResultFaceRequired       SignResultKind = "face_required"
@@ -57,8 +57,10 @@ func ParseSignResult(raw string) SignResult {
 	case "success":
 		return SignResult{Kind: SignResultSuccess}
 	case "success2":
-		// Late or already-closed activity: upstream accepted the sign.
-		return SignResult{Kind: SignResultSuccess2}
+		// CSF treats success2 as "late or activity already ended" and throws
+		// SignAlreadyEndedException. It is never evidence that the sign was
+		// accepted: no local record may be written from it.
+		return SignResult{Kind: SignResultActivityEnded, Message: "签到已结束（迟到或活动已关闭）"}
 	case "":
 		return SignResult{Kind: SignResultUpstreamError, Message: "上游返回为空"}
 	}

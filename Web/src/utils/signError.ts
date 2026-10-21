@@ -48,6 +48,8 @@ export const decideSignFailure = (result: SignFailureResult): SignFailureDecisio
         message: `签到位置超出范围，距签到点 ${distanceM} 米，请重新选择位置`,
       };
     }
+    case 'activity_ended':
+      return { action: 'fail', message: textOr(result.message, '签到已结束（迟到或活动已关闭）') };
     case 'session_expired':
       return { action: 'relogin', message: textOr(result.message, '学习通登录已过期，请重新登录') };
     default:

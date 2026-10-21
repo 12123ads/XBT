@@ -655,21 +655,21 @@ func TestSignExecuteAlreadySignedIsRecordedAsUpstreamSource(t *testing.T) {
 	}
 }
 
-func TestSignExecuteSuccess2WritesRecord(t *testing.T) {
+func TestSignExecuteActivityEndedNeverWritesRecord(t *testing.T) {
 	database, cc := newSignStateMachineFixture(t)
 	upstream := &signAuthorizationUpstream{
 		sign: func(_ string, _ string, _ xxt.FixedParams, _ int, _ map[string]interface{}) (xxt.SignResult, error) {
-			return xxt.SignResult{Kind: xxt.SignResultSuccess2}, nil
+			return xxt.SignResult{Kind: xxt.SignResultActivityEnded, Message: "签到已结束（迟到或活动已关闭）"}, nil
 		},
 	}
 	svc := NewSignService(database, upstream, cc, nil)
 	result, err := svc.ExecuteOne(1, ExecuteSignRequest{ActivityID: 100, TargetUID: 2, CourseID: 10, ClassID: 20, SignType: xxt.SignNormal})
-	if err != nil || !result.Success || result.AlreadySigned || result.RecordSource != 1 {
-		t.Fatalf("success2 result=%+v err=%v", result, err)
+	if err != nil || result.Success || result.AlreadySigned || result.ErrorCode != SignErrorActivityEnded || result.Retryable {
+		t.Fatalf("activity ended result=%+v err=%v", result, err)
 	}
 	var count int64
-	if err := database.Model(&model.SignRecord{}).Where("user_uid = ? AND activity_id = ? AND source_uid = ?", 2, 100, 1).Count(&count).Error; err != nil || count != 1 {
-		t.Fatalf("success2 record count=%d err=%v", count, err)
+	if err := database.Model(&model.SignRecord{}).Where("user_uid = ? AND activity_id = ?", 2, 100).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("activity ended record count=%d err=%v", count, err)
 	}
 }
 
@@ -681,6 +681,7 @@ func TestSignExecuteTerminalErrorsDoNotRetry(t *testing.T) {
 	}{
 		{xxt.SignResult{Kind: xxt.SignResultCaptchaRequired, Enc2: "abc"}, SignErrorCaptchaRequired, 0},
 		{xxt.SignResult{Kind: xxt.SignResultQRExpired}, SignErrorQRExpired, 0},
+		{xxt.SignResult{Kind: xxt.SignResultActivityEnded}, SignErrorActivityEnded, 0},
 		{xxt.SignResult{Kind: xxt.SignResultSessionExpired}, SignErrorSessionExpired, 0},
 		{xxt.SignResult{Kind: xxt.SignResultUpstreamError, Message: "服务器错误"}, SignErrorUpstream, 0},
 		{xxt.SignResult{Kind: xxt.SignResultLocationOutOfRange, DistanceM: 7}, SignErrorLocationOutRange, 7},

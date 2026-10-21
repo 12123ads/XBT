@@ -20,7 +20,7 @@ func TestParseSignResultMapsEveryUpstreamState(t *testing.T) {
 		message  string
 	}{
 		{name: "success", raw: "success", kind: SignResultSuccess},
-		{name: "late success", raw: "success2", kind: SignResultSuccess2},
+		{name: "late or ended", raw: "success2", kind: SignResultActivityEnded, message: "签到已结束（迟到或活动已关闭）"},
 		{name: "already signed", raw: "您已签到过了", kind: SignResultAlreadySigned},
 		{name: "captcha with token", raw: "validate_abc", kind: SignResultCaptchaRequired, enc2: "abc"},
 		{name: "captcha without token", raw: "validate", kind: SignResultCaptchaRequired},
@@ -142,13 +142,13 @@ func TestSignCarriesCallerSuppliedStateOnly(t *testing.T) {
 	var params []url.Values
 	transport := learningTestTransport(func(req *http.Request) (*http.Response, error) {
 		params = append(params, req.URL.Query())
-		return learningTestResponse(req, http.StatusOK, "success2"), nil
+		return learningTestResponse(req, http.StatusOK, "success"), nil
 	})
 	client := newSignResultTestClient(t, transport)
 	special := map[string]interface{}{"validate": "validate_abc", "enc2": "abc"}
 	result, err := client.Sign(captchaTestMobile, captchaTestPassword, signResultTestFixed(), SignNormal, special)
-	if err != nil || result.Kind != SignResultSuccess2 {
-		t.Fatalf("Sign = %+v err=%v, want success2", result, err)
+	if err != nil || result.Kind != SignResultSuccess {
+		t.Fatalf("Sign = %+v err=%v, want success", result, err)
 	}
 	if len(params) != 1 || params[0].Get("validate") != "validate_abc" || params[0].Get("enc2") != "abc" {
 		t.Fatalf("caller state was not passed through: %v", params)

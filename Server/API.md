@@ -479,7 +479,8 @@ GET /api/sign/classmates?course_id=222&class_id=111
 
 | error_code | 含义 | `retryable` | 备注 |
 |---|---|---|---|
-| `""` | 签到成功（含 `success2` 迟到/已结束、本地已有记录） | `false` | `success=true` |
+| `""` | 签到成功（含本地已有记录） | `false` | `success=true` |
+| `activity_ended` | 上游返回 `success2`：迟到或活动已关闭 | `false` | `success=false`，不写 `sign_records`；前端提示「签到已结束」 |
 | `captcha_required` | 验证码校验未通过 | `true` | 服务端已带 `validate`+`enc2` 自动重试一次 |
 | `face_required` | 人脸验证未通过 | `false` | 服务端已自动做人脸恢复重试一次 |
 | `face_photo_unavailable` | 无人像且无法取得可用基线照片 | `false` | 照片池为空且自动拉取官方照片失败（或基线无法解码）；其它签到类型不受影响 |

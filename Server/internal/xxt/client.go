@@ -1194,7 +1194,7 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	}
 	retried.CaptchaAttempted = true
 	switch retried.Kind {
-	case SignResultSuccess, SignResultSuccess2, SignResultAlreadySigned:
+	case SignResultSuccess, SignResultAlreadySigned:
 		retried.CaptchaPassed = true
 	}
 	return retried, nil

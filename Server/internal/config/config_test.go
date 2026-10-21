@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,5 +182,73 @@ func TestAppReleaseConfigDefaultsAndBaseURL(t *testing.T) {
 		if _, err := NormalizePublicBaseURL(input); err == nil {
 			t.Fatalf("accepted invalid public_base_url %q", input)
 		}
+	}
+}
+
+func TestValidateSecretsRejectsEmptyPlaceholderAndShortValues(t *testing.T) {
+	valid := strings.Repeat("a", MinSecretBytes)
+	cases := []struct {
+		name   string
+		secret string
+	}{
+		{"empty", ""},
+		{"whitespace", "   "},
+		{"example placeholder", "You_can_write_anything_here_but_change_me"},
+		{"short", strings.Repeat("a", MinSecretBytes-1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{JWTSecret: tc.secret, CredentialSecret: valid}
+			if err := cfg.ValidateSecrets(); err == nil {
+				t.Fatalf("jwt_secret %q was accepted", tc.secret)
+			}
+		})
+	}
+
+	cfg := Config{JWTSecret: valid, CredentialSecret: valid}
+	if err := cfg.ValidateSecrets(); err != nil {
+		t.Fatalf("valid secrets rejected: %v", err)
+	}
+}
+
+func TestLoadFailsFastOnUntrustedSecrets(t *testing.T) {
+	valid := strings.Repeat("b", MinSecretBytes)
+	for _, tc := range []struct {
+		name string
+		jwt  string
+		cred string
+	}{
+		{"empty", "", valid},
+		{"placeholder", "You_can_write_anything_here_but_change_me", valid},
+		{"short credential", valid, "short"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body := "app_env: test\njwt_secret: \"" + tc.jwt + "\"\ncredential_secret: \"" + tc.cred + "\"\n"
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+			if _, err := Load(); err == nil {
+				t.Fatal("Load accepted untrusted secrets")
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsValidSecrets(t *testing.T) {
+	valid := strings.Repeat("c", MinSecretBytes)
+	dir := t.TempDir()
+	body := "app_env: test\njwt_secret: \"" + valid + "\"\ncredential_secret: \"" + valid + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load valid config: %v", err)
+	}
+	if cfg.JWTSecret != valid || cfg.CredentialSecret != valid || cfg.ActivityListLimit != 5 {
+		t.Fatalf("unexpected loaded config: %+v", cfg)
 	}
 }

@@ -33,8 +33,8 @@ nano Server/config.yaml
 
 建议关键项：
 
-- `allow_insecure_tls: false`
-- `jwt_secret`、`credential_secret` 换成随机高强度值
+- `allow_insecure_tls: false`（`true` 会跳过上游 TLS 校验并打印启动警告，仅用于自签名测试环境）
+- `jwt_secret`、`credential_secret`：示例配置留空，必须各自生成至少 32 字节的随机值（例如 `openssl rand -hex 32`）；留空、使用示例占位值或长度不足时服务拒绝启动
 - `postgres_dsn` 保持与 compose 一致（默认 `host=db`）
 - `captcha_model_enabled: true`（默认；文件缺失时自动回退启发式）
 - `captcha_model_path: "./assets/captcha.ort"`

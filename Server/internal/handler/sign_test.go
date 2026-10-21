@@ -392,10 +392,10 @@ func TestExecuteReturnsTypedErrorCodesAndRetryFlags(t *testing.T) {
 		wantDist    float64
 	}{
 		{
-			name:        "success2",
-			results:     []xxt.SignResult{{Kind: xxt.SignResultSuccess2}},
-			wantCalls:   1,
-			wantSuccess: true,
+			name:      "activity ended",
+			results:   []xxt.SignResult{{Kind: xxt.SignResultActivityEnded, Message: "签到已结束（迟到或活动已关闭）"}},
+			wantCalls: 1,
+			wantCode:  service.SignErrorActivityEnded,
 		},
 		{
 			name:      "captcha",

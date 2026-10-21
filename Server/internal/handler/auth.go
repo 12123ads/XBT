@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	_ "image/png"
@@ -15,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	"xbt2/server/internal/common"
 	"xbt2/server/internal/dto"
+	"xbt2/server/internal/facephoto"
 	"xbt2/server/internal/model"
 	"xbt2/server/internal/service"
 	"xbt2/server/internal/xxt"
@@ -27,7 +29,16 @@ type loginClient interface {
 
 var errLoginNotAllowed = errors.New("login not allowed")
 
-const maxFaceUploadBytes int64 = 20 << 20
+const (
+	maxFaceUploadBytes int64 = 20 << 20
+	// maxFaceUploadRequestBytes leaves room for multipart boundaries and form
+	// fields on top of the file ceiling. The nginx cap is 20m, so this only
+	// bounds requests that bypass the proxy.
+	maxFaceUploadRequestBytes int64 = maxFaceUploadBytes + (1 << 20)
+	// maxMultipartMemory keeps only small parts in RAM; the rest spills to
+	// temporary files until MaxBytesReader cuts the request off.
+	maxMultipartMemory int64 = 1 << 20
+)
 
 type AuthHandler struct {
 	db         *gorm.DB
@@ -210,7 +221,28 @@ func (h *AuthHandler) DeleteFace(c *gin.Context) {
 	common.Success(c, nil)
 }
 
+// limitMultipartBody caps the whole request body before any multipart parsing,
+// so an oversized upload cannot fill memory or the temporary directory. It
+// must run before the first FormFile/PostForm call, because those parse the
+// body themselves.
+func limitMultipartBody(c *gin.Context, limit int64) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+	if err := c.Request.ParseMultipartForm(maxMultipartMemory); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			common.Fail(c, http.StatusRequestEntityTooLarge, "file is too large")
+			return false
+		}
+		common.Fail(c, 400, "invalid file upload")
+		return false
+	}
+	return true
+}
+
 func readFaceUpload(c *gin.Context) ([]byte, bool) {
+	if !limitMultipartBody(c, maxFaceUploadRequestBytes) {
+		return nil, false
+	}
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
@@ -238,7 +270,18 @@ func readFaceUpload(c *gin.Context) ([]byte, bool) {
 	return raw, true
 }
 
+// errFacePixelsExceeded is returned before decoding when the declared
+// dimensions would exceed facephoto.MaxSourcePixels.
+var errFacePixelsExceeded = errors.New("图片尺寸过大")
+
 func resizeFace(data []byte) ([]byte, error) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > facephoto.MaxSourcePixels {
+		return nil, fmt.Errorf("%w（%dx%d，上限 %d 像素）", errFacePixelsExceeded, cfg.Width, cfg.Height, facephoto.MaxSourcePixels)
+	}
 	src, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err

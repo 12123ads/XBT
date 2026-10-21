@@ -26,7 +26,10 @@ import (
 	"xbt2/server/internal/xxt"
 )
 
-const maxPhotoUploadBytes int64 = 20 << 20
+const (
+	maxPhotoUploadBytes        int64 = 20 << 20
+	maxPhotoUploadRequestBytes int64 = maxPhotoUploadBytes + (1 << 20)
+)
 
 type selectedCourseInfo struct {
 	CourseID int64
@@ -495,6 +498,9 @@ func (h *SignHandler) SignOut(c *gin.Context) {
 }
 
 func (h *SignHandler) Photo(c *gin.Context) {
+	if !limitMultipartBody(c, maxPhotoUploadRequestBytes) {
+		return
+	}
 	uid := common.GetUserUID(c)
 	activityID, err := requiredInt64Form(c, "activity_id")
 	if err != nil {

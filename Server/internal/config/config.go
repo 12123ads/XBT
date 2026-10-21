@@ -86,18 +86,36 @@ type Config struct {
 	PublicBaseURL string `yaml:"public_base_url"`
 }
 
-func Load() Config {
+// MinSecretBytes is the minimum accepted length of jwt_secret and
+// credential_secret. Shorter values are rejected instead of silently signing
+// tokens or deriving AES keys from a guessable secret.
+const MinSecretBytes = 32
+
+// placeholderSecrets are the values shipped by earlier example configs. They
+// are public, so accepting them would let anyone forge JWTs or decrypt stored
+// credentials.
+var placeholderSecrets = []string{
+	"You_can_write_anything_here_but_change_me",
+	"you_can_write_anything_here_but_change_me",
+	"change_me",
+	"changeme",
+}
+
+func Load() (Config, error) {
 	cfg := Config{}
 
 	raw, err := os.ReadFile("config.yaml")
 	if err != nil {
-		panic(fmt.Errorf("read config.yaml failed: %w", err))
+		return Config{}, fmt.Errorf("read config.yaml failed: %w", err)
 	}
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		panic(fmt.Errorf("parse config.yaml failed: %w", err))
+		return Config{}, fmt.Errorf("parse config.yaml failed: %w", err)
+	}
+	if err := cfg.ValidateSecrets(); err != nil {
+		return Config{}, err
 	}
 	if cfg.VikunjaBaseURL, err = NormalizeVikunjaBaseURL(cfg.VikunjaBaseURL); err != nil {
-		panic(err)
+		return Config{}, err
 	}
 
 	if cfg.ActivityListLimit <= 0 {
@@ -111,12 +129,38 @@ func Load() Config {
 	cfg.applyCaptchaDefaults()
 	cfg.applyAppReleaseDefaults()
 	if err := cfg.applyFaceDefaults(); err != nil {
-		panic(err)
+		return Config{}, err
 	}
 	if cfg.PublicBaseURL, err = NormalizePublicBaseURL(cfg.PublicBaseURL); err != nil {
-		panic(err)
+		return Config{}, err
 	}
-	return cfg
+	return cfg, nil
+}
+
+// ValidateSecrets rejects secrets that cannot be trusted: empty values,
+// values shipped in the example config, and values shorter than
+// MinSecretBytes. It never logs or returns the secret itself.
+func (c Config) ValidateSecrets() error {
+	if err := validateSecret("jwt_secret", c.JWTSecret); err != nil {
+		return err
+	}
+	return validateSecret("credential_secret", c.CredentialSecret)
+}
+
+func validateSecret(name, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%s is required; generate one with `openssl rand -hex 32`", name)
+	}
+	for _, placeholder := range placeholderSecrets {
+		if strings.EqualFold(trimmed, placeholder) {
+			return fmt.Errorf("%s is the public example placeholder; replace it with a random value of at least %d bytes", name, MinSecretBytes)
+		}
+	}
+	if len(trimmed) < MinSecretBytes {
+		return fmt.Errorf("%s must be at least %d bytes, got %d", name, MinSecretBytes, len(trimmed))
+	}
+	return nil
 }
 
 // applyFaceDefaults validates the OMP-58 diagnostic switches. An unknown
