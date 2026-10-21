@@ -180,10 +180,12 @@ Android 壳默认目标地址来自 `Android/app/src/main/res/values/strings.xml
 
 应用内更新：
 
-- 启动时和账号管理页「检查更新」都会请求 `GET /api/app/version?package=<pkg>&versionCode=<n>&abi=<abi>`；接口不可用时静默跳过，不影响启动。
-- 更新链路只接受 HTTPS：`apkUrl` 非 `https` 会被客户端直接拒绝。
+- 2.0.3 起，启动时和账号管理页「检查更新」直接读取 GitHub Release（`12123ads/XBT` 的 `releases/latest`），不再请求本服务的 `/api/app/version`。GitHub 不可达、超时或响应异常时静默跳过，不影响启动；手动检查会提示「检查更新失败」。
+- Release 必须同时包含 `xbt-latest.apk` 与 `version.json`。`version.json` 提供 `versionCode`、`versionName`、`sha256`、`sizeBytes`、`changelog`、`minSupportedVersionCode`；缺失资产视为不可用，校验字段非法则拒绝本次更新。
+- 更新链路只接受 HTTPS：GitHub 返回的资产地址必须是 `https`，APK 与 `version.json` 均通过 `https://ghfast.top/` 加速前缀下载。
 - 下载到 `cacheDir/updates/`，校验 SHA-256、包名、`versionCode` 与签名证书后，经 `FileProvider` 拉起系统安装器；任一不符都会删除安装包并报错。
-- 非强制更新同一版本 24 小时内最多提示一次；`mandatory` 由服务端 `minSupportedVersionCode` 推导，强制更新弹窗不可取消。
+- 非强制更新同一版本 24 小时内最多提示一次；`mandatory` 由 `version.json` 的 `minSupportedVersionCode` 推导，强制更新弹窗不可取消。
+- 旧客户端（2.0.2 及更早）仍使用服务端 `GET /api/app/version`，该接口继续保留。
 - 安装包必须与已安装应用使用同一签名，否则系统会拒绝覆盖安装（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
 - 首次安装需用户允许「安装未知应用」，部分 ROM 还会二次确认；未授权时客户端会跳转系统设置，返回后自动继续。
 

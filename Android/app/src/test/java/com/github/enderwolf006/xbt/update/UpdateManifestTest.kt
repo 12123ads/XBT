@@ -2,101 +2,162 @@ package com.github.enderwolf006.xbt.update
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateManifestTest {
     private val sha = "a".repeat(64)
 
-    private fun manifest(
-        versionCode: Long = 4,
-        apkUrl: String = "https://example.test/api/app/download/xbt-2.0.2.apk",
+    private val versionDownloadUrl =
+        "https://github.com/12123ads/XBT/releases/download/v2.0.3/version.json"
+    private val apkDownloadUrl =
+        "https://github.com/12123ads/XBT/releases/download/v2.0.3/xbt-latest.apk"
+
+    private fun release(
+        versionUrl: String = versionDownloadUrl,
+        apkUrl: String = apkDownloadUrl,
+        includeVersion: Boolean = true,
+        includeApk: Boolean = true,
+    ): String {
+        val assets = buildList {
+            if (includeVersion) {
+                add("""{"name":"version.json","browser_download_url":"$versionUrl"}""")
+            }
+            if (includeApk) {
+                add("""{"name":"xbt-latest.apk","browser_download_url":"$apkUrl"}""")
+            }
+        }
+        return """
+            {"tag_name":"v2.0.3","draft":false,"prerelease":false,
+             "assets":[${assets.joinToString(",")}]}
+        """.trimIndent()
+    }
+
+    private fun version(
+        versionCode: Long = 5,
+        versionName: String = "2.0.3",
         sha256: String = sha,
-        mandatory: Boolean = false,
+        sizeBytes: Long = 9390437,
+        changelog: String = "修复若干问题",
         minSupportedVersionCode: Long = 3,
     ): String = """
-        {"latest":{"versionCode":$versionCode,"versionName":"2.0.2",
-          "apkUrl":"$apkUrl","sha256":"$sha256","sizeBytes":12345678,
-          "changelog":"修复若干问题","publishedAt":"2026-10-21T00:00:00Z"},
-         "minSupportedVersionCode":$minSupportedVersionCode,"mandatory":$mandatory}
+        {"versionCode":$versionCode,"versionName":"$versionName","sha256":"$sha256",
+         "sizeBytes":$sizeBytes,"changelog":"$changelog",
+         "minSupportedVersionCode":$minSupportedVersionCode}
     """.trimIndent()
 
     @Test
     fun `newer release is available and not mandatory`() {
-        val outcome = parseVersionManifest(manifest(), installedVersionCode = 3)
+        val outcome = parseGitHubRelease(release(), version(), installedVersionCode = 4)
         val available = outcome as UpdateCheckOutcome.Available
-        assertEquals(4L, available.release.versionCode)
-        assertEquals("2.0.2", available.release.versionName)
+        assertEquals(5L, available.release.versionCode)
+        assertEquals("2.0.3", available.release.versionName)
         assertEquals(sha, available.release.sha256)
-        assertEquals(12345678L, available.release.sizeBytes)
+        assertEquals(9390437L, available.release.sizeBytes)
+        assertEquals("修复若干问题", available.release.changelog)
         assertFalse(available.mandatory)
+        assertEquals(
+            "https://ghfast.top/https://github.com/12123ads/XBT/releases/download/v2.0.3/xbt-latest.apk",
+            available.release.apkUrl,
+        )
     }
 
     @Test
     fun `equal or older release is up to date`() {
-        assertEquals(UpdateCheckOutcome.UpToDate, parseVersionManifest(manifest(), 4))
-        assertEquals(UpdateCheckOutcome.UpToDate, parseVersionManifest(manifest(), 9))
+        assertEquals(UpdateCheckOutcome.UpToDate, parseGitHubRelease(release(), version(), 5))
+        assertEquals(UpdateCheckOutcome.UpToDate, parseGitHubRelease(release(), version(), 9))
     }
 
     @Test
-    fun `server mandatory flag is preserved`() {
-        val available = parseVersionManifest(manifest(mandatory = true), 3) as UpdateCheckOutcome.Available
-        assertTrue(available.mandatory)
+    fun `release without version json asset is unavailable`() {
+        assertEquals(
+            UpdateCheckOutcome.Unavailable,
+            parseGitHubRelease(release(includeVersion = false), version(), 4),
+        )
     }
 
     @Test
-    fun `unsupported installed version forces mandatory`() {
-        val available = parseVersionManifest(manifest(versionCode = 5, minSupportedVersionCode = 5), 4) as UpdateCheckOutcome.Available
-        assertTrue(available.mandatory)
+    fun `release without apk asset is unavailable`() {
+        assertEquals(
+            UpdateCheckOutcome.Unavailable,
+            parseGitHubRelease(release(includeApk = false), version(), 4),
+        )
     }
 
     @Test
     fun `non https apk url is rejected`() {
-        val outcome = parseVersionManifest(manifest(apkUrl = "http://example.test/xbt.apk"), 3)
-        assertEquals("更新包地址不是 HTTPS，已拒绝本次更新", (outcome as UpdateCheckOutcome.Rejected).message)
+        val outcome = parseGitHubRelease(
+            release(apkUrl = "http://example.test/xbt-latest.apk"),
+            version(),
+            installedVersionCode = 4,
+        )
+        assertEquals(
+            "更新包地址不是 HTTPS，已拒绝本次更新",
+            (outcome as UpdateCheckOutcome.Rejected).message,
+        )
+    }
+
+    @Test
+    fun `non https version json url is unavailable`() {
+        assertEquals(
+            UpdateCheckOutcome.Unavailable,
+            parseGitHubRelease(
+                release(versionUrl = "http://example.test/version.json"),
+                version(),
+                installedVersionCode = 4,
+            ),
+        )
     }
 
     @Test
     fun `invalid sha is rejected`() {
-        assertTrue(parseVersionManifest(manifest(sha256 = "abc"), 3) is UpdateCheckOutcome.Rejected)
-        assertTrue(parseVersionManifest(manifest(sha256 = "z".repeat(64)), 3) is UpdateCheckOutcome.Rejected)
+        assertTrue(parseGitHubRelease(release(), version(sha256 = "abc"), 4) is UpdateCheckOutcome.Rejected)
+        assertTrue(
+            parseGitHubRelease(release(), version(sha256 = "z".repeat(64)), 4)
+                is UpdateCheckOutcome.Rejected,
+        )
+    }
+
+    @Test
+    fun `negative size is rejected`() {
+        assertTrue(
+            parseGitHubRelease(release(), version(sizeBytes = -1), 4)
+                is UpdateCheckOutcome.Rejected,
+        )
     }
 
     @Test
     fun `sha is normalized to lower case`() {
-        val available = parseVersionManifest(manifest(sha256 = "AB".repeat(32)), 3) as UpdateCheckOutcome.Available
+        val available = parseGitHubRelease(
+            release(),
+            version(sha256 = "AB".repeat(32)),
+            installedVersionCode = 4,
+        ) as UpdateCheckOutcome.Available
         assertEquals("ab".repeat(32), available.release.sha256)
     }
 
     @Test
-    fun `malformed payload is unavailable`() {
-        assertEquals(UpdateCheckOutcome.Unavailable, parseVersionManifest("not json", 3))
-        assertEquals(UpdateCheckOutcome.Unavailable, parseVersionManifest("""{"mandatory":false}""", 3))
-        assertEquals(UpdateCheckOutcome.Unavailable, parseVersionManifest("""{"latest":{"versionCode":0}}""", 3))
+    fun `unsupported installed version forces mandatory`() {
+        val available = parseGitHubRelease(
+            release(),
+            version(versionCode = 6, minSupportedVersionCode = 6),
+            installedVersionCode = 4,
+        ) as UpdateCheckOutcome.Available
+        assertTrue(available.mandatory)
     }
 
     @Test
-    fun `endpoint keeps authority and encodes query`() {
+    fun `malformed payloads are unavailable`() {
+        assertEquals(UpdateCheckOutcome.Unavailable, parseGitHubRelease("not json", version(), 4))
         assertEquals(
-            "https://example.test:8443/api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a",
-            buildVersionEndpoint(
-                "https://example.test:8443/",
-                "com.github.enderwolf006.xbt",
-                3,
-                "arm64-v8a",
-            ),
+            UpdateCheckOutcome.Unavailable,
+            parseGitHubRelease("""{"tag_name":"v2.0.3"}""", version(), 4),
         )
+        assertEquals(UpdateCheckOutcome.Unavailable, parseGitHubRelease(release(), "not json", 4))
         assertEquals(
-            "https://example.test/api/app/version?package=p&versionCode=7&abi=arm64-v8a",
-            buildVersionEndpoint("https://example.test", "p", 7, "arm64-v8a"),
+            UpdateCheckOutcome.Unavailable,
+            parseGitHubRelease(release(), version(versionCode = 0), 4),
         )
-    }
-
-    @Test
-    fun `endpoint rejects cleartext base`() {
-        assertNull(buildVersionEndpoint("http://example.test/", "p", 3, "arm64-v8a"))
-        assertNull(buildVersionEndpoint("not a url", "p", 3, "arm64-v8a"))
     }
 
     @Test

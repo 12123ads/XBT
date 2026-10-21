@@ -9,7 +9,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import com.github.enderwolf006.xbt.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,10 +61,8 @@ internal class UpdateController(
             val versionCode = packageVersionCode(packageInfo)
             val outcome = try {
                 UpdateApi.check(
-                    targetUrl = activity.getString(R.string.target_url),
-                    packageName = activity.packageName,
                     versionCode = versionCode,
-                    abi = currentAbi(),
+                    versionName = packageVersionName(packageInfo),
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -257,5 +254,4 @@ private fun packageVersionCode(info: PackageInfo): Long =
         info.versionCode.toLong()
     }
 
-private fun currentAbi(): String =
-    Build.SUPPORTED_ABIS.firstOrNull()?.takeIf { it.isNotBlank() } ?: "arm64-v8a"
+private fun packageVersionName(info: PackageInfo): String = info.versionName.orEmpty()

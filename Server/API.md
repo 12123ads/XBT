@@ -56,6 +56,8 @@ Authorization: Bearer <JWT>
 
 ### 2.2 应用内更新
 
+> 2.0.3 起客户端直接读取 GitHub Release（`12123ads/XBT`，资产 `xbt-latest.apk` + `version.json`），不再调用本节接口；服务端实现仅为 2.0.2 及更早客户端保留。
+
 更新接口**不需要登录**：登出状态或旧版本客户端也必须能检查并安装更新。仅支持 HTTPS，不提供 http 回退。
 
 #### 2.2.1 检查版本

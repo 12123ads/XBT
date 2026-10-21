@@ -7,9 +7,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Fetches the release manifest. Only HTTPS is accepted, including redirects.
- * All transport failures collapse into [UpdateCheckOutcome.Unavailable] so a
- * startup check can stay silent (offline, 503, proxy errors...).
+ * Resolves the latest GitHub Release and its manifest asset. Only HTTPS is
+ * accepted, including redirects. All transport failures collapse into
+ * [UpdateCheckOutcome.Unavailable] so a startup check can stay silent
+ * (offline, rate limit, GitHub outage...).
  */
 internal object UpdateApi {
     private const val CONNECT_TIMEOUT_MS = 8_000
@@ -17,28 +18,24 @@ internal object UpdateApi {
     private const val MAX_BODY_BYTES = 256 * 1024
 
     suspend fun check(
-        targetUrl: String,
-        packageName: String,
         versionCode: Long,
-        abi: String,
+        versionName: String,
     ): UpdateCheckOutcome = withContext(Dispatchers.IO) {
-        val endpoint = buildVersionEndpoint(targetUrl, packageName, versionCode, abi)
+        val userAgent = "xbt-android/${versionName.trim().ifBlank { "unknown" }}"
+
+        val releaseBody = get(GITHUB_RELEASE_API, userAgent) ?: return@withContext UpdateCheckOutcome.Unavailable
+        val assets = parseReleaseAssets(releaseBody) ?: return@withContext UpdateCheckOutcome.Unavailable
+        val apkDownloadUrl = assets[APK_ASSET_NAME] ?: return@withContext UpdateCheckOutcome.Unavailable
+        val versionDownloadUrl = assets[VERSION_ASSET_NAME] ?: return@withContext UpdateCheckOutcome.Unavailable
+        if (!isHttpsUrl(versionDownloadUrl)) return@withContext UpdateCheckOutcome.Unavailable
+
+        val versionBody = get(GITHUB_DOWNLOAD_ACCELERATOR + versionDownloadUrl, userAgent)
             ?: return@withContext UpdateCheckOutcome.Unavailable
-        when (val response = get(endpoint)) {
-            null -> UpdateCheckOutcome.Unavailable
-            is HttpResponse.NoContent -> UpdateCheckOutcome.UpToDate
-            is HttpResponse.Success -> parseVersionManifest(response.body, versionCode)
-            HttpResponse.Other -> UpdateCheckOutcome.Unavailable
-        }
+        parseVersionManifest(versionBody, versionCode, apkDownloadUrl)
     }
 
-    private sealed interface HttpResponse {
-        data object NoContent : HttpResponse
-        data class Success(val body: String) : HttpResponse
-        data object Other : HttpResponse
-    }
-
-    private fun get(endpoint: String): HttpResponse? {
+    /** Returns the 200 body, or null for any non-200/failed/unsafe request. */
+    private fun get(endpoint: String, userAgent: String): String? {
         if (!isHttpsUrl(endpoint)) return null
         var connection: HttpURLConnection? = null
         return try {
@@ -47,25 +44,20 @@ internal object UpdateApi {
             http.connectTimeout = CONNECT_TIMEOUT_MS
             http.readTimeout = READ_TIMEOUT_MS
             http.instanceFollowRedirects = true
-            http.setRequestProperty("Accept", "application/json")
+            http.setRequestProperty("Accept", "application/vnd.github+json")
+            http.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            http.setRequestProperty("User-Agent", userAgent)
             http.setRequestProperty("Accept-Encoding", "identity")
             http.connect()
 
             // A redirect to plain HTTP is not acceptable for the update channel.
             if (!http.url.protocol.equals("https", ignoreCase = true)) return null
 
-            when (val code = http.responseCode) {
-                HttpURLConnection.HTTP_NO_CONTENT -> HttpResponse.NoContent
-                HttpURLConnection.HTTP_OK -> {
-                    val body = http.inputStream.use { stream ->
-                        stream.readLimitedBytes(MAX_BODY_BYTES)?.toString(Charsets.UTF_8)
-                    } ?: return null
-                    HttpResponse.Success(body)
-                }
-                else -> {
-                    // Drain nothing; the error body is irrelevant. Just log-free skip.
-                    HttpResponse.Other
-                }
+            if (http.responseCode != HttpURLConnection.HTTP_OK) {
+                return null
+            }
+            http.inputStream.use { stream ->
+                stream.readLimitedBytes(MAX_BODY_BYTES)?.toString(Charsets.UTF_8)
             }
         } catch (_: IOException) {
             null

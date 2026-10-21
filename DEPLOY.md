@@ -336,14 +336,24 @@ cd Android
 
 ### 11.2 应用内更新与 APK 发布
 
-更新接口是公开的，客户端登出状态也能检查更新：
+2.0.3 起，客户端直接读取 GitHub Release，不再请求本服务的 `/api/app/version`：
 
-- `GET /api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a`
-- `GET /api/app/download/<file>.apk`
+- `GET https://api.github.com/repos/12123ads/XBT/releases/latest`
+- Release 必须包含固定名资产 `xbt-latest.apk` 与 `version.json`；缺失任一资产时客户端视为不可用。
+- `version.json` 契约：
 
-接口契约见 `Server/API.md` §2.2。只支持 HTTPS，`apkUrl` 永远输出 `https://`。
+  ```json
+  {"versionCode":5,"versionName":"2.0.3","sha256":"<64 hex>",
+   "sizeBytes":9390437,"changelog":"...","minSupportedVersionCode":3}
+  ```
 
-发布步骤：
+- `sha256`/`sizeBytes` 必须来自实际发布的 APK；`versionCode` 必须大于已安装版本才会提示。
+- 资产下载走 `https://ghfast.top/` 加速前缀，但原始 `browser_download_url` 必须是 HTTPS，否则客户端拒绝本次更新。
+- 推荐通过 `.github/workflows/android-release.yml` 打 tag `v<versionName>` 发布，确保 APK 与 `version.json` 由同一次构建产出。
+
+服务端 `/api/app/version` 与 `/api/app/download/<file>.apk` 继续保留，仅供 2.0.2 及更老客户端使用（接口契约见 `Server/API.md` §2.2）。只支持 HTTPS，`apkUrl` 永远输出 `https://`。
+
+旧客户端（服务端清单）发布步骤：
 
 1. 修改 `Android/app/build.gradle.kts` 的 `versionCode`（必须大于已发布的版本）和 `versionName`。
 2. 执行 `./Android/build-release.sh`。脚本会读取 `Server/releases/releases.json` 作为基线，若 `versionCode` 未增加会直接失败；成功后打印 `sha256` 与 `sizeBytes`。
@@ -368,7 +378,7 @@ public_base_url: "https://xbt.example.com"
 
 Docker 部署时 `docker-compose.yml` 已把 `./Server/releases` 只读挂载到容器 `/app/releases`，所以改清单/换 APK 不需要重建镜像，但**必须重启 server 容器**。`Server/.gitignore` 已忽略 `releases/*.apk`，不要把安装包提交到仓库。
 
-验证：
+验证（旧客户端接口）：
 
 ```bash
 curl -sS "https://xbt.example.com/api/app/version?package=com.github.enderwolf006.xbt&versionCode=3&abi=arm64-v8a"
@@ -380,6 +390,23 @@ curl -sS -r 0-99 -o /dev/null -w '%{http_code}\n' \
 
 sha256sum Server/releases/xbt-2.0.2.apk
 # 与 /api/app/version 返回的 sha256 一致
+```
+
+验证（GitHub 更新通道）：
+
+```bash
+curl -sS -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -H 'User-Agent: xbt-android/2.0.2' \
+  https://api.github.com/repos/12123ads/XBT/releases/latest
+# assets 中必须同时出现 xbt-latest.apk 与 version.json
+
+curl -sSL "https://ghfast.top/https://github.com/12123ads/XBT/releases/latest/download/version.json"
+# versionCode/versionName 与 tag 一致
+curl -sSL "https://ghfast.top/https://github.com/12123ads/XBT/releases/latest/download/xbt-latest.apk" \
+  -o /tmp/xbt-latest.apk
+sha256sum /tmp/xbt-latest.apk
+# 与 version.json 的 sha256 一致
 ```
 
 清单缺失或校验失败时，只有 `/api/app/*` 返回 `503`，其它接口正常；启动日志会写明 `app_release status=unavailable manifest=... error=...`。不要把测试包、内部包放进发布目录：下载接口只暴露当前 `latest.apkFile`，但目录本身仍应只存放正式安装包。
