@@ -80,6 +80,12 @@ const recordSummary = (record: AdminQMXAutoSignRecord | null) => {
   };
 };
 
+// 22:00:00 <= now < 22:30:00（本地时间）
+const isDormSignWindow = (now: Date = new Date()) => {
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return minutes >= 22 * 60 && minutes < 22 * 60 + 30;
+};
+
 const locationMatches = (location: LocationOption, config?: OwnQMXAutoSignConfig | null) => {
   if (!config?.location_name) return false;
   return location.name === config.location_name
@@ -224,6 +230,11 @@ const RoomCheck = () => {
   };
 
   const handleRunNow = async () => {
+    if (!isDormSignWindow()) {
+      toast.error('当前不在签到时间（22:00–22:30）');
+      return;
+    }
+
     if (!canRun) {
       toast.error('请先选择宿舍在寝签到定位点');
       return;
@@ -377,24 +388,29 @@ const RoomCheck = () => {
                 </div>
               </div>
 
-              <div className="p-5 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={handleOpenPicker}
-                  className="h-12 rounded-2xl bg-cyan-500 text-white font-black flex items-center justify-center gap-2"
-                >
-                  <MapPin size={18} />
-                  选择地点
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRunNow}
-                  disabled={isRunning || !canRun}
-                  className="h-12 rounded-2xl bg-slate-950 text-white font-black flex items-center justify-center gap-2 disabled:opacity-40"
-                >
-                  {isRunning ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
-                  立即执行
-                </button>
+              <div className="p-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={handleOpenPicker}
+                    className="h-12 rounded-2xl bg-cyan-500 text-white font-black flex items-center justify-center gap-2"
+                  >
+                    <MapPin size={18} />
+                    选择地点
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRunNow}
+                    disabled={isRunning || !canRun}
+                    className="h-12 rounded-2xl bg-slate-950 text-white font-black flex items-center justify-center gap-2 disabled:opacity-40"
+                  >
+                    {isRunning ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
+                    立即执行
+                  </button>
+                </div>
+                <p className="mt-3 text-xs font-semibold text-slate-400">
+                  仅 22:00–22:30 可手动签到，其余时间会被前台拦截
+                </p>
               </div>
             </section>
 
