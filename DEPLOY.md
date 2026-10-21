@@ -328,6 +328,12 @@ cd Android
 > 前端 API 基地址是 `/api`，所以 `target_url` 必须指向同时提供页面和 API 的同一站点。
 > 如果 API 部署在另一个域名，需要额外给后端配置 CORS。
 
+> Android 默认禁止明文 HTTP（`res/xml/network_security_config.xml` 的
+> `base-config cleartextTrafficPermitted="false"`），`target_url` 与更新下载都必须是
+> 受信任 CA 签发的 HTTPS。客户端不直接访问 `i.chaoxing.com`（该请求由后端完成），
+> 因此没有明文例外；确需在 WebView 中加载某个 HTTP 域时，先确认必要性，再在该文件
+> 里为该域单独添加 `domain-config`。
+
 ### 11.2 应用内更新与 APK 发布
 
 更新接口是公开的，客户端登出状态也能检查更新：

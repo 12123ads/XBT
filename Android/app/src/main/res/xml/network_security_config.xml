@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  All app and WebView traffic must use HTTPS. The WebView loads the release
+  origin over HTTPS, the in-app updater only accepts HTTPS, and the Web shell
+  serves its assets locally. Server-side Chaoxing requests are irrelevant here:
+  they run on the backend, not on the device.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

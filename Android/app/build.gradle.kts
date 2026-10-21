@@ -12,8 +12,8 @@ android {
         applicationId = "com.github.enderwolf006.xbt"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.0.1"
+        versionCode = 4
+        versionName = "2.0.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
