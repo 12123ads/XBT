@@ -28,7 +28,13 @@ const (
 	qmxAutoSignTimezone       = "Asia/Shanghai"
 	qmxAutoSignRunAt          = "22:00"
 	qmxAutoSignMaxConcurrency = 3
+
+	qmxManualWindowStartMinute = 22 * 60
+	qmxManualWindowEndMinute   = qmxManualWindowStartMinute + 30
 )
+
+// ErrQMXManualWindowClosed rejects manual dorm check-in outside 22:00–22:30 Asia/Shanghai.
+var ErrQMXManualWindowClosed = errors.New("当前不在签到时间（22:00–22:30）")
 
 type qmxAutoSignClient interface {
 	Preview(input qmx.CredentialInput) (qmx.Preview, error)
@@ -48,6 +54,7 @@ type QMXAutoSignService struct {
 	cfgPresets      []config.QMXLocationPreset
 	presetsProvider func() []config.QMXLocationPreset
 	qmxWebhook      *EnterpriseWechatWebhookNotifier
+	now             func() time.Time
 }
 
 func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset, qmxWebhook *EnterpriseWechatWebhookNotifier) *QMXAutoSignService {
@@ -55,7 +62,15 @@ func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Clien
 	if err != nil {
 		loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
 	}
-	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook}
+	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook, now: time.Now}
+}
+
+// SetNowFunc replaces the service clock; nil restores time.Now.
+func (s *QMXAutoSignService) SetNowFunc(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	s.now = now
 }
 
 func (s *QMXAutoSignService) Presets() []config.QMXLocationPreset {
@@ -242,7 +257,29 @@ func (s *QMXAutoSignService) RunSavedAccount(uid int64, trigger string) (model.Q
 	return record, err
 }
 
+// manualWindowOpen reports whether now falls in [22:00:00, 22:30:00) Asia/Shanghai.
+func (s *QMXAutoSignService) manualWindowOpen(now time.Time) bool {
+	local := now.In(s.loc)
+	minute := local.Hour()*60 + local.Minute()
+	return minute >= qmxManualWindowStartMinute && minute < qmxManualWindowEndMinute
+}
+
+// manualWindowError blocks manual runs outside the sign-in window before any
+// upstream request or failure record is made.
+func (s *QMXAutoSignService) manualWindowError(trigger string) error {
+	if normalizeQMXAutoSignTrigger(trigger) != QMXAutoSignTriggerManual {
+		return nil
+	}
+	if !s.manualWindowOpen(s.now()) {
+		return ErrQMXManualWindowClosed
+	}
+	return nil
+}
+
 func (s *QMXAutoSignService) runAccount(uid int64, trigger string, requireEnabled bool, runID string) (model.QMXAutoSignRecord, error) {
+	if err := s.manualWindowError(trigger); err != nil {
+		return model.QMXAutoSignRecord{}, err
+	}
 	account, err := s.configuredAccount(uid, requireEnabled)
 	if err != nil {
 		record, saveErr := s.saveFailureRecord(uid, trigger, runID, err.Error())

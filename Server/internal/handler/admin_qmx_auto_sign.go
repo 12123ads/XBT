@@ -171,6 +171,10 @@ func (h *AdminQMXAutoSignHandler) RunAccount(c *gin.Context) {
 
 	record, err := h.service.RunAccount(uid, service.QMXAutoSignTriggerManual)
 	if err != nil {
+		if errors.Is(err, service.ErrQMXManualWindowClosed) {
+			common.Fail(c, 409, err.Error())
+			return
+		}
 		common.Fail(c, 400, err.Error())
 		return
 	}
@@ -372,6 +376,10 @@ func (h *AdminQMXAutoSignHandler) RunOwnAccount(c *gin.Context) {
 	uid := common.GetUserUID(c)
 	record, err := h.service.RunSavedAccount(uid, service.QMXAutoSignTriggerManual)
 	if err != nil && record.ID == 0 {
+		if errors.Is(err, service.ErrQMXManualWindowClosed) {
+			common.Fail(c, 409, err.Error())
+			return
+		}
 		common.Fail(c, 400, err.Error())
 		return
 	}
