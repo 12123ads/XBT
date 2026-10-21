@@ -286,25 +286,27 @@ func adminQMXAutoSignRecordGroupView(row adminQMXAutoSignRecordGroupRow) gin.H {
 	batchNames := strings.TrimSpace(row.BatchNames)
 	locationNames := strings.TrimSpace(row.LocationNames)
 	return gin.H{
-		"id":                row.ID,
-		"run_id":            row.RunID,
-		"trigger":           row.Trigger,
-		"success":           row.Success,
-		"total_count":       row.TotalCount,
-		"success_count":     row.SuccessCount,
-		"failure_count":     row.FailureCount,
-		"account_names":     strings.TrimSpace(row.AccountNames),
-		"success_names":     strings.TrimSpace(row.SuccessNames),
-		"failure_names":     strings.TrimSpace(row.FailureNames),
-		"batch_names":       batchNames,
-		"location_names":    locationNames,
-		"messages":          messages,
-		"first_executed_at": row.FirstExecutedAt.UnixMilli(),
-		"last_executed_at":  row.LastExecutedAt.UnixMilli(),
-		"executed_at":       row.LastExecutedAt.UnixMilli(),
-		"batch_name":        batchNames,
-		"location_name":     locationNames,
-		"message":           messages,
+		"id":                     row.ID,
+		"run_id":                 row.RunID,
+		"trigger":                row.Trigger,
+		"success":                row.Success,
+		"total_count":            row.TotalCount,
+		"success_count":          row.SuccessCount,
+		"failure_count":          row.FailureCount,
+		"account_names":          strings.TrimSpace(row.AccountNames),
+		"success_names":          strings.TrimSpace(row.SuccessNames),
+		"failure_names":          strings.TrimSpace(row.FailureNames),
+		"batch_names":            batchNames,
+		"location_names":         locationNames,
+		"messages":               messages,
+		"first_executed_at":      row.FirstExecutedAt.UnixMilli(),
+		"first_executed_at_text": service.FormatQMXDisplayTime(row.FirstExecutedAt),
+		"last_executed_at":       row.LastExecutedAt.UnixMilli(),
+		"last_executed_at_text":  service.FormatQMXDisplayTime(row.LastExecutedAt),
+		"executed_at":            row.LastExecutedAt.UnixMilli(),
+		"batch_name":             batchNames,
+		"location_name":          locationNames,
+		"message":                messages,
 	}
 }
 
@@ -408,11 +410,13 @@ func (h *AdminQMXAutoSignHandler) settingsView(settings model.QMXAutoSignSetting
 		runAt = "22:00"
 	}
 	return gin.H{
-		"enabled":             settings.Enabled,
-		"timezone":            timezone,
-		"run_at":              runAt,
-		"next_run_at":         nextRunAt.UnixMilli(),
-		"next_run_window_end": windowEnd.UnixMilli(),
+		"enabled":                  settings.Enabled,
+		"timezone":                 timezone,
+		"run_at":                   runAt,
+		"next_run_at":              nextRunAt.UnixMilli(),
+		"next_run_at_text":         service.FormatQMXDisplayTime(nextRunAt),
+		"next_run_window_end":      windowEnd.UnixMilli(),
+		"next_run_window_end_text": service.FormatQMXDisplayTime(windowEnd),
 	}
 }
 
@@ -458,22 +462,23 @@ func (h *AdminQMXAutoSignHandler) recordView(record model.QMXAutoSignRecord, use
 		}
 	}
 	return gin.H{
-		"id":            record.ID,
-		"run_id":        record.RunID,
-		"user_uid":      record.UserUID,
-		"name":          name,
-		"mobile_masked": mobileMasked,
-		"trigger":       record.Trigger,
-		"success":       record.Success,
-		"code":          record.Code,
-		"message":       record.Message,
-		"batch_name":    record.BatchName,
-		"check_date":    record.CheckDate,
-		"check_time":    record.CheckTime,
-		"location_name": record.LocationName,
-		"longitude":     record.Longitude,
-		"latitude":      record.Latitude,
-		"executed_at":   record.ExecutedAt.UnixMilli(),
+		"id":               record.ID,
+		"run_id":           record.RunID,
+		"user_uid":         record.UserUID,
+		"name":             name,
+		"mobile_masked":    mobileMasked,
+		"trigger":          record.Trigger,
+		"success":          record.Success,
+		"code":             record.Code,
+		"message":          record.Message,
+		"batch_name":       record.BatchName,
+		"check_date":       record.CheckDate,
+		"check_time":       record.CheckTime,
+		"location_name":    record.LocationName,
+		"longitude":        record.Longitude,
+		"latitude":         record.Latitude,
+		"executed_at":      record.ExecutedAt.UnixMilli(),
+		"executed_at_text": service.FormatQMXDisplayTime(record.ExecutedAt),
 	}
 }
 

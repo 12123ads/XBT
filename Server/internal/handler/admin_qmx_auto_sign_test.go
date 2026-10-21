@@ -45,20 +45,34 @@ func qmxHandlerTime(hour, minute int) time.Time {
 	return time.Date(2026, 10, 21, hour, minute, 0, 0, time.FixedZone("CST", 8*60*60))
 }
 
-func decodeQMXSettings(t *testing.T, recorder *httptest.ResponseRecorder) (int64, int64) {
+type qmxSettingsResponse struct {
+	NextRunAt        int64  `json:"next_run_at"`
+	NextRunWindowEnd int64  `json:"next_run_window_end"`
+	NextRunAtText    string `json:"next_run_at_text"`
+	WindowEndText    string `json:"next_run_window_end_text"`
+	Timezone         string `json:"timezone"`
+}
+
+func decodeQMXSettings(t *testing.T, recorder *httptest.ResponseRecorder) qmxSettingsResponse {
 	t.Helper()
 	var body struct {
 		Data struct {
-			Settings struct {
-				NextRunAt        int64 `json:"next_run_at"`
-				NextRunWindowEnd int64 `json:"next_run_window_end"`
-			} `json:"settings"`
+			Settings qmxSettingsResponse `json:"settings"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode settings: %v; body=%s", err, recorder.Body.String())
 	}
-	return body.Data.Settings.NextRunAt, body.Data.Settings.NextRunWindowEnd
+	return body.Data.Settings
+}
+
+func qmxDisplayTime(t *testing.T, at time.Time) string {
+	t.Helper()
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load Asia/Shanghai: %v", err)
+	}
+	return at.In(loc).Format("2006/01/02 15:04:05")
 }
 
 func TestGetOwnSettingsReturnsAccountExecutableTime(t *testing.T) {
@@ -82,10 +96,17 @@ func TestGetOwnSettingsReturnsAccountExecutableTime(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", recorder.Code, recorder.Body.String())
 	}
-	nextRunAt, windowEnd := decodeQMXSettings(t, recorder)
-	want := svc.NextRunAtFor(42, now).UnixMilli()
-	if nextRunAt != want || windowEnd != want {
-		t.Fatalf("own settings = %d..%d, want %d", nextRunAt, windowEnd, want)
+	got := decodeQMXSettings(t, recorder)
+	want := svc.NextRunAtFor(42, now)
+	if got.NextRunAt != want.UnixMilli() || got.NextRunWindowEnd != want.UnixMilli() {
+		t.Fatalf("own settings = %d..%d, want %d", got.NextRunAt, got.NextRunWindowEnd, want.UnixMilli())
+	}
+	wantText := qmxDisplayTime(t, want)
+	if got.NextRunAtText != wantText || got.WindowEndText != wantText {
+		t.Fatalf("own settings text = %q..%q, want %q", got.NextRunAtText, got.WindowEndText, wantText)
+	}
+	if got.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q, want Asia/Shanghai", got.Timezone)
 	}
 }
 
@@ -117,17 +138,117 @@ func TestAdminQMXAutoSignOverviewExposesWindow(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", recorder.Code, recorder.Body.String())
 	}
-	nextRunAt, windowEnd := decodeQMXSettings(t, recorder)
+	got := decodeQMXSettings(t, recorder)
 	first := svc.NextRunAtFor(42, now)
 	second := svc.NextRunAtFor(43, now)
 	wantStart, wantEnd := first, second
 	if wantEnd.Before(wantStart) {
 		wantStart, wantEnd = wantEnd, wantStart
 	}
-	if nextRunAt != wantStart.UnixMilli() || windowEnd != wantEnd.UnixMilli() {
-		t.Fatalf("admin window = %d..%d, want %d..%d", nextRunAt, windowEnd, wantStart.UnixMilli(), wantEnd.UnixMilli())
+	if got.NextRunAt != wantStart.UnixMilli() || got.NextRunWindowEnd != wantEnd.UnixMilli() {
+		t.Fatalf("admin window = %d..%d, want %d..%d", got.NextRunAt, got.NextRunWindowEnd, wantStart.UnixMilli(), wantEnd.UnixMilli())
 	}
-	if windowEnd <= nextRunAt {
-		t.Fatalf("admin window must span enabled accounts: %d..%d", nextRunAt, windowEnd)
+	if got.NextRunAtText != qmxDisplayTime(t, wantStart) || got.WindowEndText != qmxDisplayTime(t, wantEnd) {
+		t.Fatalf("admin text = %q..%q", got.NextRunAtText, got.WindowEndText)
+	}
+	if got.WindowEndText == got.NextRunAtText {
+		t.Fatalf("admin window text must span enabled accounts: %q", got.NextRunAtText)
+	}
+	if got.NextRunAt >= got.NextRunWindowEnd {
+		t.Fatalf("admin window must span enabled accounts: %d..%d", got.NextRunAt, got.NextRunWindowEnd)
+	}
+}
+
+func TestQMXSettingsAndRecordEmitDisplayText(t *testing.T) {
+	database, _ := testutil.NewPostgres(t)
+	if err := database.AutoMigrate(&model.QMXAutoSignSetting{}, &model.QMXAutoSignAccount{}, &model.QMXAutoSignRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	// 2026-10-22T13:30:00Z = 21:30 Shanghai; 14:03:12Z = 22:03:12 Shanghai.
+	now := time.Date(2026, 10, 22, 13, 30, 0, 0, time.UTC)
+	executedAt := time.Date(2026, 10, 22, 14, 3, 12, 0, time.UTC)
+	if err := database.Create(&model.QMXAutoSignRecord{
+		UserUID:    42,
+		Trigger:    "scheduled",
+		Success:    true,
+		ExecutedAt: executedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := service.NewQMXAutoSignService(database, nil, nil, nil, nil, nil)
+	svc.SetNowFunc(func() time.Time { return now })
+	h := NewAdminQMXAutoSignHandler(database, svc)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(common.CtxUserUID, int64(42))
+		c.Next()
+	})
+	router.GET("/qmx/auto-sign/settings", h.GetOwnSettings)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/qmx/auto-sign/settings", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Settings   qmxSettingsResponse `json:"settings"`
+			LastRecord struct {
+				ExecutedAt     int64  `json:"executed_at"`
+				ExecutedAtText string `json:"executed_at_text"`
+			} `json:"last_record"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode settings: %v; body=%s", err, recorder.Body.String())
+	}
+	wantNext := svc.NextRunAtFor(42, now)
+	if body.Data.Settings.NextRunAtText != qmxDisplayTime(t, wantNext) {
+		t.Fatalf("next_run_at_text = %q, want %q", body.Data.Settings.NextRunAtText, qmxDisplayTime(t, wantNext))
+	}
+	if !strings.HasPrefix(body.Data.Settings.NextRunAtText, "2026/10/22 22:") {
+		t.Fatalf("next_run_at_text = %q, want 2026/10/22 22:xx:xx", body.Data.Settings.NextRunAtText)
+	}
+	if body.Data.Settings.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q, want Asia/Shanghai", body.Data.Settings.Timezone)
+	}
+	if body.Data.LastRecord.ExecutedAtText != "2026/10/22 22:03:12" {
+		t.Fatalf("executed_at_text = %q, want 2026/10/22 22:03:12", body.Data.LastRecord.ExecutedAtText)
+	}
+	if body.Data.LastRecord.ExecutedAt != executedAt.UnixMilli() {
+		t.Fatalf("executed_at = %d, want %d", body.Data.LastRecord.ExecutedAt, executedAt.UnixMilli())
+	}
+}
+
+func TestQMXRecordViewsEmitDisplayText(t *testing.T) {
+	executedAt := time.Date(2026, 10, 22, 14, 3, 12, 0, time.UTC)
+	h := &AdminQMXAutoSignHandler{}
+
+	record := h.recordView(model.QMXAutoSignRecord{ExecutedAt: executedAt}, nil)
+	if got := record["executed_at_text"]; got != "2026/10/22 22:03:12" {
+		t.Fatalf("executed_at_text = %v, want 2026/10/22 22:03:12", got)
+	}
+
+	group := adminQMXAutoSignRecordGroupView(adminQMXAutoSignRecordGroupRow{
+		FirstExecutedAt: executedAt,
+		LastExecutedAt:  executedAt.Add(time.Minute),
+	})
+	if got := group["first_executed_at_text"]; got != "2026/10/22 22:03:12" {
+		t.Fatalf("first_executed_at_text = %v, want 2026/10/22 22:03:12", got)
+	}
+	if got := group["last_executed_at_text"]; got != "2026/10/22 22:04:12" {
+		t.Fatalf("last_executed_at_text = %v, want 2026/10/22 22:04:12", got)
+	}
+}
+
+func TestQMXTimeViewsEmitEmptyTextForZeroTime(t *testing.T) {
+	h := &AdminQMXAutoSignHandler{}
+	record := h.recordView(model.QMXAutoSignRecord{}, nil)
+	if got := record["executed_at_text"]; got != "" {
+		t.Fatalf("executed_at_text = %v, want empty", got)
+	}
+	group := adminQMXAutoSignRecordGroupView(adminQMXAutoSignRecordGroupRow{})
+	if got := group["first_executed_at_text"]; got != "" {
+		t.Fatalf("first_executed_at_text = %v, want empty", got)
 	}
 }

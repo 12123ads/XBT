@@ -29,6 +29,7 @@ const (
 
 	qmxAutoSignTimezone       = "Asia/Shanghai"
 	qmxAutoSignRunAt          = "22:00"
+	qmxAutoSignDisplayLayout  = "2006/01/02 15:04:05"
 	qmxAutoSignMaxConcurrency = 3
 	qmxAutoSignJitterSeconds  = 300
 	qmxJitterDateLayout       = "2006-01-02"
@@ -49,6 +50,11 @@ type qmxCookieClient interface {
 	CookieHeader(mobile, password, rawURL string) (string, error)
 }
 
+var (
+	qmxAutoSignLocationOnce  sync.Once
+	qmxAutoSignLocationValue *time.Location
+)
+
 type QMXAutoSignService struct {
 	db              *gorm.DB
 	client          qmxAutoSignClient
@@ -63,10 +69,7 @@ type QMXAutoSignService struct {
 }
 
 func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset, qmxWebhook *EnterpriseWechatWebhookNotifier) *QMXAutoSignService {
-	loc, err := time.LoadLocation(qmxAutoSignTimezone)
-	if err != nil {
-		loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
-	}
+	loc := qmxAutoSignLocation()
 	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook, now: time.Now, jitter: jitterSeconds}
 }
 
@@ -80,6 +83,27 @@ func (s *QMXAutoSignService) SetNowFunc(now func() time.Time) {
 
 // Now returns the instant the service considers current for scheduling decisions.
 func (s *QMXAutoSignService) Now() time.Time { return s.now() }
+
+// qmxAutoSignLocation returns the scheduling zone, cached after the first load.
+func qmxAutoSignLocation() *time.Location {
+	qmxAutoSignLocationOnce.Do(func() {
+		loc, err := time.LoadLocation(qmxAutoSignTimezone)
+		if err != nil {
+			loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
+		}
+		qmxAutoSignLocationValue = loc
+	})
+	return qmxAutoSignLocationValue
+}
+
+// FormatQMXDisplayTime renders at in the scheduling zone for direct UI display.
+// Zero times return "" so clients never render 0001-01-01.
+func FormatQMXDisplayTime(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.In(qmxAutoSignLocation()).Format(qmxAutoSignDisplayLayout)
+}
 
 // SetJitterFunc replaces the per-account deterministic delay function; nil restores jitterSeconds.
 func (s *QMXAutoSignService) SetJitterFunc(jitter func(uid int64, runDate string) int) {

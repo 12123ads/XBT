@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
-import { formatDateTime, formatTimeZoneHint } from '../utils/datetime';
+import { displayDateTime, formatTimeZoneHint } from '../utils/datetime';
 import type {
   AdminQMXAutoSignRecord,
   ApiResponse,
@@ -50,9 +50,11 @@ const getErrorMessage = (error: unknown, fallback: string) => (
   error instanceof Error ? error.message : fallback
 );
 
-const formatTime = (value: number | undefined, timeZone?: string | null) => (
-  value ? formatDateTime(value, timeZone) : '暂无'
-);
+const formatTime = (
+  text: string | null | undefined,
+  value: number | undefined,
+  timeZone?: string | null,
+) => displayDateTime(text, value, timeZone) || '暂无';
 
 const formatCoordinate = (value: number) => (
   Number.isFinite(value) && value !== 0 ? value.toFixed(6) : '-'
@@ -67,7 +69,10 @@ const triggerLabel = (trigger: string) => (
   trigger === 'scheduled' ? '定时' : '手动'
 );
 
-const recordSummary = (record: AdminQMXAutoSignRecord | null, timeZone?: string | null) => {
+const recordSummary = (
+  record: AdminQMXAutoSignRecord | null,
+  timeZone?: string | null,
+) => {
   if (!record) {
     return {
       text: '暂无执行记录',
@@ -75,7 +80,7 @@ const recordSummary = (record: AdminQMXAutoSignRecord | null, timeZone?: string 
     };
   }
   return {
-    text: `${record.success ? '成功' : '失败'} · ${triggerLabel(record.trigger)} · ${formatTime(record.executed_at, timeZone)}`,
+    text: `${record.success ? '成功' : '失败'} · ${triggerLabel(record.trigger)} · ${formatTime(record.executed_at_text, record.executed_at, timeZone)}`,
     success: record.success,
   };
 };
@@ -338,7 +343,7 @@ const RoomCheck = () => {
                 <div className="mt-5 grid grid-cols-2 gap-3">
                   <div className="rounded-2xl bg-white/10 p-3">
                     <p className="text-[10px] font-bold text-slate-400">下次执行（本账号）</p>
-                    <p className="mt-1 text-sm font-black">{formatTime(globalSettings?.next_run_at, timeZone)}</p>
+                    <p className="mt-1 text-sm font-black">{formatTime(globalSettings?.next_run_at_text, globalSettings?.next_run_at, timeZone)}</p>
                   </div>
                   <div className={`rounded-2xl p-3 ${config?.enabled ? 'bg-emerald-400 text-emerald-950' : 'bg-white/10 text-white'}`}>
                     <p className="text-[10px] font-bold opacity-70">个人状态</p>

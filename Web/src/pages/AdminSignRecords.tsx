@@ -3,6 +3,7 @@ import { CheckCircle2, RefreshCw, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminShell from '../components/admin/AdminShell';
 import client from '../api/client';
+import { DEFAULT_TIME_ZONE, formatDateTime } from '../utils/datetime';
 import type { AdminAccount, AdminSignRecord, AdminSignRecordPage, ApiResponse } from '../types';
 
 type RecordFilters = {
@@ -40,7 +41,7 @@ const signTypeLabel = (type: number) => {
 
 const formatRecordTime = (timeMs: number) => {
   if (!timeMs) return '未知时间';
-  return new Date(timeMs).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(timeMs, DEFAULT_TIME_ZONE);
 };
 
 const dateTimeLocalToMs = (value: string) => {

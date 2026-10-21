@@ -187,6 +187,7 @@ export interface SignExecuteResult {
 export interface SignShareCreateResponse {
   token: string;
   expires_at: number;
+  expires_at_text?: string;
 }
 
 export interface SignShareInfo {
@@ -199,6 +200,7 @@ export interface SignShareInfo {
   sign_type: number;
   if_refresh_ewm: boolean;
   expires_at: number;
+  expires_at_text?: string;
 }
 
 export interface SignShareExecuteResponse {
@@ -326,7 +328,9 @@ export interface AdminQMXAutoSignSettings {
   timezone: string;
   run_at: string;
   next_run_at: number;
+  next_run_at_text?: string;
   next_run_window_end: number;
+  next_run_window_end_text?: string;
 }
 
 export interface AdminQMXAutoSignConfig {
@@ -356,6 +360,7 @@ export interface AdminQMXAutoSignRecord {
   longitude: number;
   latitude: number;
   executed_at: number;
+  executed_at_text?: string;
 }
 
 export interface AdminQMXAutoSignRecordGroup {
@@ -373,7 +378,9 @@ export interface AdminQMXAutoSignRecordGroup {
   location_names: string;
   messages: string;
   first_executed_at: number;
+  first_executed_at_text?: string;
   last_executed_at: number;
+  last_executed_at_text?: string;
   executed_at: number;
   batch_name?: string;
   location_name?: string;

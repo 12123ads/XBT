@@ -4,7 +4,7 @@ import { Camera, CheckCircle2, Clock, Fingerprint, Loader2, MapPin, QrCode, Rect
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
 import publicClient from '../api/publicClient';
-import { DEFAULT_TIME_ZONE, formatDateTime, formatTimeZoneHint } from '../utils/datetime';
+import { DEFAULT_TIME_ZONE, displayDateTime, formatTimeZoneHint } from '../utils/datetime';
 import type { ApiResponse, SignShareExecuteResponse, SignShareInfo, SignSpecialParams } from '../types';
 import { GestureInput } from '../components/sign/GestureInput';
 import { PinInput } from '../components/sign/PinInput';
@@ -41,7 +41,9 @@ const signIcon = (type: number, size = 22) => {
   }
 };
 
-const formatTime = (ts: number) => formatDateTime(ts, DEFAULT_TIME_ZONE);
+const formatTime = (text: string | null | undefined, ts: number) => (
+  displayDateTime(text, ts, DEFAULT_TIME_ZONE)
+);
 
 const SharedSign = () => {
   const { token } = useParams();
@@ -307,7 +309,7 @@ const SharedSign = () => {
           </div>
           <div className="mt-4 flex items-center gap-2 text-[11px] font-bold text-slate-400">
             <Clock size={13} />
-            <span>{formatTime(share.expires_at)} 前有效 · {formatTimeZoneHint(DEFAULT_TIME_ZONE)}</span>
+            <span>{formatTime(share.expires_at_text, share.expires_at)} 前有效 · {formatTimeZoneHint(DEFAULT_TIME_ZONE)}</span>
           </div>
         </div>
 

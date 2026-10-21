@@ -83,8 +83,9 @@ func (h *SignHandler) CreateShare(c *gin.Context) {
 	}
 
 	common.Success(c, gin.H{
-		"token":      token,
-		"expires_at": share.ExpiresAt.UnixMilli(),
+		"token":           token,
+		"expires_at":      share.ExpiresAt.UnixMilli(),
+		"expires_at_text": service.FormatQMXDisplayTime(share.ExpiresAt),
 	})
 }
 
@@ -383,15 +384,16 @@ func strFromSpecial(special map[string]interface{}, key string) string {
 
 func sharePublicView(share model.SignShare) gin.H {
 	return gin.H{
-		"activity_id":    share.ActivityID,
-		"activity_name":  share.ActivityName,
-		"course_id":      share.CourseID,
-		"class_id":       share.ClassID,
-		"course_name":    share.CourseName,
-		"course_teacher": share.CourseTeacher,
-		"sign_type":      share.SignType,
-		"if_refresh_ewm": share.IfRefreshEWM,
-		"expires_at":     share.ExpiresAt.UnixMilli(),
+		"activity_id":     share.ActivityID,
+		"activity_name":   share.ActivityName,
+		"course_id":       share.CourseID,
+		"class_id":        share.ClassID,
+		"course_name":     share.CourseName,
+		"course_teacher":  share.CourseTeacher,
+		"sign_type":       share.SignType,
+		"if_refresh_ewm":  share.IfRefreshEWM,
+		"expires_at":      share.ExpiresAt.UnixMilli(),
+		"expires_at_text": service.FormatQMXDisplayTime(share.ExpiresAt),
 	}
 }
 

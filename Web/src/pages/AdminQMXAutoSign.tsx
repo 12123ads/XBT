@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import AdminModal from '../components/admin/AdminModal';
 import AdminShell from '../components/admin/AdminShell';
 import client from '../api/client';
-import { formatDateTime, formatDateTimeRange, formatTimeZoneHint } from '../utils/datetime';
+import { displayDateTime, displayDateTimeRange, formatTimeZoneHint } from '../utils/datetime';
 import type {
   AdminQMXAutoSignAccount,
   AdminQMXAutoSignOverview,
@@ -28,12 +28,20 @@ const getErrorMessage = (error: unknown, fallback: string) => (
   error instanceof Error ? error.message : fallback
 );
 
-const formatTime = (value?: number, timeZone?: string | null) => (
-  value ? formatDateTime(value, timeZone) : '暂无'
-);
+const formatTime = (
+  text: string | null | undefined,
+  value?: number,
+  timeZone?: string | null,
+) => displayDateTime(text, value, timeZone) || '暂无';
 
-const formatNextRun = (start?: number, end?: number, timeZone?: string | null) => (
-  formatDateTimeRange(start, end, timeZone)
+const formatNextRun = (
+  startText: string | null | undefined,
+  endText: string | null | undefined,
+  start?: number,
+  end?: number,
+  timeZone?: string | null,
+) => (
+  displayDateTimeRange(startText, endText, start, end, timeZone)
 );
 
 const formatCoordinate = (value: number) => (
@@ -219,7 +227,7 @@ const AdminQMXAutoSign = () => {
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rounded-2xl bg-white/10 p-3">
               <p className="text-[10px] font-bold text-slate-400">下次执行</p>
-              <p className="mt-1 text-sm font-black">{formatNextRun(settings?.next_run_at, settings?.next_run_window_end, timeZone)}</p>
+              <p className="mt-1 text-sm font-black">{formatNextRun(settings?.next_run_at_text, settings?.next_run_window_end_text, settings?.next_run_at, settings?.next_run_window_end, timeZone)}</p>
               <p className="mt-1 text-[10px] font-semibold text-slate-400">时间按 {formatTimeZoneHint(timeZone)} 显示</p>
             </div>
             <button
@@ -301,7 +309,7 @@ const AdminQMXAutoSign = () => {
                       </div>
                       {account.last_record && (
                         <p className={`mt-2 text-[11px] font-semibold ${account.last_record.success ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          最近{triggerLabel(account.last_record.trigger)}：{account.last_record.message || (account.last_record.success ? '成功' : '失败')} · {formatTime(account.last_record.executed_at, timeZone)}
+                          最近{triggerLabel(account.last_record.trigger)}：{account.last_record.message || (account.last_record.success ? '成功' : '失败')} · {formatTime(account.last_record.executed_at_text, account.last_record.executed_at, timeZone)}
                         </p>
                       )}
                     </div>
@@ -366,7 +374,7 @@ const AdminQMXAutoSign = () => {
                         {triggerLabel(record.trigger)}执行 · {record.total_count || 1} 个账号
                       </p>
                       <p className="text-[11px] text-slate-400">
-                        {formatTime(record.first_executed_at, timeZone)} - {formatTime(record.last_executed_at, timeZone)}
+                        {formatTime(record.first_executed_at_text, record.first_executed_at, timeZone)} - {formatTime(record.last_executed_at_text, record.last_executed_at, timeZone)}
                       </p>
                     </div>
                     <span className={`px-2 py-1 rounded-full text-[10px] font-black shrink-0 ${

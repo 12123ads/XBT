@@ -318,3 +318,13 @@ func TestQMXScheduledRunHonorsScheduledInstant(t *testing.T) {
 		t.Fatalf("scheduled records = %d, want 1", records)
 	}
 }
+
+func TestFormatQMXDisplayTime(t *testing.T) {
+	at := time.Date(2026, 10, 22, 14, 3, 12, 0, time.UTC)
+	if got := FormatQMXDisplayTime(at); got != "2026/10/22 22:03:12" {
+		t.Fatalf("FormatQMXDisplayTime(%s) = %q, want 2026/10/22 22:03:12", at, got)
+	}
+	if got := FormatQMXDisplayTime(time.Time{}); got != "" {
+		t.Fatalf("FormatQMXDisplayTime(zero) = %q, want empty", got)
+	}
+}
