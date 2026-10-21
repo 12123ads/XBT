@@ -32,6 +32,18 @@ const formatTime = (value?: number) => {
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
 };
 
+const formatNextRun = (start?: number, end?: number) => {
+  if (!start) return '暂无';
+  if (!end || end <= start) return formatTime(start);
+  const startAt = new Date(start);
+  const endAt = new Date(end);
+  if (startAt.toDateString() !== endAt.toDateString()) {
+    return `${formatTime(start)} – ${formatTime(end)}`;
+  }
+  const clock = (value: Date) => value.toLocaleTimeString('zh-CN', { hour12: false });
+  return `${clock(startAt)} – ${clock(endAt)}`;
+};
+
 const formatCoordinate = (value: number) => (
   Number.isFinite(value) && value !== 0 ? value.toFixed(6) : '-'
 );
@@ -192,7 +204,7 @@ const AdminQMXAutoSign = () => {
   return (
     <AdminShell
       title="宿舍在寝签到"
-      subtitle="每天北京时间 22:00 自动在寝签到"
+      subtitle="每天北京时间 22:00 起自动在寝签到"
       action={(
         <button
           onClick={refreshAll}
@@ -209,12 +221,12 @@ const AdminQMXAutoSign = () => {
           <p className="text-xs font-black text-cyan-200 uppercase tracking-[0.2em]">DORM CHECK-IN</p>
           <h3 className="mt-2 text-2xl font-black">晚上十点，自动完成宿舍在寝签到</h3>
           <p className="mt-3 text-sm leading-relaxed text-slate-300">
-            全局开关控制每天 22:00 的定时任务；单账号开关和定位点在下方分别配置。
+            全局开关控制每天的定时任务；各账号在 22:00–22:05 内按固定时刻依次执行，下次执行区间取自已启用账号。
           </p>
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rounded-2xl bg-white/10 p-3">
               <p className="text-[10px] font-bold text-slate-400">下次执行</p>
-              <p className="mt-1 text-sm font-black">{formatTime(settings?.next_run_at)}</p>
+              <p className="mt-1 text-sm font-black">{formatNextRun(settings?.next_run_at, settings?.next_run_window_end)}</p>
             </div>
             <button
               onClick={handleToggleSettings}

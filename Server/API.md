@@ -1225,14 +1225,34 @@ DELETE /api/admin/whitelist/users/12
 
 ### 6.8 宿舍在寝签到（管理员）
 
-宿舍在寝签到用于每天北京时间 `22:00` 自动执行在寝定位签到。它独立于学习通课程签到记录，不写入 `sign_records`。
+宿舍在寝签到用于每天北京时间 `22:00` 起自动执行在寝定位签到。每个启用账号在 `22:00–22:05` 内有一个由 `uid + 日期` 确定的固定执行时刻（0–299 秒抖动），页面展示的时刻与实际执行时刻一致。它独立于学习通课程签到记录，不写入 `sign_records`。
 
 #### 6.8.1 获取自动签到总览
 - Method: `GET`
 - Path: `/api/admin/qmx-auto-sign`
 - Auth: 是（管理员）
 
-响应包含全局开关、下次执行时间和每个账号的单独配置、最近执行结果。
+响应包含全局开关、下次执行窗口和每个账号的单独配置、最近执行结果：
+
+```json
+{
+  "settings": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai",
+    "run_at": "22:00",
+    "next_run_at": 1761130907000,
+    "next_run_window_end": 1761131100000
+  },
+  "accounts": [],
+  "qmx_location_presets": []
+}
+```
+
+说明：
+- `next_run_at`：已启用且已配置定位点的账号中最早的实际执行时刻（毫秒时间戳）。
+- `next_run_window_end`：同一批次中最晚的实际执行时刻；与 `next_run_at` 相等时前端显示单点时间。
+- 没有已启用账号时，两个字段都返回批次基准 `22:00`。
+- 个人接口 `GET /api/qmx/auto-sign/settings` 返回本人账号的实际执行时刻，`next_run_at` 与 `next_run_window_end` 相等。
 
 #### 6.8.2 更新全局开关
 - Method: `PUT`

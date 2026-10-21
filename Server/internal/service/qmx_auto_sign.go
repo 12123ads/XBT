@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +30,8 @@ const (
 	qmxAutoSignTimezone       = "Asia/Shanghai"
 	qmxAutoSignRunAt          = "22:00"
 	qmxAutoSignMaxConcurrency = 3
+	qmxAutoSignJitterSeconds  = 300
+	qmxJitterDateLayout       = "2006-01-02"
 
 	qmxManualWindowStartMinute = 22 * 60
 	qmxManualWindowEndMinute   = qmxManualWindowStartMinute + 30
@@ -55,6 +59,7 @@ type QMXAutoSignService struct {
 	presetsProvider func() []config.QMXLocationPreset
 	qmxWebhook      *EnterpriseWechatWebhookNotifier
 	now             func() time.Time
+	jitter          func(uid int64, runDate string) int
 }
 
 func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Client, cc *CredentialCrypto, presets []config.QMXLocationPreset, qmxWebhook *EnterpriseWechatWebhookNotifier) *QMXAutoSignService {
@@ -62,7 +67,7 @@ func NewQMXAutoSignService(db *gorm.DB, client *qmx.Client, xxtClient *xxt.Clien
 	if err != nil {
 		loc = time.FixedZone(qmxAutoSignTimezone, 8*60*60)
 	}
-	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook, now: time.Now}
+	return &QMXAutoSignService{db: db, client: client, xxt: xxtClient, cc: cc, loc: loc, cfgPresets: presets, qmxWebhook: qmxWebhook, now: time.Now, jitter: jitterSeconds}
 }
 
 // SetNowFunc replaces the service clock; nil restores time.Now.
@@ -71,6 +76,17 @@ func (s *QMXAutoSignService) SetNowFunc(now func() time.Time) {
 		now = time.Now
 	}
 	s.now = now
+}
+
+// Now returns the instant the service considers current for scheduling decisions.
+func (s *QMXAutoSignService) Now() time.Time { return s.now() }
+
+// SetJitterFunc replaces the per-account deterministic delay function; nil restores jitterSeconds.
+func (s *QMXAutoSignService) SetJitterFunc(jitter func(uid int64, runDate string) int) {
+	if jitter == nil {
+		jitter = jitterSeconds
+	}
+	s.jitter = jitter
 }
 
 func (s *QMXAutoSignService) Presets() []config.QMXLocationPreset {
@@ -127,6 +143,13 @@ func (s *QMXAutoSignService) UpdateSettingsEnabled(enabled bool) (model.QMXAutoS
 	return setting, nil
 }
 
+// jitterSeconds derives a stable per-account delay in [0, 300) seconds for one run date.
+func jitterSeconds(uid int64, runDate string) int {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("qmx-jitter:v1:%d:%s", uid, runDate)))
+	return int(binary.BigEndian.Uint32(sum[:4]) % qmxAutoSignJitterSeconds)
+}
+
+// NextRunAt is the batch base time: today's 22:00, or tomorrow's once 22:00 has passed.
 func (s *QMXAutoSignService) NextRunAt(now time.Time) time.Time {
 	localNow := now.In(s.loc)
 	next := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 22, 0, 0, 0, s.loc)
@@ -136,11 +159,67 @@ func (s *QMXAutoSignService) NextRunAt(now time.Time) time.Time {
 	return next
 }
 
+// NextRunAtFor is the instant this account actually runs: the batch base plus its deterministic jitter.
+func (s *QMXAutoSignService) NextRunAtFor(uid int64, now time.Time) time.Time {
+	localNow := now.In(s.loc)
+	base := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 22, 0, 0, 0, s.loc)
+	if at := s.scheduledRunAt(uid, base); at.After(localNow) {
+		return at
+	}
+	return s.scheduledRunAt(uid, base.AddDate(0, 0, 1))
+}
+
+// NextRunWindow returns the earliest and latest actual execution instants of the
+// next batch date among enabled accounts. With no enabled accounts both values
+// are the batch base time.
+func (s *QMXAutoSignService) NextRunWindow(now time.Time) (time.Time, time.Time, error) {
+	var uids []int64
+	if err := qmxAutoSignEnabledAccounts(s.db).Order("user_uid asc").Pluck("user_uid", &uids).Error; err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	base := s.NextRunAt(now)
+	if len(uids) == 0 {
+		return base, base, nil
+	}
+	earliest := s.NextRunAtFor(uids[0], now)
+	for _, uid := range uids[1:] {
+		if at := s.NextRunAtFor(uid, now); at.Before(earliest) {
+			earliest = at
+		}
+	}
+	latest := earliest
+	year, month, day := earliest.In(s.loc).Date()
+	for _, uid := range uids {
+		at := s.NextRunAtFor(uid, now)
+		y, m, d := at.In(s.loc).Date()
+		if y == year && m == month && d == day && at.After(latest) {
+			latest = at
+		}
+	}
+	return earliest, latest, nil
+}
+
+// scheduledRunAt applies the account's deterministic jitter to one batch base time.
+func (s *QMXAutoSignService) scheduledRunAt(uid int64, batchAt time.Time) time.Time {
+	jitter := s.jitter
+	if jitter == nil {
+		jitter = jitterSeconds
+	}
+	runDate := batchAt.In(s.loc).Format(qmxJitterDateLayout)
+	return batchAt.Add(time.Duration(jitter(uid, runDate)) * time.Second)
+}
+
+func qmxAutoSignEnabledAccounts(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.QMXAutoSignAccount{}).
+		Where("enabled = ? AND location_name <> ? AND (location_index >= ? OR (longitude <> ? AND latitude <> ?))", true, "", 0, 0.0, 0.0)
+}
+
 func (s *QMXAutoSignService) StartScheduler(ctx context.Context) {
 	go func() {
 		for {
-			next := s.NextRunAt(time.Now())
-			wait := time.Until(next)
+			now := s.now()
+			next := s.NextRunAt(now)
+			wait := next.Sub(now)
 			if wait < 0 {
 				wait = 0
 			}
@@ -151,7 +230,7 @@ func (s *QMXAutoSignService) StartScheduler(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
-				if err := s.RunScheduled(ctx); err != nil {
+				if err := s.runScheduled(ctx, next); err != nil {
 					log.Printf("dorm check-in scheduled run failed: %v", err)
 				}
 			}
@@ -159,7 +238,9 @@ func (s *QMXAutoSignService) StartScheduler(ctx context.Context) {
 	}()
 }
 
-func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
+// runScheduled runs the batch whose base time is batchAt; every enabled account
+// waits until its deterministic execution instant before signing in.
+func (s *QMXAutoSignService) runScheduled(ctx context.Context, batchAt time.Time) error {
 	setting, err := s.EnsureSettings()
 	if err != nil {
 		return err
@@ -170,10 +251,7 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 	}
 
 	var accounts []model.QMXAutoSignAccount
-	if err := s.db.
-		Where("enabled = ? AND location_name <> ? AND (location_index >= ? OR (longitude <> ? AND latitude <> ?))", true, "", 0, 0.0, 0.0).
-		Order("user_uid asc").
-		Find(&accounts).Error; err != nil {
+	if err := qmxAutoSignEnabledAccounts(s.db).Order("user_uid asc").Find(&accounts).Error; err != nil {
 		return err
 	}
 	if len(accounts) == 0 {
@@ -181,28 +259,32 @@ func (s *QMXAutoSignService) RunScheduled(ctx context.Context) error {
 		return nil
 	}
 
-	runID := s.scheduledQMXAutoSignRunID(time.Now())
+	runID := s.scheduledQMXAutoSignRunID(batchAt)
 	sem := make(chan struct{}, qmxAutoSignMaxConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	savedRecords := 0
 	for _, account := range accounts {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case sem <- struct{}{}:
-		}
 		wg.Add(1)
 		go func(uid int64) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			delay := time.Duration(rand.Intn(300)) * time.Second
-			log.Printf("dorm check-in account %d waiting %v", uid, delay)
+			scheduledAt := s.scheduledRunAt(uid, batchAt)
+			log.Printf("dorm check-in account %d scheduled at %s", uid, scheduledAt.Format(time.RFC3339))
+			delay := scheduledAt.Sub(s.now())
+			if delay < 0 {
+				delay = 0
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(delay):
 			}
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
 			exists, err := s.qmxAutoSignRecordExists(runID, uid)
 			if err != nil {
 				log.Printf("dorm check-in account %d skipped: query scheduled record failed: %v", uid, err)

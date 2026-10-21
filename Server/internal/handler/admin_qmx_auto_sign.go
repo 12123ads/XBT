@@ -73,8 +73,14 @@ func (h *AdminQMXAutoSignHandler) Overview(c *gin.Context) {
 		accounts = append(accounts, h.accountView(user, configs[user.UID], lastRecord))
 	}
 
+	windowStart, windowEnd, err := h.service.NextRunWindow(h.service.Now())
+	if err != nil {
+		common.Fail(c, 500, "获取宿舍在寝签到配置失败")
+		return
+	}
+
 	common.Success(c, gin.H{
-		"settings":             h.settingsView(settings),
+		"settings":             h.settingsView(settings, windowStart, windowEnd),
 		"accounts":             accounts,
 		"qmx_location_presets": h.service.Presets(),
 	})
@@ -92,7 +98,12 @@ func (h *AdminQMXAutoSignHandler) UpdateSettings(c *gin.Context) {
 		common.Fail(c, 500, "更新宿舍在寝签到配置失败")
 		return
 	}
-	common.Success(c, h.settingsView(settings))
+	windowStart, windowEnd, err := h.service.NextRunWindow(h.service.Now())
+	if err != nil {
+		common.Fail(c, 500, "更新宿舍在寝签到配置失败")
+		return
+	}
+	common.Success(c, h.settingsView(settings, windowStart, windowEnd))
 }
 
 func (h *AdminQMXAutoSignHandler) PreviewLocations(c *gin.Context) {
@@ -316,8 +327,9 @@ func (h *AdminQMXAutoSignHandler) GetOwnSettings(c *gin.Context) {
 		return
 	}
 
+	nextRunAt := h.service.NextRunAtFor(uid, h.service.Now())
 	common.Success(c, gin.H{
-		"settings":    h.settingsView(settings),
+		"settings":    h.settingsView(settings, nextRunAt, nextRunAt),
 		"config":      h.accountConfigView(account),
 		"last_record": h.recordViewPtr(lastRecord),
 		"presets":     h.service.Presets(),
@@ -386,7 +398,7 @@ func (h *AdminQMXAutoSignHandler) RunOwnAccount(c *gin.Context) {
 	common.Success(c, h.recordView(record, nil))
 }
 
-func (h *AdminQMXAutoSignHandler) settingsView(settings model.QMXAutoSignSetting) gin.H {
+func (h *AdminQMXAutoSignHandler) settingsView(settings model.QMXAutoSignSetting, nextRunAt, windowEnd time.Time) gin.H {
 	timezone := strings.TrimSpace(settings.Timezone)
 	if timezone == "" {
 		timezone = "Asia/Shanghai"
@@ -396,10 +408,11 @@ func (h *AdminQMXAutoSignHandler) settingsView(settings model.QMXAutoSignSetting
 		runAt = "22:00"
 	}
 	return gin.H{
-		"enabled":     settings.Enabled,
-		"timezone":    timezone,
-		"run_at":      runAt,
-		"next_run_at": h.service.NextRunAt(time.Now()).UnixMilli(),
+		"enabled":             settings.Enabled,
+		"timezone":            timezone,
+		"run_at":              runAt,
+		"next_run_at":         nextRunAt.UnixMilli(),
+		"next_run_window_end": windowEnd.UnixMilli(),
 	}
 }
 

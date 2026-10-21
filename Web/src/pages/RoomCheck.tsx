@@ -336,7 +336,7 @@ const RoomCheck = () => {
 
                 <div className="mt-5 grid grid-cols-2 gap-3">
                   <div className="rounded-2xl bg-white/10 p-3">
-                    <p className="text-[10px] font-bold text-slate-400">下次执行</p>
+                    <p className="text-[10px] font-bold text-slate-400">下次执行（本账号）</p>
                     <p className="mt-1 text-sm font-black">{formatTime(globalSettings?.next_run_at)}</p>
                   </div>
                   <div className={`rounded-2xl p-3 ${config?.enabled ? 'bg-emerald-400 text-emerald-950' : 'bg-white/10 text-white'}`}>

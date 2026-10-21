@@ -326,6 +326,7 @@ export interface AdminQMXAutoSignSettings {
   timezone: string;
   run_at: string;
   next_run_at: number;
+  next_run_window_end: number;
 }
 
 export interface AdminQMXAutoSignConfig {
