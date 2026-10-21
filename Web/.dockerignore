@@ -4,3 +4,7 @@ dist
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Build inputs come only from compose build args; keep local env overrides out of the image
+.env*
+!.env.example

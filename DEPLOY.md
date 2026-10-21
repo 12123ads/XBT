@@ -100,6 +100,8 @@ cd /opt/xbt
 docker compose up -d --build
 ```
 
+地图选点的高德 key 通过仓库根目录 `.env` 注入构建，首次部署先执行 `cp .env.example .env` 并填写，详见 §13.2。
+
 查看状态：
 
 ```bash
@@ -443,7 +445,18 @@ cp Web/.env.example Web/.env.local
 cd Web && npm run dev
 ```
 
-Docker：
+Docker（两种方式等价，均通过 compose 的 `web.build.args` 注入；shell 环境变量优先级高于根 `.env`）：
+
+方式一：仓库根目录 `.env`（推荐，`docker compose up -d --build` 自动读取）：
+
+```bash
+cd /opt/xbt
+cp .env.example .env    # 首次
+# 编辑 .env，填入 VITE_AMAP_KEY / VITE_AMAP_SECURITY_CODE
+docker compose up -d --build web
+```
+
+方式二：`--build-arg`（适合临时或 CI 的一次性构建）：
 
 ```bash
 cd /opt/xbt
@@ -453,6 +466,8 @@ docker compose build web \
 docker compose up -d web
 ```
 
+两种方式不要同时用不同值：两次构建会产出不同 bundle。发布时固定一种来源。
+
 Android APK（`build-apk.sh` 会先执行 `npm run build`，环境变量会传入构建）：
 
 ```bash
@@ -461,7 +476,7 @@ export VITE_AMAP_SECURITY_CODE='your-security-code'
 ./Android/build-apk.sh
 ```
 
-真实 key 不要提交到仓库；`Web/.env.local` 已被 `.gitignore` 忽略。
+真实 key 不要提交到仓库：根 `.env` 和 `Web/.env.local` 均已被 `.gitignore` 忽略。`Web/.env` 已不再被跟踪，仅保留 `Web/.env.example` 作为模板；Docker 构建上下文也排除了 `Web/.env*`，镜像内的值只来自 compose 的 build args。
 
 ### 13.3 验证要点
 

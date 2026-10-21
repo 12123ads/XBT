@@ -38,6 +38,10 @@ services:
     build:
       context: ./Web
       dockerfile: Dockerfile
+      args:
+        # Read from the shell or the repo-root .env (see DEPLOY.md §13.2).
+        VITE_AMAP_KEY: ${VITE_AMAP_KEY:-}
+        VITE_AMAP_SECURITY_CODE: ${VITE_AMAP_SECURITY_CODE:-}
     container_name: xbt-web
     depends_on:
       - server
