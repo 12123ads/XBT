@@ -5,6 +5,7 @@ import { Phone, Lock, Eye, EyeOff, Loader2, ChevronLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import client from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { APK_DOWNLOAD_URL, shouldShowApkDownload } from '../utils/apkDownload';
 import type { ApiResponse, AuthResponse } from '../types';
 
 const Login = () => {
@@ -14,6 +15,9 @@ const Login = () => {
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
   const { addAccount, accounts } = useAuthStore();
+  const showApkDownload = shouldShowApkDownload(
+    typeof navigator === 'undefined' ? '' : navigator.userAgent
+  );
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +123,18 @@ const Login = () => {
             )}
           </motion.button>
         </form>
+
+        {showApkDownload && (
+          <p className="mt-6 text-center text-sm text-slate-500">
+            安卓 App 体验更好，
+            <a
+              href={APK_DOWNLOAD_URL}
+              className="text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              点此下载
+            </a>
+          </p>
+        )}
 
         <div className="mt-12 text-center text-slate-400 text-xs">
           <p>注册即代表同意本网站收集您的第三方网站隐私信息。其中包括:
